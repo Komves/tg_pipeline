@@ -1,0 +1,7 @@
+
+__pycache__/
+*.session
+*.bin
+*.bak
+procdump/
+procdump.zip
