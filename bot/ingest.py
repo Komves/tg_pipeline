@@ -1,34 +1,59 @@
-import os
 import asyncio
+from datetime import datetime, timedelta, timezone
+
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 
-API_ID = int(os.environ["TG_API_ID"])
-API_HASH = os.environ["TG_API_HASH"]
+from ingest_runner import (
+    load_sources,
+    safe_channel_dir,
+    download_media,
+    SESSION_BASE,
+    API_ID,
+    API_HASH,
+)
 
-DATA_DIR = os.environ.get("DATA_DIR", "/data")
-SESSION = os.environ.get("TG_SESSION", "tg_session")
 
-SESSION_PATH = f"{DATA_DIR}/{SESSION}"
+async def ingest_hours(hours: int) -> None:
+    sources = load_sources()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-async def ingest():
-    print("Starting Telethon ingest...")
-    print("Session:", SESSION_PATH)
+    client = TelegramClient(SESSION_BASE, API_ID, API_HASH)
+    await client.connect()
 
-    client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+    try:
+        if not await client.is_user_authorized():
+            raise RuntimeError(
+                "Telethon session is not authorized on Render. "
+                "You must have a valid session file on disk: "
+                f"{SESSION_BASE}.session"
+            )
 
-    await client.start()
+        for src in sources:
+            channel_dir = safe_channel_dir(src)
+            downloaded = 0
 
-    me = await client.get_me()
-    print("Connected as:", me.username, me.id)
+            try:
+                entity = await client.get_entity(src)
 
-    # TEST: просто проверим, что можем читать диалоги
-    dialogs = await client.get_dialogs(limit=5)
+                async for msg in client.iter_messages(
+                    entity,
+                    offset_date=cutoff,
+                    reverse=True,
+                ):
+                    if not getattr(msg, "media", None):
+                        continue
+                    await download_media(client, msg, channel_dir)
+                    downloaded += 1
 
-    print("Dialogs:")
-    for d in dialogs:
-        print("-", d.name)
+            except FloodWaitError as e:
+                print(f"[FloodWait] {src}: sleep {e.seconds}s")
+                await asyncio.sleep(e.seconds)
 
-    await client.disconnect()
+            except Exception as e:
+                print(f"[ERROR] {src}: {e}")
 
-if __name__ == "__main__":
-    asyncio.run(ingest())
+            print(f"[OK] {src}: downloaded={downloaded}")
+
+    finally:
+        await client.disconnect()
