@@ -21,14 +21,21 @@ CAT_A_MEME = "A_MEME"
 ACTION_WEIGHT = {"like": 1.0, "dislike": -1.0, "ban": -3.0}
 BASE_SCORE = 0.0
 
-RECENCY_K = 0.35
-RECENCY_TAU_H = 72.0
+# сильнее упор на свежесть
+RECENCY_K = 1.25
+RECENCY_TAU_H = 18.0  # ~1 день
 
-# --- minimal anti-ad keywords (filename / path heuristic) ---
 AD_KEYWORDS = {
     "казино", "casino", "ставк", "bet", "bonus", "бонус", "промо", "promo",
     "реклама", "reklama", "ad", "ads", "sale", "скидк", "discount",
     "t.me/", "tg://", "подпиш", "подпис", "канал", "channel",
+}
+
+# быстрый анти-треш/анти-"кошечки/дети" (по имени файла/пути)
+BORING_KEYWORDS = {
+    "cat", "cats", "kitten", "kitty", "кот", "коты", "котик", "котики", "кошк", "котён",
+    "dog", "dogs", "puppy", "пес", "пёс", "псы", "собак", "щен",
+    "baby", "babies", "kid", "kids", "child", "children", "ребен", "ребён", "дети", "малыш",
 }
 
 
@@ -140,9 +147,18 @@ def _recency_boost(abs_path: Path, now: datetime) -> float:
         return 0.0
 
 
+def _contains_any(s: str, keys: set) -> bool:
+    return any(k in s for k in keys)
+
+
 def _looks_like_ad(p: Path) -> bool:
     s = p.as_posix().lower()
-    return any(k in s for k in AD_KEYWORDS)
+    return _contains_any(s, AD_KEYWORDS)
+
+
+def _looks_boring(p: Path) -> bool:
+    s = p.as_posix().lower()
+    return _contains_any(s, BORING_KEYWORDS)
 
 
 def rank_top_n(
@@ -170,6 +186,8 @@ def rank_top_n(
 
         if _looks_like_ad(p):
             continue
+        if _looks_boring(p):
+            continue
 
         item_id = _item_id_from_abs_path(raw_dir, p)
         if item_id in user_bans:
@@ -195,3 +213,4 @@ def rank_top_n(
 
     candidates.sort(key=lambda x: x.score, reverse=True)
     return candidates[: max(0, n)]
+
