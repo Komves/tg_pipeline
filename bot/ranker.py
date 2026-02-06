@@ -1,131 +1,187 @@
+from __future__ import annotations
+
 import json
+import math
 import subprocess
-from pathlib import Path
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Iterable, List, Optional, Set
+
 
 DATA_DIR = Path("/data")
 RAW_DIR = DATA_DIR / "raw"
-POSTED = DATA_DIR / "a_posted_master.tsv"
+POSTED_TSV = DATA_DIR / "a_posted_master.tsv"
 
 CAT_A_VIDEO = "A_VIDEO"
 
+VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 
-@dataclass
-class Item:
+# Берём реально свежие посты
+MAX_AGE_HOURS = 24.0
+
+# recency по tg_date
+RECENCY_K = 2.0
+RECENCY_TAU_H = 12.0
+
+
+@dataclass(frozen=True)
+class RankedItem:
     item_id: str
-    abs_path: Path
-    tg_date: datetime
+    abs_path: str
     score: float
+    tg_date_iso: str
+    src: str
 
 
-# ---------- AUDIO DETECTION ----------
-def has_audio(path: Path) -> bool:
-    try:
-        cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-select_streams", "a",
-            "-show_entries", "stream=index",
-            "-of", "json",
-            str(path)
-        ]
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        j = json.loads(out)
-        return len(j.get("streams", [])) > 0
-    except:
-        return False
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-# ---------- META ----------
-def read_meta(path: Path):
-    meta = Path(str(path) + ".meta.json")
-    if not meta.exists():
-        return None
-    try:
-        return json.loads(meta.read_text(encoding="utf-8"))
-    except:
-        return None
-
-
-def parse_dt(s):
+def _parse_iso(s: str) -> Optional[datetime]:
     try:
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except:
+        return dt.astimezone(timezone.utc)
+    except Exception:
         return None
 
 
-# ---------- POSTED ----------
-def load_posted():
-    s = set()
-    if not POSTED.exists():
-        return s
-    for line in POSTED.read_text(encoding="utf-8").splitlines():
-        if line.startswith("timestamp"):
+def _iter_video_files() -> Iterable[Path]:
+    if not RAW_DIR.exists():
+        return
+    for p in RAW_DIR.rglob("*"):
+        if not p.is_file():
+            continue
+        if p.name.endswith(".meta.json"):
+            continue
+        if p.suffix.lower() in VIDEO_EXT:
+            yield p
+
+
+def _meta_path_for_media(p: Path) -> Path:
+    return Path(str(p) + ".meta.json")
+
+
+def _read_meta(p: Path) -> Optional[dict]:
+    mp = _meta_path_for_media(p)
+    if not mp.exists():
+        return None
+    try:
+        return json.loads(mp.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _write_meta(p: Path, meta: dict) -> None:
+    mp = _meta_path_for_media(p)
+    try:
+        mp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _ffprobe_has_audio(p: Path) -> Optional[bool]:
+    """
+    True/False if удалось проверить.
+    None если ffprobe не доступен/ошибка запуска.
+    """
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "json", str(p)],
+            stderr=subprocess.DEVNULL,
+        )
+        j = json.loads(out)
+        return len(j.get("streams", [])) > 0
+    except Exception:
+        return None
+
+
+def _has_audio_cached(p: Path, meta: dict) -> bool:
+    """
+    Жёсткий фильтр: если точно знаем что аудио нет -> False.
+    Если знаем что есть -> True.
+    Если не смогли проверить -> True (не режем пул из-за проблем ffprobe).
+    """
+    if "has_audio" in meta:
+        return bool(meta["has_audio"])
+
+    res = _ffprobe_has_audio(p)
+    if res is None:
+        return True
+
+    meta["has_audio"] = bool(res)
+    _write_meta(p, meta)
+    return bool(res)
+
+
+def _load_posted_set(user_id: int, feed: str) -> Set[str]:
+    """
+    Ожидаем формат /data/a_posted_master.tsv:
+      timestamp \t user \t item \t feed
+    """
+    if not POSTED_TSV.exists():
+        return set()
+
+    out: Set[str] = set()
+    for line in POSTED_TSV.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.startswith("timestamp"):
             continue
         parts = line.split("\t")
-        if len(parts) >= 3:
-            s.add(parts[2])
-    return s
+        if len(parts) < 4:
+            continue
+        _ts, u, item, f = parts[0], parts[1], parts[2], parts[3]
+        if str(u) == str(user_id) and f == feed:
+            out.add(item)
+    return out
 
 
-def save_posted(item_id):
-    if not POSTED.exists():
-        POSTED.write_text("timestamp\tuser\titem\tfeed\n", encoding="utf-8")
-
-    with POSTED.open("a", encoding="utf-8") as f:
-        f.write(f"{datetime.utcnow().isoformat()}\t0\t{item_id}\tfeed_a_video\n")
+def _recency_score(age_h: float) -> float:
+    return RECENCY_K * math.exp(-age_h / RECENCY_TAU_H)
 
 
-# ---------- CORE ----------
-def collect_candidates():
+def rank_top_n(user_id: int, category: str, n: int, *, feed: str = "feed_a_video") -> List[RankedItem]:
+    if category != CAT_A_VIDEO:
+        return []
 
-    items = []
+    now = _now_utc()
+    cut = now - timedelta(hours=MAX_AGE_HOURS)
+    posted = _load_posted_set(user_id, feed)
 
-    for p in RAW_DIR.rglob("*.mp4"):
+    items: List[RankedItem] = []
 
-        meta = read_meta(p)
+    for p in _iter_video_files():
+        item_id = p.relative_to(RAW_DIR).as_posix()
+        if item_id in posted:
+            continue
+
+        meta = _read_meta(p)
         if not meta:
             continue
 
-        dt = parse_dt(meta.get("tg_date",""))
-        if not dt:
+        tg_dt = _parse_iso((meta.get("tg_date") or "").strip())
+        if not tg_dt:
+            continue
+        if tg_dt < cut:
             continue
 
-        # AUDIO FILTER
-        if not has_audio(p):
+        # фильтр "без звука"
+        if not _has_audio_cached(p, meta):
             continue
 
-        item_id = p.relative_to(RAW_DIR).as_posix()
+        age_h = max(0.0, (now - tg_dt).total_seconds() / 3600.0)
+        score = _recency_score(age_h)
 
-        score = dt.timestamp()
-
-        items.append(Item(
-            item_id=item_id,
-            abs_path=p,
-            tg_date=dt,
-            score=score
-        ))
-
-    return items
-
-
-def rank_top_n(user_id, category, n, feed="feed_a_video"):
-
-    items = collect_candidates()
-
-    posted = load_posted()
-
-    items = [i for i in items if i.item_id not in posted]
+        items.append(
+            RankedItem(
+                item_id=item_id,
+                abs_path=str(p),
+                score=float(score),
+                tg_date_iso=tg_dt.isoformat(),
+                src=(meta.get("src") or "UNKNOWN"),
+            )
+        )
 
     items.sort(key=lambda x: x.score, reverse=True)
-
-    top = items[:n]
-
-    for i in top:
-        save_posted(i.item_id)
-
-    return top
+    return items[: max(0, n)]
