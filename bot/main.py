@@ -16,17 +16,26 @@ from config import BOT_TOKEN, FEEDBACK_FILE
 from ingest_runner import ingest_hours
 
 
+# --- filesystem bootstrap ---
 os.makedirs("/data", exist_ok=True)
+
+POSTED_FILE = "/data/a_posted_master.tsv"
 
 if not os.path.exists(FEEDBACK_FILE):
     with open(FEEDBACK_FILE, "w", encoding="utf-8") as f:
         f.write("timestamp\tuser\titem\taction\n")
 
+if not os.path.exists(POSTED_FILE):
+    with open(POSTED_FILE, "w", encoding="utf-8") as f:
+        f.write("timestamp\tuser\titem\tfeed\n")
 
+
+# --- bot core ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
+# --- ingest commands ---
 @dp.message(Command("ingest12"))
 async def cmd_ingest12(message: Message):
     await message.answer("⏳ Запускаю ingest за 12 часов...")
@@ -41,17 +50,19 @@ async def cmd_ingest24(message: Message):
     await message.answer("✅ Ingest за 24 часа завершён.")
 
 
+# --- start / health ---
 @dp.message(Command("start"))
 async def start_handler(message: Message):
     await message.answer("Бот запущен и работает.")
 
 
+# --- feedback UI ---
 def feedback_keyboard(item_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="👍", callback_data=f"like:{item_id}"),
-                InlineKeyboardButton(text="👎", callback_data=f"skip:{item_id}"),
+                InlineKeyboardButton(text="👎", callback_data=f"dislike:{item_id}"),
                 InlineKeyboardButton(text="🚫", callback_data=f"ban:{item_id}"),
             ]
         ]
@@ -78,23 +89,34 @@ async def feedback_handler(callback: types.CallbackQuery):
     await callback.answer(f"Сохранено: {action}")
 
 
+def mark_posted(user_id: int, item_id: str, feed: str):
+    ts = datetime.utcnow().isoformat()
+    with open(POSTED_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{ts}\t{user_id}\t{item_id}\t{feed}\n")
+
+
+# --- feed ---
 @dp.message(Command("feed_a_video"))
 async def feed_a_video_handler(message: Message):
+    feed_name = "feed_a_video"
     items = rank_top_n(
         user_id=message.from_user.id,
         category=CAT_A_VIDEO,
-        n=20
+        n=20,
+        feed=feed_name,
     )
 
     if not items:
-        await message.answer("Нет видео")
+        await message.answer("Нет новых видео (всё уже показывалось).")
         return
 
     for item in items:
         video = FSInputFile(item.abs_path)
         await message.answer_video(video, reply_markup=feedback_keyboard(item.item_id))
+        mark_posted(message.from_user.id, item.item_id, feed_name)
 
 
+# --- main ---
 async def main():
     await dp.start_polling(bot)
 
