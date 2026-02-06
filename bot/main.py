@@ -10,6 +10,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+from aiogram.types.input_file import FSInputFile
 
 from config import BOT_TOKEN, FEEDBACK_FILE
 from ingest_runner import ingest_hours
@@ -97,7 +98,8 @@ async def feed_a_video_handler(message: Message):
         return
 
     for item in items:
-        await message.answer_video(open(item.abs_path, "rb"), reply_markup=feedback_keyboard(item.item_id))
+        video = FSInputFile(item.abs_path)
+        await message.answer_video(video, reply_markup=feedback_keyboard(item.item_id))
 
 
 # --- main ---
