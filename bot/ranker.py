@@ -17,12 +17,19 @@ CAT_A_VIDEO = "A_VIDEO"
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 
-# Берём реально свежие посты
 MAX_AGE_HOURS = 24.0
 
-# recency по tg_date
 RECENCY_K = 2.0
 RECENCY_TAU_H = 12.0
+
+# реклама/казино и типичные маркеры
+AD_KEYWORDS = {
+    "казино", "casino", "ставк", "ставка", "bet", "bonus", "бонус", "промо", "promo",
+    "реклама", "advert", "advertising", "ads", "ad:",
+    "промокод", "promo code", "промо-код",
+    "подпиш", "подпис", "канал", "t.me/", "@", "телеграм",
+    "инвест", "crypto", "крипто", "трейд", "trading",
+}
 
 
 @dataclass(frozen=True)
@@ -83,10 +90,6 @@ def _write_meta(p: Path, meta: dict) -> None:
 
 
 def _ffprobe_has_audio(p: Path) -> Optional[bool]:
-    """
-    True/False if удалось проверить.
-    None если ffprobe не доступен/ошибка запуска.
-    """
     try:
         out = subprocess.check_output(
             ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "json", str(p)],
@@ -99,11 +102,6 @@ def _ffprobe_has_audio(p: Path) -> Optional[bool]:
 
 
 def _has_audio_cached(p: Path, meta: dict) -> bool:
-    """
-    Жёсткий фильтр: если точно знаем что аудио нет -> False.
-    Если знаем что есть -> True.
-    Если не смогли проверить -> True (не режем пул из-за проблем ffprobe).
-    """
     if "has_audio" in meta:
         return bool(meta["has_audio"])
 
@@ -116,11 +114,13 @@ def _has_audio_cached(p: Path, meta: dict) -> bool:
     return bool(res)
 
 
+def _looks_like_ad(meta: dict) -> bool:
+    cap = (meta.get("caption") or "")
+    s = cap.lower()
+    return any(k in s for k in AD_KEYWORDS)
+
+
 def _load_posted_set(user_id: int, feed: str) -> Set[str]:
-    """
-    Ожидаем формат /data/a_posted_master.tsv:
-      timestamp \t user \t item \t feed
-    """
     if not POSTED_TSV.exists():
         return set()
 
@@ -161,12 +161,14 @@ def rank_top_n(user_id: int, category: str, n: int, *, feed: str = "feed_a_video
             continue
 
         tg_dt = _parse_iso((meta.get("tg_date") or "").strip())
-        if not tg_dt:
-            continue
-        if tg_dt < cut:
+        if not tg_dt or tg_dt < cut:
             continue
 
-        # фильтр "без звука"
+        # anti-ad by caption
+        if _looks_like_ad(meta):
+            continue
+
+        # no-audio filter
         if not _has_audio_cached(p, meta):
             continue
 
