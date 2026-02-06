@@ -16,7 +16,6 @@ from config import BOT_TOKEN, FEEDBACK_FILE
 from ingest_runner import ingest_hours
 
 
-# --- filesystem bootstrap ---
 os.makedirs("/data", exist_ok=True)
 
 if not os.path.exists(FEEDBACK_FILE):
@@ -24,12 +23,10 @@ if not os.path.exists(FEEDBACK_FILE):
         f.write("timestamp\tuser\titem\taction\n")
 
 
-# --- bot core ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-# --- ingest commands ---
 @dp.message(Command("ingest12"))
 async def cmd_ingest12(message: Message):
     await message.answer("⏳ Запускаю ingest за 12 часов...")
@@ -44,13 +41,11 @@ async def cmd_ingest24(message: Message):
     await message.answer("✅ Ingest за 24 часа завершён.")
 
 
-# --- start / health ---
 @dp.message(Command("start"))
 async def start_handler(message: Message):
     await message.answer("Бот запущен и работает.")
 
 
-# --- feedback UI ---
 def feedback_keyboard(item_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -71,7 +66,6 @@ async def test_handler(message: Message):
 
 @dp.callback_query()
 async def feedback_handler(callback: types.CallbackQuery):
-    # expected: "like:<id>", "skip:<id>", "ban:<id>"
     action, item_id = callback.data.split(":", 1)
 
     user = callback.from_user.id
@@ -84,13 +78,12 @@ async def feedback_handler(callback: types.CallbackQuery):
     await callback.answer(f"Сохранено: {action}")
 
 
-# --- feed ---
 @dp.message(Command("feed_a_video"))
 async def feed_a_video_handler(message: Message):
     items = rank_top_n(
         user_id=message.from_user.id,
         category=CAT_A_VIDEO,
-        n=5
+        n=20
     )
 
     if not items:
@@ -102,7 +95,6 @@ async def feed_a_video_handler(message: Message):
         await message.answer_video(video, reply_markup=feedback_keyboard(item.item_id))
 
 
-# --- main ---
 async def main():
     await dp.start_polling(bot)
 
