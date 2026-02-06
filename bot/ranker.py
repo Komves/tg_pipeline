@@ -5,12 +5,13 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
 DEFAULT_DATA_DIR = Path("/data")
 DEFAULT_RAW_DIR = DEFAULT_DATA_DIR / "raw"
 DEFAULT_FEEDBACK_TSV = DEFAULT_DATA_DIR / "a_feedback_master.tsv"
+DEFAULT_POSTED_TSV = DEFAULT_DATA_DIR / "a_posted_master.tsv"
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -21,22 +22,8 @@ CAT_A_MEME = "A_MEME"
 ACTION_WEIGHT = {"like": 1.0, "dislike": -1.0, "ban": -3.0}
 BASE_SCORE = 0.0
 
-# сильнее упор на свежесть
 RECENCY_K = 1.25
-RECENCY_TAU_H = 18.0  # ~1 день
-
-AD_KEYWORDS = {
-    "казино", "casino", "ставк", "bet", "bonus", "бонус", "промо", "promo",
-    "реклама", "reklama", "ad", "ads", "sale", "скидк", "discount",
-    "t.me/", "tg://", "подпиш", "подпис", "канал", "channel",
-}
-
-# быстрый анти-треш/анти-"кошечки/дети" (по имени файла/пути)
-BORING_KEYWORDS = {
-    "cat", "cats", "kitten", "kitty", "кот", "коты", "котик", "котики", "кошк", "котён",
-    "dog", "dogs", "puppy", "пес", "пёс", "псы", "собак", "щен",
-    "baby", "babies", "kid", "kids", "child", "children", "ребен", "ребён", "дети", "малыш",
-}
+RECENCY_TAU_H = 18.0
 
 
 @dataclass(frozen=True)
@@ -138,6 +125,39 @@ def build_user_ban_set(
     return bans
 
 
+def load_posted_set(
+    user_id: int,
+    feed: str,
+    posted_tsv: Path = DEFAULT_POSTED_TSV,
+) -> Set[str]:
+    """
+    Reads /data/a_posted_master.tsv:
+      timestamp \t user_id \t item_id \t feed
+    Returns set of item_id already posted to this user for this feed.
+    """
+    if not posted_tsv.exists():
+        return set()
+
+    out: Set[str] = set()
+    with posted_tsv.open("r", encoding="utf-8") as f:
+        reader = csv.reader(f, delimiter="\t")
+        for parts in reader:
+            if not parts:
+                continue
+            if parts[0].strip().lower() == "timestamp":
+                continue
+            if len(parts) < 4:
+                continue
+            _ts, u_s, item_id, feed_s = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3].strip()
+            try:
+                u = int(u_s)
+            except Exception:
+                continue
+            if u == user_id and feed_s == feed:
+                out.add(item_id)
+    return out
+
+
 def _recency_boost(abs_path: Path, now: datetime) -> float:
     try:
         mtime = datetime.fromtimestamp(abs_path.stat().st_mtime, tz=timezone.utc)
@@ -147,27 +167,15 @@ def _recency_boost(abs_path: Path, now: datetime) -> float:
         return 0.0
 
 
-def _contains_any(s: str, keys: set) -> bool:
-    return any(k in s for k in keys)
-
-
-def _looks_like_ad(p: Path) -> bool:
-    s = p.as_posix().lower()
-    return _contains_any(s, AD_KEYWORDS)
-
-
-def _looks_boring(p: Path) -> bool:
-    s = p.as_posix().lower()
-    return _contains_any(s, BORING_KEYWORDS)
-
-
 def rank_top_n(
     user_id: int,
     category: str,
     n: int,
     *,
+    feed: str = "feed_a_video",
     raw_dir: Path = DEFAULT_RAW_DIR,
     feedback_tsv: Path = DEFAULT_FEEDBACK_TSV,
+    posted_tsv: Path = DEFAULT_POSTED_TSV,
 ) -> List[RankedItem]:
     now = _now_utc()
 
@@ -177,6 +185,7 @@ def rank_top_n(
 
     user_taste = taste_idx.get(user_id, {})
     user_bans = ban_idx.get(user_id, set())
+    already_posted = load_posted_set(user_id=user_id, feed=feed, posted_tsv=posted_tsv)
 
     candidates: List[RankedItem] = []
     for p in _iter_media_files(raw_dir):
@@ -184,13 +193,11 @@ def rank_top_n(
         if cat != category:
             continue
 
-        if _looks_like_ad(p):
-            continue
-        if _looks_boring(p):
-            continue
-
         item_id = _item_id_from_abs_path(raw_dir, p)
+
         if item_id in user_bans:
+            continue
+        if item_id in already_posted:
             continue
 
         taste_score = user_taste.get(item_id, 0.0)
@@ -213,4 +220,3 @@ def rank_top_n(
 
     candidates.sort(key=lambda x: x.score, reverse=True)
     return candidates[: max(0, n)]
-
