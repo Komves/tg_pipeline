@@ -1,3 +1,4 @@
+from ranker import rank_top_n, CAT_A_VIDEO
 import asyncio
 import os
 from datetime import datetime
@@ -80,6 +81,23 @@ async def feedback_handler(callback: types.CallbackQuery):
         f.write(line)
 
     await callback.answer(f"Сохранено: {action}")
+
+
+# --- feed ---
+@dp.message(Command("feed_a_video"))
+async def feed_a_video_handler(message: Message):
+    items = rank_top_n(
+        user_id=message.from_user.id,
+        category=CAT_A_VIDEO,
+        n=5
+    )
+
+    if not items:
+        await message.answer("Нет видео")
+        return
+
+    for item in items:
+        await message.answer_video(open(item.abs_path, "rb"), reply_markup=feedback_keyboard(item.item_id))
 
 
 # --- main ---
