@@ -23,7 +23,17 @@ ACTION_WEIGHT = {"like": 1.0, "dislike": -1.0, "ban": -3.0}
 BASE_SCORE = 0.0
 
 RECENCY_K = 1.25
-RECENCY_TAU_H = 18.0
+RECENCY_TAU_H = 18.0  # ~1 day
+
+# --- hard freshness cutoff for A_VIDEO (download time / mtime) ---
+A_VIDEO_MAX_AGE_HOURS = 24.0
+
+# --- anti-ad keywords (path/filename heuristic) ---
+AD_KEYWORDS = {
+    "казино", "casino", "ставк", "bet", "bonus", "бонус", "промо", "promo",
+    "реклама", "reklama", "ad", "ads", "sale", "скидк", "discount",
+    "t.me/", "tg://", "подпиш", "подпис", "канал", "channel",
+}
 
 
 @dataclass(frozen=True)
@@ -130,11 +140,6 @@ def load_posted_set(
     feed: str,
     posted_tsv: Path = DEFAULT_POSTED_TSV,
 ) -> Set[str]:
-    """
-    Reads /data/a_posted_master.tsv:
-      timestamp \t user_id \t item_id \t feed
-    Returns set of item_id already posted to this user for this feed.
-    """
     if not posted_tsv.exists():
         return set()
 
@@ -167,6 +172,19 @@ def _recency_boost(abs_path: Path, now: datetime) -> float:
         return 0.0
 
 
+def _age_hours(abs_path: Path, now: datetime) -> Optional[float]:
+    try:
+        mtime = datetime.fromtimestamp(abs_path.stat().st_mtime, tz=timezone.utc)
+        return max(0.0, (now - mtime).total_seconds() / 3600.0)
+    except Exception:
+        return None
+
+
+def _looks_like_ad(p: Path) -> bool:
+    s = p.as_posix().lower()
+    return any(k in s for k in AD_KEYWORDS)
+
+
 def rank_top_n(
     user_id: int,
     category: str,
@@ -192,6 +210,15 @@ def rank_top_n(
         cat = _category_for_path(p)
         if cat != category:
             continue
+
+        if _looks_like_ad(p):
+            continue
+
+        # hard freshness cutoff only for A_VIDEO
+        if cat == CAT_A_VIDEO:
+            ah = _age_hours(p, now)
+            if ah is not None and ah > A_VIDEO_MAX_AGE_HOURS:
+                continue
 
         item_id = _item_id_from_abs_path(raw_dir, p)
 
