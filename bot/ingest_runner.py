@@ -5,138 +5,116 @@ from pathlib import Path
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
-from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 
-# ========= CONFIG =========
+
+# ========= paths / repo layout =========
+# This file is inside: <repo_root>/bot/ingest_runner.py
+# Render Root Directory is set to "bot", so cwd == <repo_root>/bot.
+# Therefore we resolve repo root via __file__.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
-SESSION_PATH = DATA_DIR / "tg_session"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-API_ID = int(os.environ["TG_API_ID"])
-API_HASH = os.environ["TG_API_HASH"]
+# Telethon session base name (Telethon adds ".session")
+# We use a base name inside /data, e.g. "/data/tg_session"
+SESSION_BASE = os.getenv("TG_SESSION", str(DATA_DIR / "tg_session"))
 
-SOURCES_FILE = Path("tg_pipeline") / "sources.txt"
+# sources live outside bot/ at: <repo_root>/tg_pipeline/sources.txt
+SOURCES_FILE = REPO_ROOT / "tg_pipeline" / "sources.txt"
 
+# where to store downloaded media (Render disk)
 RAW_DIR = DATA_DIR / "raw"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 
-MOSCOW_TZ = timezone(timedelta(hours=3))
+
+# ========= env / credentials =========
+API_ID = int(os.environ["TG_API_ID"])
+API_HASH = os.environ["TG_API_HASH"]
 
 
-# ========= UTIL =========
-
-def load_sources():
+# ========= helpers =========
+def load_sources() -> list[str]:
     if not SOURCES_FILE.exists():
-        raise RuntimeError(f"sources.txt not found at {SOURCES_FILE}")
+        raise RuntimeError(f"sources.txt not found: {SOURCES_FILE}")
 
-    sources = []
-    with open(SOURCES_FILE, "r", encoding="utf-8") as f:
+    sources: list[str] = []
+    with SOURCES_FILE.open("r", encoding="utf-8") as f:
         for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
+            s = line.strip()
+            if not s or s.startswith("#"):
                 continue
-            sources.append(line)
-
+            sources.append(s)
     return sources
 
 
-def get_cutoff(hours: int):
-    now = datetime.now(timezone.utc)
-    return now - timedelta(hours=hours)
+def safe_channel_dir(name: str) -> Path:
+    safe = name.strip().replace("@", "").replace("/", "_").replace("\\", "_")
+    p = RAW_DIR / safe
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
-def get_channel_dir(channel: str):
-    safe = channel.replace("@", "").replace("/", "_")
-    path = RAW_DIR / safe
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def cutoff_utc(hours: int) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(hours=hours)
 
 
-async def save_message_media(client, message, channel_dir):
-    if not message.media:
+async def download_media(client: TelegramClient, message, channel_dir: Path) -> None:
+    if not getattr(message, "media", None):
         return
-
     try:
-        filename = f"{message.id}"
-        await client.download_media(
-            message.media,
-            file=channel_dir / filename
-        )
+        # Telethon will choose proper extension; we only pass base path
+        target = channel_dir / f"{message.id}"
+        await client.download_media(message.media, file=str(target))
     except Exception as e:
-        print(f"media download error: {e}")
+        print(f"[media] download error msg_id={getattr(message, 'id', '?')}: {e}")
 
 
-# ========= CORE INGEST =========
-
-async def ingest_hours(hours: int):
-
-    cutoff = get_cutoff(hours)
+# ========= core =========
+async def ingest_hours(hours: int) -> None:
     sources = load_sources()
+    cutoff = cutoff_utc(hours)
 
-    print(f"[INGEST] hours={hours}, sources={len(sources)}")
+    print(f"[INGEST] hours={hours} sources={len(sources)}")
+    print(f"[INGEST] sources_file={SOURCES_FILE}")
+    print(f"[INGEST] data_dir={DATA_DIR} raw_dir={RAW_DIR}")
+    print(f"[INGEST] session_base={SESSION_BASE}")
 
-    async with TelegramClient(
-        str(SESSION_PATH),
-        API_ID,
-        API_HASH
-    ) as client:
-
-        for source in sources:
-
-            try:
-                entity = await client.get_entity(source)
-            except Exception as e:
-                print(f"[ERROR] entity {source}: {e}")
-                continue
-
-            channel_dir = get_channel_dir(source)
-
+    async with TelegramClient(SESSION_BASE, API_ID, API_HASH) as client:
+        for src in sources:
+            channel_dir = safe_channel_dir(src)
             count = 0
 
             try:
-                async for message in client.iter_messages(
+                entity = await client.get_entity(src)
+
+                # reverse=True yields messages from oldest->newest within offset window
+                async for msg in client.iter_messages(
                     entity,
                     offset_date=cutoff,
-                    reverse=True
+                    reverse=True,
                 ):
-
-                    if not message.media:
+                    if not getattr(msg, "media", None):
                         continue
-
-                    await save_message_media(client, message, channel_dir)
-
+                    await download_media(client, msg, channel_dir)
                     count += 1
 
             except FloodWaitError as e:
-                print(f"[FloodWait] sleeping {e.seconds}s")
+                print(f"[FloodWait] {src}: sleeping {e.seconds}s")
                 await asyncio.sleep(e.seconds)
 
             except Exception as e:
-                print(f"[ERROR] ingest {source}: {e}")
+                print(f"[ERROR] {src}: {e}")
 
-            print(f"[OK] {source}: {count} items")
-
-
-# ========= PUBLIC FUNCTIONS =========
-
-async def ingest_last_24h():
-    await ingest_hours(24)
+            print(f"[OK] {src}: downloaded={count}")
 
 
-async def ingest_last_12h():
-    await ingest_hours(12)
-
-
-# ========= CLI MODE =========
-
+# ========= CLI (optional) =========
 if __name__ == "__main__":
-
     import sys
 
-    hours = 24
-
+    h = 24
     if len(sys.argv) > 1:
-        hours = int(sys.argv[1])
+        h = int(sys.argv[1])
 
-    asyncio.run(ingest_hours(hours))
-
+    asyncio.run(ingest_hours(h))
