@@ -1,4 +1,3 @@
-# bot/ranker.py
 from __future__ import annotations
 
 import csv
@@ -8,42 +7,38 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-# --- Canonical paths (match your brief) ---
+
 DEFAULT_DATA_DIR = Path("/data")
 DEFAULT_RAW_DIR = DEFAULT_DATA_DIR / "raw"
 DEFAULT_FEEDBACK_TSV = DEFAULT_DATA_DIR / "a_feedback_master.tsv"
 
-# --- Minimal media type mapping ---
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
-# Category names (keep simple for now)
 CAT_A_VIDEO = "A_VIDEO"
 CAT_A_MEME = "A_MEME"
 
-# Feedback weights (tune later)
-ACTION_WEIGHT = {
-    "like": 1.0,
-    "dislike": -1.0,
-    "ban": -3.0,
-}
-
-# If item has no feedback, it still can appear via recency
+ACTION_WEIGHT = {"like": 1.0, "dislike": -1.0, "ban": -3.0}
 BASE_SCORE = 0.0
 
-# Recency boost params
-# score += RECENCY_K * exp(-age_hours / RECENCY_TAU_H)
 RECENCY_K = 0.35
-RECENCY_TAU_H = 72.0  # ~3 days half-ish decay
+RECENCY_TAU_H = 72.0
+
+# --- minimal anti-ad keywords (filename / path heuristic) ---
+AD_KEYWORDS = {
+    "казино", "casino", "ставк", "bet", "bonus", "бонус", "промо", "promo",
+    "реклама", "reklama", "ad", "ads", "sale", "скидк", "discount",
+    "t.me/", "tg://", "подпиш", "подпис", "канал", "channel",
+}
 
 
 @dataclass(frozen=True)
 class RankedItem:
-    item_id: str                 # stable: relative path from /data/raw
-    abs_path: str                # full path for sending
-    category: str                # A_VIDEO / A_MEME
-    score: float                 # final score
-    mtime_iso: str               # for debug / logging
+    item_id: str
+    abs_path: str
+    category: str
+    score: float
+    mtime_iso: str
 
 
 def _now_utc() -> datetime:
@@ -51,7 +46,6 @@ def _now_utc() -> datetime:
 
 
 def _safe_parse_iso(ts: str) -> Optional[datetime]:
-    # Accept "2026-02-06T07:12:33" (no tz) or with tz
     ts = (ts or "").strip()
     if not ts:
         return None
@@ -67,8 +61,6 @@ def _safe_parse_iso(ts: str) -> Optional[datetime]:
 def _iter_media_files(raw_dir: Path) -> Iterable[Path]:
     if not raw_dir.exists():
         return
-    # RAW canonical structure: /data/raw/MIX/<channel>/<file>
-    # But we don't hard-require MIX – we just walk everything under raw/
     for p in raw_dir.rglob("*"):
         if p.is_file():
             ext = p.suffix.lower()
@@ -86,20 +78,13 @@ def _category_for_path(p: Path) -> Optional[str]:
 
 
 def _item_id_from_abs_path(raw_dir: Path, abs_path: Path) -> str:
-    # Stable ID = relative path under /data/raw
     rel = abs_path.relative_to(raw_dir)
-    # Normalize to POSIX style for stable IDs across OS
     return rel.as_posix()
 
 
 def load_feedback(
     feedback_tsv: Path = DEFAULT_FEEDBACK_TSV,
 ) -> List[Tuple[Optional[datetime], int, str, str]]:
-    """
-    Returns list of (timestamp_utc|None, user_id, item_id, action)
-    TSV format (canonical):
-        timestamp    user_id    item_id    action
-    """
     if not feedback_tsv.exists():
         return []
 
@@ -109,7 +94,6 @@ def load_feedback(
         for parts in reader:
             if not parts:
                 continue
-            # tolerate header row
             if parts[0].strip().lower() == "timestamp":
                 continue
             if len(parts) < 4:
@@ -127,9 +111,6 @@ def load_feedback(
 def build_user_taste_index(
     feedback_rows: List[Tuple[Optional[datetime], int, str, str]]
 ) -> Dict[int, Dict[str, float]]:
-    """
-    user_id -> item_id -> cumulative weight
-    """
     idx: Dict[int, Dict[str, float]] = {}
     for _dt, user_id, item_id, action in feedback_rows:
         w = ACTION_WEIGHT.get(action, 0.0)
@@ -143,9 +124,6 @@ def build_user_taste_index(
 def build_user_ban_set(
     feedback_rows: List[Tuple[Optional[datetime], int, str, str]]
 ) -> Dict[int, set]:
-    """
-    user_id -> set(item_id) that is banned by this user
-    """
     bans: Dict[int, set] = {}
     for _dt, user_id, item_id, action in feedback_rows:
         if action == "ban":
@@ -162,20 +140,19 @@ def _recency_boost(abs_path: Path, now: datetime) -> float:
         return 0.0
 
 
+def _looks_like_ad(p: Path) -> bool:
+    s = p.as_posix().lower()
+    return any(k in s for k in AD_KEYWORDS)
+
+
 def rank_top_n(
     user_id: int,
     category: str,
     n: int,
     *,
-    data_dir: Path = DEFAULT_DATA_DIR,
     raw_dir: Path = DEFAULT_RAW_DIR,
     feedback_tsv: Path = DEFAULT_FEEDBACK_TSV,
 ) -> List[RankedItem]:
-    """
-    Minimal ranker:
-      score = BASE_SCORE + user_item_weight + recency_boost
-    Excludes items banned by user.
-    """
     now = _now_utc()
 
     feedback = load_feedback(feedback_tsv)
@@ -189,6 +166,9 @@ def rank_top_n(
     for p in _iter_media_files(raw_dir):
         cat = _category_for_path(p)
         if cat != category:
+            continue
+
+        if _looks_like_ad(p):
             continue
 
         item_id = _item_id_from_abs_path(raw_dir, p)
@@ -215,21 +195,3 @@ def rank_top_n(
 
     candidates.sort(key=lambda x: x.score, reverse=True)
     return candidates[: max(0, n)]
-
-
-def debug_explain_top(
-    user_id: int,
-    category: str,
-    n: int,
-    *,
-    raw_dir: Path = DEFAULT_RAW_DIR,
-    feedback_tsv: Path = DEFAULT_FEEDBACK_TSV,
-) -> str:
-    """
-    Human-readable explanation (for /test or logs).
-    """
-    items = rank_top_n(user_id, category, n, raw_dir=raw_dir, feedback_tsv=feedback_tsv)
-    lines = [f"TOP {n} for user={user_id} cat={category}"]
-    for i, it in enumerate(items, 1):
-        lines.append(f"{i:02d}) score={it.score:.4f} mtime={it.mtime_iso} id={it.item_id}")
-    return "\n".join(lines)
