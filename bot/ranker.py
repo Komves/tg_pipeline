@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import math
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Optional, Set, Tuple
 
 
 DATA_DIR = Path("/data")
@@ -17,20 +16,17 @@ POSTED_TSV = DATA_DIR / "a_posted_master.tsv"
 FEEDBACK_TSV = DATA_DIR / "a_feedback_master.tsv"
 
 CAT_A_VIDEO = "A_VIDEO"
-
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 
 MAX_AGE_HOURS = 24.0
-
 RECENCY_K = 2.0
 RECENCY_TAU_H = 12.0
 
-# реклама/казино и типичные маркеры (по caption)
+# реклама по caption (минимальный набор, чтобы не зарезать нормальные)
 AD_KEYWORDS = {
-    "казино", "casino", "ставк", "ставка", "bet", "bonus", "бонус", "промо", "promo",
-    "реклама", "advert", "advertising", "ads", "ad:",
-    "промокод", "promo code", "промо-код",
-    "инвест", "crypto", "крипто", "трейд", "trading",
+    "казино", "casino", "ставк", "ставка", "bet", "bonus", "бонус",
+    "промокод", "promo", "промо",
+    "реклама", "advert", "advertising",
 }
 
 
@@ -91,6 +87,13 @@ def _write_meta(p: Path, meta: dict) -> None:
         pass
 
 
+def _looks_like_ad(meta: dict) -> bool:
+    cap = (meta.get("caption") or "")
+    s = cap.lower()
+    return any(k in s for k in AD_KEYWORDS)
+
+
+# ---------- audio (cached) ----------
 def _ffprobe_has_audio(p: Path) -> Optional[bool]:
     try:
         out = subprocess.check_output(
@@ -104,13 +107,12 @@ def _ffprobe_has_audio(p: Path) -> Optional[bool]:
 
 
 def _has_audio_cached(p: Path, meta: dict) -> bool:
-    # если уже знаем — используем
     if "has_audio" in meta:
         return bool(meta["has_audio"])
 
     res = _ffprobe_has_audio(p)
     if res is None:
-        # ffprobe недоступен/ошибка — не режем пул
+        # если ffprobe недоступен — не режем пул
         return True
 
     meta["has_audio"] = bool(res)
@@ -118,41 +120,66 @@ def _has_audio_cached(p: Path, meta: dict) -> bool:
     return bool(res)
 
 
-def _looks_like_ad(meta: dict) -> bool:
-    cap = (meta.get("caption") or "")
-    s = cap.lower()
-    return any(k in s for k in AD_KEYWORDS)
-
-
-def _md5_file(path: Path, block_size: int = 1024 * 1024) -> str:
-    h = hashlib.md5()
-    with path.open("rb") as f:
-        while True:
-            b = f.read(block_size)
-            if not b:
-                break
-            h.update(b)
-    return h.hexdigest()
-
-
-def _md5_cached(p: Path, meta: dict) -> Optional[str]:
+# ---------- perceptual dedupe (dhash) ----------
+def _run_ffmpeg_frame(p: Path) -> Optional[bytes]:
     """
-    Кэшируем md5 прямо в meta.json, чтобы не считать каждый раз.
+    Берём кадр на 1-й секунде, гоним в 9x8 grayscale raw.
+    Это даёт 72 байта (9*8). Потом делаем dhash 8x8 = 64 бита.
     """
-    m = meta.get("md5")
-    if isinstance(m, str) and len(m) == 32:
-        return m
-
     try:
-        m = _md5_file(p)
+        # -ss 1.0: кадр не с самого начала (часто заставки/логотипы)
+        # scale=9:8,format=gray -> rawvideo
+        cmd = [
+            "ffmpeg",
+            "-v", "error",
+            "-ss", "1.0",
+            "-i", str(p),
+            "-frames:v", "1",
+            "-vf", "scale=9:8,format=gray",
+            "-f", "rawvideo",
+            "pipe:1",
+        ]
+        return subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
     except Exception:
         return None
 
-    meta["md5"] = m
-    _write_meta(p, meta)
-    return m
+
+def _dhash_from_gray9x8(buf: bytes) -> Optional[str]:
+    if not buf or len(buf) < 72:
+        return None
+    # rows 8, cols 9
+    # dhash: сравниваем пиксель (x) с (x+1) по 8x8
+    bits = []
+    idx = 0
+    for y in range(8):
+        row = list(buf[idx:idx+9])
+        idx += 9
+        for x in range(8):
+            bits.append(1 if row[x] > row[x+1] else 0)
+    # 64 bits -> hex 16 chars
+    h = 0
+    for b in bits:
+        h = (h << 1) | b
+    return f"{h:016x}"
 
 
+def _phash_cached(p: Path, meta: dict) -> Optional[str]:
+    """
+    Кэшируем dhash в meta.json как "dhash".
+    """
+    v = meta.get("dhash")
+    if isinstance(v, str) and len(v) == 16:
+        return v
+
+    frame = _run_ffmpeg_frame(p)
+    dh = _dhash_from_gray9x8(frame) if frame else None
+    if dh:
+        meta["dhash"] = dh
+        _write_meta(p, meta)
+    return dh
+
+
+# ---------- posted / feedback ----------
 def _load_posted_set(user_id: int, feed: str) -> Set[str]:
     if not POSTED_TSV.exists():
         return set()
@@ -169,47 +196,69 @@ def _load_posted_set(user_id: int, feed: str) -> Set[str]:
     return out
 
 
-def _load_seen_item_ids_from_feedback(user_id: int) -> Set[str]:
+def _load_seen_ids(user_id: int, feed: str, limit: int = 600) -> List[str]:
     """
-    Любой feedback по item_id означает, что контент уже показывали/трогали.
+    Собираем последние seen item_id из posted+feedback (ограниченно, чтобы не убить CPU).
     """
-    if not FEEDBACK_TSV.exists():
-        return set()
-    out: Set[str] = set()
-    with FEEDBACK_TSV.open("r", encoding="utf-8") as f:
-        r = csv.reader(f, delimiter="\t")
-        for row in r:
-            if not row or (row[0].strip().lower() == "timestamp"):
+    seen: List[str] = []
+
+    # feedback (последние limit)
+    if FEEDBACK_TSV.exists():
+        lines = FEEDBACK_TSV.read_text(encoding="utf-8").splitlines()
+        for line in reversed(lines):
+            if not line.strip() or line.startswith("timestamp"):
                 continue
-            if len(row) < 4:
+            parts = line.split("\t")
+            if len(parts) < 4:
                 continue
-            _ts, u, item, _action = row[0], row[1], row[2], row[3]
+            _ts, u, item, _a = parts[0], parts[1], parts[2], parts[3]
             if str(u) == str(user_id):
-                out.add(item)
+                seen.append(item)
+                if len(seen) >= limit:
+                    break
+
+    # posted (последние limit)
+    if POSTED_TSV.exists() and len(seen) < limit:
+        lines = POSTED_TSV.read_text(encoding="utf-8").splitlines()
+        for line in reversed(lines):
+            if not line.strip() or line.startswith("timestamp"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            _ts, u, item, f = parts[0], parts[1], parts[2], parts[3]
+            if str(u) == str(user_id) and f == feed:
+                seen.append(item)
+                if len(seen) >= limit:
+                    break
+
+    # уникализируем, сохраняя порядок
+    out = []
+    s = set()
+    for x in seen:
+        if x not in s:
+            s.add(x)
+            out.append(x)
     return out
 
 
-def _build_seen_md5(user_id: int, feed: str) -> Set[str]:
+def _build_seen_dhash(user_id: int, feed: str) -> Set[str]:
     """
-    Собираем md5 всех уже показанных/оценённых item_id, чтобы не показывать
-    один и тот же ролик, даже если его репостнули снова.
+    Реально считаем dhash для уже виденных (ограниченно), чтобы репосты/перекоды отсеивались.
     """
-    seen_ids = set()
-    seen_ids |= _load_posted_set(user_id, feed)
-    seen_ids |= _load_seen_item_ids_from_feedback(user_id)
-
-    md5s: Set[str] = set()
+    seen_ids = _load_seen_ids(user_id, feed, limit=600)
+    out: Set[str] = set()
     for item_id in seen_ids:
         p = RAW_DIR / item_id
+        if not p.exists():
+            continue
         meta = _read_meta(p)
         if not meta:
             continue
-        m = meta.get("md5")
-        if isinstance(m, str) and len(m) == 32:
-            md5s.add(m)
-            continue
-        # не считаем md5 для старых items массово — только если нужно
-    return md5s
+        dh = _phash_cached(p, meta)
+        if dh:
+            out.add(dh)
+    return out
 
 
 def _recency_score(age_h: float) -> float:
@@ -224,7 +273,7 @@ def rank_top_n(user_id: int, category: str, n: int, *, feed: str = "feed_a_video
     cut = now - timedelta(hours=MAX_AGE_HOURS)
 
     posted = _load_posted_set(user_id, feed)
-    seen_md5 = _build_seen_md5(user_id, feed)
+    seen_dhash = _build_seen_dhash(user_id, feed)
 
     items: List[RankedItem] = []
 
@@ -247,9 +296,9 @@ def rank_top_n(user_id: int, category: str, n: int, *, feed: str = "feed_a_video
         if not _has_audio_cached(p, meta):
             continue
 
-        # DEDUPE by content (md5)
-        m = _md5_cached(p, meta)
-        if m and m in seen_md5:
+        # dedupe by perceptual hash
+        dh = _phash_cached(p, meta)
+        if dh and dh in seen_dhash:
             continue
 
         age_h = max(0.0, (now - tg_dt).total_seconds() / 3600.0)
