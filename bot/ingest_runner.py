@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -7,47 +8,27 @@ from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 
 
-# ======================
-# Paths / repo layout
-# ======================
-# This file lives at: <repo_root>/bot/ingest_runner.py
-# Render Root Directory is set to "bot", but the full repo is still mounted at:
-# /opt/render/project/src
-# We resolve repo root by going 1 level up from this file.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Persistent disk mount on Render
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 RAW_DIR = DATA_DIR / "raw"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 
-# sources.txt is in repo (NOT on disk)
 SOURCES_FILE = REPO_ROOT / "tg_pipeline" / "sources.txt"
 
 
-# ======================
-# Telethon session
-# ======================
-# ENV may be:
-#   TG_SESSION = "tg_session"  (relative)  -> we force to /data/tg_session
-# or
-#   TG_SESSION = "/data/tg_session" (absolute)
 _session_env = os.getenv("TG_SESSION", "tg_session").strip()
 if _session_env.startswith("/"):
     SESSION_BASE = _session_env
 else:
     SESSION_BASE = str(DATA_DIR / _session_env)
 
-# Telethon credentials
 API_ID = int(os.environ["TG_API_ID"])
 API_HASH = os.environ["TG_API_HASH"]
 
 
-# ======================
-# Helpers
-# ======================
 def load_sources() -> list[str]:
     if not SOURCES_FILE.exists():
         raise RuntimeError(f"sources.txt not found: {SOURCES_FILE}")
@@ -73,19 +54,38 @@ def cutoff_utc(hours: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=hours)
 
 
-async def download_media(client: TelegramClient, msg, channel_dir: Path) -> None:
+def write_meta(media_path: Path, src: str, msg) -> None:
+    meta_path = Path(str(media_path) + ".meta.json")
+    payload = {
+        "tg_date": (msg.date.isoformat() if getattr(msg, "date", None) else None),
+        "msg_id": getattr(msg, "id", None),
+        "src": src,
+        "caption": getattr(msg, "message", None),
+    }
+    try:
+        meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"[meta] error write {meta_path}: {e}")
+
+
+async def download_media(client: TelegramClient, src: str, msg, channel_dir: Path) -> bool:
     if not getattr(msg, "media", None):
-        return
+        return False
     try:
         target = channel_dir / f"{msg.id}"
-        await client.download_media(msg.media, file=str(target))
+        saved = await client.download_media(msg.media, file=str(target))
+        if not saved:
+            return False
+
+        media_path = Path(saved)
+        write_meta(media_path, src, msg)
+        return True
+
     except Exception as e:
-        print(f"[media] error msg_id={getattr(msg, 'id', '?')}: {e}")
+        print(f"[media] error src={src} msg_id={getattr(msg, 'id', '?')}: {e}")
+        return False
 
 
-# ======================
-# Core
-# ======================
 async def ingest_hours(hours: int) -> None:
     sources = load_sources()
     cutoff = cutoff_utc(hours)
@@ -97,14 +97,11 @@ async def ingest_hours(hours: int) -> None:
     print(f"[INGEST] session_base={SESSION_BASE}")
     print(f"[INGEST] sources_count={len(sources)}")
 
-    # IMPORTANT: do NOT use `async with ...` because it may call `start()`
-    # and try to ask for phone/code (impossible on Render), causing EOFError.
     client = TelegramClient(SESSION_BASE, API_ID, API_HASH)
     await client.connect()
 
     try:
-        authorized = await client.is_user_authorized()
-        if not authorized:
+        if not await client.is_user_authorized():
             raise RuntimeError(
                 "Telethon session is NOT authorized.\n"
                 f"Expected session file on disk: {SESSION_BASE}.session\n"
@@ -125,8 +122,9 @@ async def ingest_hours(hours: int) -> None:
                 ):
                     if not getattr(msg, "media", None):
                         continue
-                    await download_media(client, msg, channel_dir)
-                    downloaded += 1
+                    ok = await download_media(client, src, msg, channel_dir)
+                    if ok:
+                        downloaded += 1
 
             except FloodWaitError as e:
                 print(f"[FloodWait] {src}: sleep {e.seconds}s")
@@ -141,9 +139,6 @@ async def ingest_hours(hours: int) -> None:
         await client.disconnect()
 
 
-# ======================
-# CLI (optional)
-# ======================
 if __name__ == "__main__":
     import sys
     h = 24
