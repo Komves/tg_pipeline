@@ -1,4 +1,7 @@
 aiogram==3.24.0
 telethon==1.36.0
 numpy
+pillow
+torch
+open_clip_torch
 
