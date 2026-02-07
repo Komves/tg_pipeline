@@ -1,16 +1,17 @@
 import json
+import os
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional
 
 from nsfw_client import score_image
 
-RAW_DIR = Path("/data/raw")
+RAW = Path(os.getenv("DATA_DIR", "/data")) / "raw"
+TMP = Path("/tmp/nsfw_frames")
+TMP.mkdir(parents=True, exist_ok=True)
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
-FRAME_DIR = Path("/tmp/nsfw_frames")
-FRAME_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _parse_iso(s: str) -> Optional[datetime]:
@@ -23,111 +24,113 @@ def _parse_iso(s: str) -> Optional[datetime]:
         return None
 
 
-def _write_meta(meta_path: Path, j: dict) -> None:
-    meta_path.write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
-
-
-def _extract_one_frame(video_path: Path) -> Optional[Path]:
-    """
-    Extract 1 frame with ffmpeg (lightweight).
-    Writes to /tmp/nsfw_frames/<stem>_nsfw.jpg
-    """
-    out = FRAME_DIR / (video_path.name.replace(video_path.suffix, "") + "_nsfw.jpg")
-    if out.exists() and out.stat().st_size > 0:
-        return out
-
-    # Take a frame at ~1.0 sec (works for short vids too; ffmpeg will pick closest)
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-ss",
-        "1.0",
-        "-i",
-        str(video_path),
-        "-frames:v",
-        "1",
-        "-vf",
-        "scale=640:-2",
-        str(out),
-    ]
+def _read_meta(media_path: Path) -> Optional[dict]:
+    mp = Path(str(media_path) + ".meta.json")
+    if not mp.exists():
+        return None
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return json.loads(mp.read_text(encoding="utf-8"))
     except Exception:
         return None
 
-    if out.exists() and out.stat().st_size > 0:
-        return out
-    return None
+
+def _write_meta(media_path: Path, meta: dict) -> None:
+    mp = Path(str(media_path) + ".meta.json")
+    mp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
 
-def _candidate_videos(hours: int) -> List[Tuple[Path, Path, dict]]:
-    """
-    Return (video_path, meta_path, meta_json) for videos within last <hours>
-    that don't have b_nsfw_score yet.
-    """
-    cut = datetime.now(timezone.utc) - timedelta(hours=hours)
+def _extract_frames(video: Path, out_dir: Path, n: int = 3) -> list[Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # grab n frames evenly (ffmpeg selects by fps; we just sample early)
+    # -frames:v n outputs n images
+    out_pattern = out_dir / (video.stem + "_%02d.jpg")
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-i", str(video),
+        "-vf", "fps=1/2",  # 1 frame per 2 sec
+        "-frames:v", str(n),
+        str(out_pattern),
+    ]
+    subprocess.run(cmd, check=False)
+    frames = sorted(out_dir.glob(video.stem + "_*.jpg"))
+    return frames[:n]
 
-    out = []
-    for v in RAW_DIR.rglob("*"):
-        if not v.is_file():
+
+def _score_video_b(video: Path) -> Optional[float]:
+    frames = _extract_frames(video, TMP, n=3)
+    if not frames:
+        return None
+
+    scores = []
+    for fr in frames:
+        res = score_image(str(fr))
+        if not res:
             continue
-        if v.suffix.lower() not in VIDEO_EXT:
-            continue
 
-        mp = Path(str(v) + ".meta.json")  # <video>.meta.json
-        if not mp.exists():
-            continue
+        # пытаемся достать хоть какой-то score из json
+        # (структуры у разных API отличаются)
+        val = None
+        if isinstance(res, dict):
+            # часто бывает { "results": { "porn": 0.12, ... } } или { "porn": 0.12 }
+            if "porn" in res:
+                val = res.get("porn")
+            elif "results" in res and isinstance(res["results"], dict):
+                val = res["results"].get("porn") or res["results"].get("nsfw")
+            elif "nsfw" in res:
+                val = res.get("nsfw")
 
         try:
-            j = json.loads(mp.read_text(encoding="utf-8"))
+            if val is not None:
+                scores.append(float(val))
         except Exception:
             continue
 
-        if j.get("b_nsfw_score") is not None:
+    if not scores:
+        return None
+    return max(scores)
+
+
+def score_missing_b(hours: int = 72, limit: int = 50) -> int:
+    now = datetime.now(timezone.utc)
+    cut = now - timedelta(hours=hours)
+
+    done = 0
+    scanned = 0
+
+    for p in RAW.rglob("*"):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in VIDEO_EXT:
             continue
 
-        tg = (j.get("tg_date") or "").strip()
+        meta = _read_meta(p)
+        if not meta:
+            continue
+
+        tg = (meta.get("tg_date") or "").strip()
         dt = _parse_iso(tg) if tg else None
         if dt and dt < cut:
             continue
 
-        out.append((v, mp, j))
-    return out
+        if meta.get("b_nsfw_score") is not None:
+            continue
 
+        scanned += 1
+        score = _score_video_b(p)
 
-def score_missing_b(hours: int = 72, limit: int = 3) -> int:
-    """
-    For up to <limit> videos:
-      1) extract 1 frame via ffmpeg
-      2) send to RapidAPI NSFW
-      3) write b_nsfw_score into <video>.meta.json
-    """
-    cands = _candidate_videos(hours)
-    done = 0
+        if score is None:
+            # не смогли скорить — просто пропускаем, не падаем
+            continue
 
-    for v, mp, j in cands:
+        meta["b_nsfw_score"] = score
+        meta["b_nsfw_scored_at"] = datetime.now(timezone.utc).isoformat()
+        _write_meta(p, meta)
+
+        done += 1
         if done >= limit:
             break
 
-        frame = _extract_one_frame(v)
-        if frame is None:
-            continue
-
-        try:
-            nsfw = float(score_image(str(frame)))
-        except Exception as e:
-            print(f"[nsfw] error scoring {frame}: {e}")
-            continue
-
-        j["b_nsfw_score"] = nsfw
-        j["b_nsfw_scored_at"] = datetime.now(timezone.utc).isoformat()
-        j["nsfw_frame"] = str(frame)
-        _write_meta(mp, j)
-
-        done += 1
-        print(f"[nsfw] scored {v.name}: {nsfw:.4f}")
-
+    print(f"[nsfw] scanned={scanned} scored={done}")
     return done
