@@ -2,27 +2,34 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Optional, Set, Tuple
+
+import numpy as np
 
 
 # --- paths ---
-DATA_DIR = Path("/data")
+DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 RAW_DIR = DATA_DIR / "raw"
 POSTED_TSV = DATA_DIR / "a_posted_master.tsv"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PROFILE_PATH = REPO_ROOT / "tg_pipeline" / "out" / "profiles" / "b_profile_ok.npy"
+
+# optional whitelist (can be missing)
 B_SOURCES_FILE = REPO_ROOT / "tg_pipeline" / "b_video_sources.txt"
 
-# --- settings ---
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 
-MAX_AGE_HOURS = 72.0  # B можно шире, чем A
+# Telegram bot API: safe upper bound (real limit varies)
+MAX_BYTES = 45 * 1024 * 1024  # 45MB
 
-RECENCY_K = 2.0
-RECENCY_TAU_H = 18.0
+MAX_AGE_HOURS = 96.0
+RECENCY_K = 1.0
+RECENCY_TAU_H = 24.0
 
 
 @dataclass(frozen=True)
@@ -101,28 +108,52 @@ def _norm_src(s: str) -> str:
     return s.rstrip("/")
 
 
-def _load_whitelist() -> Set[str]:
+def _load_whitelist() -> Optional[Set[str]]:
     if not B_SOURCES_FILE.exists():
-        raise RuntimeError(f"B sources file not found: {B_SOURCES_FILE}")
-
+        return None
     out: Set[str] = set()
     for line in B_SOURCES_FILE.read_text(encoding="utf-8").splitlines():
         t = line.strip()
         if not t or t.startswith("#"):
             continue
         out.add(_norm_src(t))
-
-    if not out:
-        raise RuntimeError(f"B sources file is empty: {B_SOURCES_FILE}")
-
-    return out
+    return out if out else None
 
 
 def _recency_score(age_h: float) -> float:
     return RECENCY_K * math.exp(-age_h / RECENCY_TAU_H)
 
 
+def _load_profile() -> np.ndarray:
+    if not PROFILE_PATH.exists():
+        raise RuntimeError(f"B profile not found: {PROFILE_PATH}")
+    v = np.load(PROFILE_PATH)
+    v = v.astype(np.float32).reshape(-1)
+    v = v / (np.linalg.norm(v) + 1e-12)
+    return v
+
+
+def _load_item_emb(meta: dict) -> Optional[np.ndarray]:
+    """
+    Expect embedding in meta:
+      meta["clip_emb"] = [float,...]
+    If not present -> None
+    """
+    arr = meta.get("clip_emb")
+    if not arr:
+        return None
+    try:
+        v = np.asarray(arr, dtype=np.float32).reshape(-1)
+        if v.size < 32:
+            return None
+        v = v / (np.linalg.norm(v) + 1e-12)
+        return v
+    except Exception:
+        return None
+
+
 def rank_b_videos(user_id: int, n: int, *, feed: str = "feed_b_video") -> List[BVideoItem]:
+    profile = _load_profile()
     whitelist = _load_whitelist()
 
     now = _now_utc()
@@ -132,6 +163,13 @@ def rank_b_videos(user_id: int, n: int, *, feed: str = "feed_b_video") -> List[B
     out: List[BVideoItem] = []
 
     for p in _iter_videos():
+        # size filter for Telegram
+        try:
+            if p.stat().st_size > MAX_BYTES:
+                continue
+        except Exception:
+            continue
+
         item_id = p.relative_to(RAW_DIR).as_posix()
         if item_id in posted:
             continue
@@ -140,22 +178,29 @@ def rank_b_videos(user_id: int, n: int, *, feed: str = "feed_b_video") -> List[B
         if not meta:
             continue
 
+        # optional src whitelist
         src = _norm_src(meta.get("src") or "UNKNOWN")
-        if src not in whitelist:
+        if whitelist is not None and src not in whitelist:
             continue
 
         tg_dt = _parse_iso((meta.get("tg_date") or "").strip())
         if not tg_dt or tg_dt < cut:
             continue
 
+        # MUST have embedding to be "B"
+        emb = _load_item_emb(meta)
+        if emb is None or emb.shape != profile.shape:
+            continue
+
+        sim = float(np.dot(profile, emb))  # cosine similarity
         age_h = max(0.0, (now - tg_dt).total_seconds() / 3600.0)
-        score = _recency_score(age_h)
+        score = sim + _recency_score(age_h)
 
         out.append(
             BVideoItem(
                 item_id=item_id,
                 abs_path=str(p),
-                score=float(score),
+                score=score,
                 tg_date_iso=tg_dt.isoformat(),
                 src=src,
             )

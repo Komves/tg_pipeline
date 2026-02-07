@@ -45,7 +45,7 @@ DAILY_MEMES_N = 30
 MANUAL_MEMES_N = 30
 
 # B VIDEO counts
-MANUAL_B_VIDEO_N = 30
+MANUAL_B_VIDEO_N = 2
 
 # feed names (for posted tracking)
 FEED_MEMES_DAILY = "feed_memes_daily"
