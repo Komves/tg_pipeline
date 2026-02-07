@@ -1,10 +1,10 @@
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import (
     Message,
@@ -26,11 +26,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 POSTED_FILE = DATA_DIR / "a_posted_master.tsv"
 ADMIN_CHAT_FILE = DATA_DIR / "admin_chat_id.txt"
 
-# feedback master (canonical)
 if not Path(FEEDBACK_FILE).exists():
     Path(FEEDBACK_FILE).write_text("timestamp\tuser\titem\taction\n", encoding="utf-8")
 
-# posted log
 if not POSTED_FILE.exists():
     POSTED_FILE.write_text("timestamp\tuser\titem\tfeed\n", encoding="utf-8")
 
@@ -78,8 +76,7 @@ def load_admin_chat() -> int | None:
         return None
 
 
-async def send_with_feedback_video(chat_id: int, abs_path: str, item_id: str, caption: str | None = None) -> None:
-    # telegram wants FSInputFile, not file handle
+async def send_video_with_feedback(chat_id: int, abs_path: str, item_id: str, caption: str | None = None) -> None:
     try:
         media = FSInputFile(abs_path)
         await bot.send_video(
@@ -100,16 +97,16 @@ async def start_handler(message: Message):
     await message.answer("✅ Бот запущен.")
 
 
+@dp.message(Command("set_admin"))
+async def set_admin_handler(message: Message):
+    save_admin_chat(message.chat.id)
+    await message.answer(f"✅ Admin chat сохранён: {message.chat.id}\nУтренний B будет слать в 06:00 МСК.")
+
+
 @dp.message(Command("test"))
 async def test_handler(message: Message):
     item_id = "test_item"
     await message.answer("Тестовый контент", reply_markup=feedback_keyboard(item_id))
-
-
-@dp.message(Command("set_admin"))
-async def set_admin_handler(message: Message):
-    save_admin_chat(message.chat.id)
-    await message.answer(f"✅ Admin chat сохранён: {message.chat.id}\nDaily MEMES будет слать в 06:00 МСК.")
 
 
 # =========================
@@ -134,7 +131,6 @@ async def cmd_ingest24(message: Message):
 # =========================
 @dp.callback_query()
 async def feedback_handler(callback: types.CallbackQuery):
-    # expected: "like:<id>", "skip:<id>", "ban:<id>"
     if not callback.data or ":" not in callback.data:
         await callback.answer("bad callback")
         return
@@ -175,8 +171,7 @@ async def feed_a_video_handler(message: Message):
 
     sent = 0
     for it in items:
-        # it.abs_path, it.item_id expected from your ranker
-        await send_with_feedback_video(message.chat.id, it.abs_path, it.item_id)
+        await send_video_with_feedback(message.chat.id, it.abs_path, it.item_id)
         log_posted(message.from_user.id, it.item_id, "feed_a_video")
         sent += 1
 
@@ -184,44 +179,47 @@ async def feed_a_video_handler(message: Message):
 
 
 # =========================
-# Feed B VIDEO (CLIP by frames -> write clip_emb -> rank by profile)
+# Feed B VIDEO (NSFW API scoring)
 # =========================
-@dp.message(Command("feed_b_video"))
-async def feed_b_video_handler(message: Message):
-    await message.answer("📤 B VIDEO: считаю CLIP-эмбеддинги (кадры) и ранжирую…")
-
-    # 1) embed missing (writes clip_emb into *.meta.json)
+async def _send_b(chat_id: int, user_id: int, n: int, feed: str) -> int:
+    # 1) score fresh B videos (writes b_nsfw_score into meta)
     try:
-        from embed_runner import embed_missing
-        # run CPU-heavy in thread
-        embedded_now = await asyncio.to_thread(embed_missing, 72, 200)
+        from nsfw_runner import score_missing_b
+        scored = await asyncio.to_thread(score_missing_b, 72, 30)
     except Exception as e:
-        await message.answer(f"❌ embedder error: {e}")
-        return
+        await bot.send_message(chat_id, f"❌ B scoring error: {e}")
+        return 0
 
-    # 2) rank B (profile-based)
+    # 2) rank by b_nsfw_score
     try:
         from b_video_ranker import rank_b_videos
-        items = rank_b_videos(user_id=message.from_user.id, n=2, feed="feed_b_video")
+        items = rank_b_videos(user_id=user_id, n=n, feed=feed)
     except Exception as e:
-        await message.answer(f"❌ B ranker error: {e}")
-        return
+        await bot.send_message(chat_id, f"❌ B ranker error: {e}")
+        return 0
 
     if not items:
-        await message.answer(f"Пусто: B VIDEO не найдено. (embedded_now={embedded_now})")
-        return
+        await bot.send_message(chat_id, f"Пусто: B VIDEO не найдено. (scored_now={scored})")
+        return 0
 
     sent = 0
     for it in items:
-        await send_with_feedback_video(message.chat.id, it.abs_path, it.item_id)
-        log_posted(message.from_user.id, it.item_id, "feed_b_video")
+        await send_video_with_feedback(chat_id, it.abs_path, it.item_id, caption=f"B score={it.score:.2f}")
+        log_posted(user_id, it.item_id, feed)
         sent += 1
 
-    await message.answer(f"✅ B VIDEO отправлено: {sent} (embedded_now={embedded_now})")
+    await bot.send_message(chat_id, f"✅ B VIDEO отправлено: {sent} (scored_now={scored})")
+    return sent
+
+
+@dp.message(Command("feed_b_video"))
+async def feed_b_video_handler(message: Message):
+    await message.answer("📤 B VIDEO: скорю через NSFW API и отправляю… (до 3)")
+    await _send_b(chat_id=message.chat.id, user_id=message.from_user.id, n=3, feed="feed_b_video")
 
 
 # =========================
-# Daily MEMES scheduler 06:00 MSK
+# Daily B scheduler 06:00 MSK (1 video)
 # =========================
 async def _sleep_until_next_0600_msk():
     tz = ZoneInfo("Europe/Moscow")
@@ -232,32 +230,16 @@ async def _sleep_until_next_0600_msk():
     await asyncio.sleep((target - now).total_seconds())
 
 
-async def daily_memes_loop():
+async def daily_b_loop():
     while True:
         try:
             await _sleep_until_next_0600_msk()
             chat_id = load_admin_chat()
             if not chat_id:
-                # no admin set yet
                 continue
-
-            # If you already have a memes sender function/module, call it here.
-            # Try import optional helper: send_daily_memes(chat_id)
-            try:
-                from meme_ranker import send_daily_memes  # optional if exists
-                await send_daily_memes(bot, chat_id)
-            except Exception:
-                # fallback: just ping
-                await bot.send_message(chat_id, "⏰ 06:00 МСК — daily MEMES (sender not wired here).")
-
-        except Exception as e:
-            # keep loop alive
-            try:
-                chat_id = load_admin_chat()
-                if chat_id:
-                    await bot.send_message(chat_id, f"⚠️ daily_memes_loop error: {e}")
-            except Exception:
-                pass
+            # send exactly 1
+            await _send_b(chat_id=chat_id, user_id=chat_id, n=1, feed="daily_b_video")
+        except Exception:
             await asyncio.sleep(30)
 
 
@@ -265,8 +247,7 @@ async def daily_memes_loop():
 # Main
 # =========================
 async def main():
-    # start scheduler
-    asyncio.create_task(daily_memes_loop())
+    asyncio.create_task(daily_b_loop())
     await dp.start_polling(bot)
 
 
