@@ -1,4 +1,5 @@
 import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Tuple, List
@@ -22,30 +23,50 @@ def _parse_iso(s: str) -> Optional[datetime]:
         return None
 
 
-def _pick_frame_path(meta_path: Path) -> Optional[Path]:
+def _write_meta(meta_path: Path, j: dict) -> None:
+    meta_path.write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
+
+
+def _extract_one_frame(video_path: Path) -> Optional[Path]:
     """
-    We try to find already-extracted frame if your pipeline saved it.
-    If not found, return None (we will fall back to scoring thumbnail/image only when available).
+    Extract 1 frame with ffmpeg (lightweight).
+    Writes to /tmp/nsfw_frames/<stem>_nsfw.jpg
     """
-    # If meta already has a cached frame path - use it
+    out = FRAME_DIR / (video_path.name.replace(video_path.suffix, "") + "_nsfw.jpg")
+    if out.exists() and out.stat().st_size > 0:
+        return out
+
+    # Take a frame at ~1.0 sec (works for short vids too; ffmpeg will pick closest)
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        "1.0",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=640:-2",
+        str(out),
+    ]
     try:
-        j = json.loads(meta_path.read_text(encoding="utf-8"))
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         return None
 
-    fp = (j.get("nsfw_frame") or "").strip()
-    if fp:
-        p = Path(fp)
-        if p.exists():
-            return p
+    if out.exists() and out.stat().st_size > 0:
+        return out
     return None
 
 
 def _candidate_videos(hours: int) -> List[Tuple[Path, Path, dict]]:
     """
-    Return list of tuples: (video_path, meta_path, meta_json)
-    Only videos with existing <video>.meta.json and tg_date inside last <hours>.
-    Only those without b_nsfw_score yet.
+    Return (video_path, meta_path, meta_json) for videos within last <hours>
+    that don't have b_nsfw_score yet.
     """
     cut = datetime.now(timezone.utc) - timedelta(hours=hours)
 
@@ -56,7 +77,7 @@ def _candidate_videos(hours: int) -> List[Tuple[Path, Path, dict]]:
         if v.suffix.lower() not in VIDEO_EXT:
             continue
 
-        mp = Path(str(v) + ".meta.json")  # IMPORTANT: <video>.meta.json
+        mp = Path(str(v) + ".meta.json")  # <video>.meta.json
         if not mp.exists():
             continue
 
@@ -77,16 +98,12 @@ def _candidate_videos(hours: int) -> List[Tuple[Path, Path, dict]]:
     return out
 
 
-def _write_meta(meta_path: Path, j: dict) -> None:
-    meta_path.write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
-
-
 def score_missing_b(hours: int = 72, limit: int = 3) -> int:
     """
-    Scores up to <limit> new videos for NSFW, saving b_nsfw_score into <video>.meta.json.
-    Uses a single still image per video:
-      - if meta has cached frame path -> use it
-      - else -> skip (we don't extract frames here to keep it lightweight)
+    For up to <limit> videos:
+      1) extract 1 frame via ffmpeg
+      2) send to RapidAPI NSFW
+      3) write b_nsfw_score into <video>.meta.json
     """
     cands = _candidate_videos(hours)
     done = 0
@@ -95,9 +112,8 @@ def score_missing_b(hours: int = 72, limit: int = 3) -> int:
         if done >= limit:
             break
 
-        frame = _pick_frame_path(mp)
+        frame = _extract_one_frame(v)
         if frame is None:
-            # No frame prepared -> skip this video for now
             continue
 
         try:
@@ -108,9 +124,10 @@ def score_missing_b(hours: int = 72, limit: int = 3) -> int:
 
         j["b_nsfw_score"] = nsfw
         j["b_nsfw_scored_at"] = datetime.now(timezone.utc).isoformat()
+        j["nsfw_frame"] = str(frame)
         _write_meta(mp, j)
 
         done += 1
-        print(f"[nsfw] scored {v.name}: {nsfw:.4f} (frame={frame.name})")
+        print(f"[nsfw] scored {v.name}: {nsfw:.4f}")
 
     return done
