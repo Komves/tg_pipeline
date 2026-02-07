@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import math
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Optional, Set, Dict
 
 
 DATA_DIR = Path("/data")
@@ -15,12 +16,11 @@ POSTED_TSV = DATA_DIR / "a_posted_master.tsv"
 # только мемы (картинки)
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
-MAX_AGE_HOURS = 72.0  # мемы можно брать шире
-
+MAX_AGE_HOURS = 72.0
 RECENCY_K = 2.0
 RECENCY_TAU_H = 24.0
 
-# анти-реклама: фильтр по caption
+# анти-реклама: фильтр по caption/src
 AD_KEYWORDS = {
     "казино", "casino", "ставк", "ставка", "бет", "bet", "bonus", "бонус",
     "промокод", "promo", "промо", "реферал", "реф", "рефк", "рефераль",
@@ -29,11 +29,13 @@ AD_KEYWORDS = {
     "розыгрыш", "giveaway", "конкурс",
     "реклама", "advert", "ad:",
 }
+AD_SRC_HINTS = {"casino", "bet", "bonus", "promo", "airdrop", "crypto"}
 
-# можно расширять: признаки “канал-магнит”
-AD_SRC_HINTS = {
-    "casino", "bet", "bonus", "promo", "airdrop", "crypto",
-}
+# diversity: максимум мемов с одного src за выдачу
+MAX_PER_SRC = 1
+
+# дедуп по содержимому (берём первые 256KB + размер)
+HASH_READ_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,7 @@ class MemeItem:
     score: float
     tg_date_iso: str
     src: str
+    content_hash: str
 
 
 def _now_utc() -> datetime:
@@ -85,6 +88,13 @@ def _read_meta(p: Path) -> Optional[dict]:
         return None
 
 
+def _write_meta(p: Path, meta: dict) -> None:
+    try:
+        _meta_path(p).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _load_posted(user_id: int, feed: str) -> Set[str]:
     if not POSTED_TSV.exists():
         return set()
@@ -108,15 +118,12 @@ def _recency_score(age_h: float) -> float:
 def _looks_like_ad(meta: dict) -> bool:
     cap = (meta.get("caption") or "")
     src = (meta.get("src") or "")
-
     s = (cap + " " + src).lower()
 
-    # жёсткие ключи
     for k in AD_KEYWORDS:
         if k in s:
             return True
 
-    # лёгкие подсказки по src
     for k in AD_SRC_HINTS:
         if k in src.lower():
             return True
@@ -124,12 +131,40 @@ def _looks_like_ad(meta: dict) -> bool:
     return False
 
 
+def _content_hash(p: Path, meta: dict) -> str:
+    """
+    Быстрый контент-хэш для дедупа: size + sha1(first 256KB).
+    Кэшируем в meta.json как "content_hash".
+    """
+    ch = meta.get("content_hash")
+    if isinstance(ch, str) and len(ch) >= 8:
+        return ch
+
+    try:
+        size = p.stat().st_size
+        with p.open("rb") as f:
+            head = f.read(HASH_READ_BYTES)
+        h = hashlib.sha1()
+        h.update(str(size).encode("utf-8"))
+        h.update(b"|")
+        h.update(head)
+        ch = h.hexdigest()
+    except Exception:
+        # fallback — хоть что-то
+        ch = f"err:{p.name}"
+
+    meta["content_hash"] = ch
+    _write_meta(p, meta)
+    return ch
+
+
 def rank_memes(user_id: int, n: int, feed: str = "feed_memes") -> List[MemeItem]:
     now = _now_utc()
     cut = now - timedelta(hours=MAX_AGE_HOURS)
 
     posted = _load_posted(user_id, feed)
-    out: List[MemeItem] = []
+
+    candidates: List[MemeItem] = []
 
     for p in _iter_memes():
         item_id = p.relative_to(RAW_DIR).as_posix()
@@ -140,7 +175,6 @@ def rank_memes(user_id: int, n: int, feed: str = "feed_memes") -> List[MemeItem]
         if not meta:
             continue
 
-        # анти-реклама
         if _looks_like_ad(meta):
             continue
 
@@ -151,15 +185,40 @@ def rank_memes(user_id: int, n: int, feed: str = "feed_memes") -> List[MemeItem]
         age_h = max(0.0, (now - tg_dt).total_seconds() / 3600.0)
         score = _recency_score(age_h)
 
-        out.append(
+        src = (meta.get("src") or "UNKNOWN")
+        ch = _content_hash(p, meta)
+
+        candidates.append(
             MemeItem(
                 item_id=item_id,
                 abs_path=str(p),
                 score=float(score),
                 tg_date_iso=tg_dt.isoformat(),
-                src=(meta.get("src") or "UNKNOWN"),
+                src=src,
+                content_hash=ch,
             )
         )
 
-    out.sort(key=lambda x: x.score, reverse=True)
-    return out[: max(0, n)]
+    # сначала отсортируем по score
+    candidates.sort(key=lambda x: x.score, reverse=True)
+
+    # затем применим дедуп по content_hash и diversity по src
+    out: List[MemeItem] = []
+    seen_hash: Set[str] = set()
+    per_src: Dict[str, int] = {}
+
+    for it in candidates:
+        if it.content_hash in seen_hash:
+            continue
+        cnt = per_src.get(it.src, 0)
+        if cnt >= MAX_PER_SRC:
+            continue
+
+        out.append(it)
+        seen_hash.add(it.content_hash)
+        per_src[it.src] = cnt + 1
+
+        if len(out) >= n:
+            break
+
+    return out
