@@ -15,10 +15,25 @@ POSTED_TSV = DATA_DIR / "a_posted_master.tsv"
 # только мемы (картинки)
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
-MAX_AGE_HOURS = 72.0  # мемы можно брать шире, чем видео
+MAX_AGE_HOURS = 72.0  # мемы можно брать шире
 
 RECENCY_K = 2.0
 RECENCY_TAU_H = 24.0
+
+# анти-реклама: фильтр по caption
+AD_KEYWORDS = {
+    "казино", "casino", "ставк", "ставка", "бет", "bet", "bonus", "бонус",
+    "промокод", "promo", "промо", "реферал", "реф", "рефк", "рефераль",
+    "подпишись", "подписывайся", "переходи", "ссылка в", "в шапке", "по ссылке",
+    "инвест", "инвестиции", "крипт", "crypto", "btc", "ton", "airdrop",
+    "розыгрыш", "giveaway", "конкурс",
+    "реклама", "advert", "ad:",
+}
+
+# можно расширять: признаки “канал-магнит”
+AD_SRC_HINTS = {
+    "casino", "bet", "bonus", "promo", "airdrop", "crypto",
+}
 
 
 @dataclass(frozen=True)
@@ -90,6 +105,25 @@ def _recency_score(age_h: float) -> float:
     return RECENCY_K * math.exp(-age_h / RECENCY_TAU_H)
 
 
+def _looks_like_ad(meta: dict) -> bool:
+    cap = (meta.get("caption") or "")
+    src = (meta.get("src") or "")
+
+    s = (cap + " " + src).lower()
+
+    # жёсткие ключи
+    for k in AD_KEYWORDS:
+        if k in s:
+            return True
+
+    # лёгкие подсказки по src
+    for k in AD_SRC_HINTS:
+        if k in src.lower():
+            return True
+
+    return False
+
+
 def rank_memes(user_id: int, n: int, feed: str = "feed_memes") -> List[MemeItem]:
     now = _now_utc()
     cut = now - timedelta(hours=MAX_AGE_HOURS)
@@ -104,6 +138,10 @@ def rank_memes(user_id: int, n: int, feed: str = "feed_memes") -> List[MemeItem]
 
         meta = _read_meta(p)
         if not meta:
+            continue
+
+        # анти-реклама
+        if _looks_like_ad(meta):
             continue
 
         tg_dt = _parse_iso((meta.get("tg_date") or "").strip())
