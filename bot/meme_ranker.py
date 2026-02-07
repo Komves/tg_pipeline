@@ -12,16 +12,17 @@ DATA_DIR = Path("/data")
 RAW_DIR = DATA_DIR / "raw"
 POSTED_TSV = DATA_DIR / "a_posted_master.tsv"
 
-CAT_A_VIDEO = "A_VIDEO"
-VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+# только мемы (картинки)
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
-MAX_AGE_HOURS = 24.0
+MAX_AGE_HOURS = 72.0  # мемы можно брать шире, чем видео
+
 RECENCY_K = 2.0
-RECENCY_TAU_H = 12.0
+RECENCY_TAU_H = 24.0
 
 
 @dataclass(frozen=True)
-class RankedItem:
+class MemeItem:
     item_id: str
     abs_path: str
     score: float
@@ -43,7 +44,7 @@ def _parse_iso(s: str) -> Optional[datetime]:
         return None
 
 
-def _iter_videos() -> Iterable[Path]:
+def _iter_memes() -> Iterable[Path]:
     if not RAW_DIR.exists():
         return
     for p in RAW_DIR.rglob("*"):
@@ -51,7 +52,7 @@ def _iter_videos() -> Iterable[Path]:
             continue
         if p.name.endswith(".meta.json"):
             continue
-        if p.suffix.lower() in VIDEO_EXT:
+        if p.suffix.lower() in IMAGE_EXT:
             yield p
 
 
@@ -89,18 +90,14 @@ def _recency_score(age_h: float) -> float:
     return RECENCY_K * math.exp(-age_h / RECENCY_TAU_H)
 
 
-def rank_top_n(user_id: int, category: str, n: int, *, feed: str = "feed_a_video") -> List[RankedItem]:
-    if category != CAT_A_VIDEO:
-        return []
-
+def rank_memes(user_id: int, n: int, feed: str = "feed_memes") -> List[MemeItem]:
     now = _now_utc()
     cut = now - timedelta(hours=MAX_AGE_HOURS)
 
     posted = _load_posted(user_id, feed)
+    out: List[MemeItem] = []
 
-    out: List[RankedItem] = []
-
-    for p in _iter_videos():
+    for p in _iter_memes():
         item_id = p.relative_to(RAW_DIR).as_posix()
         if item_id in posted:
             continue
@@ -117,7 +114,7 @@ def rank_top_n(user_id: int, category: str, n: int, *, feed: str = "feed_a_video
         score = _recency_score(age_h)
 
         out.append(
-            RankedItem(
+            MemeItem(
                 item_id=item_id,
                 abs_path=str(p),
                 score=float(score),
