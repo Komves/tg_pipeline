@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Optional, Set, List
 
-# --- paths ---
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 RAW_DIR = DATA_DIR / "raw"
 POSTED_TSV = DATA_DIR / "a_posted_master.tsv"
@@ -18,19 +16,7 @@ B_SOURCES_FILE = REPO_ROOT / "tg_pipeline" / "b_video_sources.txt"
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 
-MAX_BYTES = 45 * 1024 * 1024  # skip huge files (tg bot api)
 MAX_AGE_HOURS = 72
-
-# simple anti-ad words (caption)
-AD_WORDS = {
-    "реклама", "реклам", "акция", "скидк", "промокод", "купи", "закажи",
-    "доставка", "сайт", "подписывайся", "подпишись", "канал", "вступай",
-    "казино", "букмекер", "ставк", "slot", "бет", "bet", "1win", "pinup",
-}
-
-# scoring weights
-RECENCY_TAU_H = 18.0  # newer -> higher
-SRC_DIVERSITY_PENALTY = 0.08  # slight penalty for too many from same src in one batch
 
 
 @dataclass(frozen=True)
@@ -40,6 +26,16 @@ class BVideoItem:
     score: float
     tg_date_iso: str
     src: str
+
+
+def _parse_iso(s: str) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
 
 
 def _norm_src(s: str) -> str:
@@ -55,7 +51,7 @@ def _norm_src(s: str) -> str:
 
 def _load_whitelist() -> Set[str]:
     if not B_SOURCES_FILE.exists():
-        raise RuntimeError(f"B sources file not found: {B_SOURCES_FILE}")
+        return set()
     out: Set[str] = set()
     for line in B_SOURCES_FILE.read_text(encoding="utf-8").splitlines():
         t = line.strip()
@@ -63,16 +59,6 @@ def _load_whitelist() -> Set[str]:
             continue
         out.add(_norm_src(t))
     return out
-
-
-def _parse_iso(s: str) -> Optional[datetime]:
-    try:
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
 
 
 def _load_posted(user_id: int, feed: str) -> Set[str]:
@@ -105,27 +91,14 @@ def _read_meta(p: Path) -> Optional[dict]:
         return None
 
 
-def _looks_like_ad(text: str) -> bool:
-    t = (text or "").lower()
-    if not t:
-        return False
-    return any(w in t for w in AD_WORDS)
-
-
-def _recency_score(age_h: float) -> float:
-    # exp decay: 0h -> 1.0, 18h -> ~0.37, 36h -> ~0.14
-    return math.exp(-age_h / RECENCY_TAU_H)
-
-
 def rank_b_videos(user_id: int, n: int, *, feed: str = "feed_b_video") -> List[BVideoItem]:
     wl = _load_whitelist()
+    posted = _load_posted(user_id, feed)
 
     now = datetime.now(timezone.utc)
     cut = now - timedelta(hours=MAX_AGE_HOURS)
 
-    posted = _load_posted(user_id, feed)
-
-    candidates: List[BVideoItem] = []
+    out: List[BVideoItem] = []
 
     for p in RAW_DIR.rglob("*"):
         if not p.is_file():
@@ -133,13 +106,6 @@ def rank_b_videos(user_id: int, n: int, *, feed: str = "feed_b_video") -> List[B
         if p.name.endswith(".meta.json"):
             continue
         if p.suffix.lower() not in VIDEO_EXT:
-            continue
-
-        # size filter (telegram limit)
-        try:
-            if p.stat().st_size > MAX_BYTES:
-                continue
-        except Exception:
             continue
 
         item_id = p.relative_to(RAW_DIR).as_posix()
@@ -151,46 +117,26 @@ def rank_b_videos(user_id: int, n: int, *, feed: str = "feed_b_video") -> List[B
             continue
 
         src = _norm_src(meta.get("src") or "")
-        if src not in wl:
+        if wl and src not in wl:
             continue
 
         tg_dt = _parse_iso((meta.get("tg_date") or "").strip())
         if not tg_dt or tg_dt < cut:
             continue
 
-        cap = (meta.get("caption") or "").strip()
-        if _looks_like_ad(cap):
+        score = meta.get("b_nsfw_score")
+        if score is None:
             continue
 
-        age_h = max(0.0, (now - tg_dt).total_seconds() / 3600.0)
-        score = _recency_score(age_h)
-
-        candidates.append(
+        out.append(
             BVideoItem(
                 item_id=item_id,
                 abs_path=str(p),
-                score=score,
+                score=float(score),
                 tg_date_iso=tg_dt.isoformat(),
                 src=src,
             )
         )
 
-    # sort by recency score
-    candidates.sort(key=lambda x: x.score, reverse=True)
-
-    # diversify sources a bit within the batch
-    picked: List[BVideoItem] = []
-    per_src_count: dict[str, int] = {}
-
-    for it in candidates:
-        c = per_src_count.get(it.src, 0)
-        adj = it.score - (c * SRC_DIVERSITY_PENALTY)
-        it2 = BVideoItem(it.item_id, it.abs_path, adj, it.tg_date_iso, it.src)
-
-        # greedy: accept if still good
-        picked.append(it2)
-        per_src_count[it.src] = c + 1
-        if len(picked) >= n:
-            break
-
-    return picked
+    out.sort(key=lambda x: x.score, reverse=True)
+    return out[: max(0, n)]
