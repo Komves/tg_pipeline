@@ -29,7 +29,11 @@ AD_KEYWORDS = {
     "розыгрыш", "giveaway", "конкурс",
     "реклама", "advert", "ad:",
 }
-AD_SRC_HINTS = {"casino", "bet", "bonus", "promo", "airdrop", "crypto"}
+AD_SRC_HINTS = {
+    "casino", "bet", "bonus", "promo", "airdrop", "crypto",
+    "shop", "store", "market", "prod", "food", "fish",
+    "alpenorth", "sale", "скидк", "акци", "ассортимент",
+}
 
 # diversity: максимум мемов с одного src за выдачу
 MAX_PER_SRC = 1
