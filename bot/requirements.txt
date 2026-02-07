@@ -4,5 +4,4 @@ numpy
 torch
 open_clip_torch
 pillow
-
-
+requests==2.31.0
