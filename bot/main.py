@@ -1,5 +1,4 @@
-# bot/main.py
-
+# BOT/main.py
 import os
 import json
 import asyncio
@@ -44,6 +43,7 @@ FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 STATE_PATH = DATA_DIR / "daily_state.json"
 
+# Category C (YouTube) posted log (global, never repeat)
 C_POSTED_TSV = DATA_DIR / "c_posted_master.tsv"
 
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
@@ -82,6 +82,42 @@ def _chat_user_id() -> int:
         return 0
 
 
+def _load_state() -> dict:
+    if not STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_state(d: dict) -> None:
+    try:
+        STATE_PATH.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        log(f"state write error: {e}")
+
+
+def _today_msk_str() -> str:
+    return datetime.now(MSK).strftime("%Y-%m-%d")
+
+
+def _in_auto_window_msk() -> bool:
+    return datetime.now(MSK).time() <= AUTO_DEADLINE_MSK
+
+
+def _auto_ran_today() -> bool:
+    st = _load_state()
+    return st.get("last_auto_msk_day") == _today_msk_str()
+
+
+def _mark_auto_ran_today() -> None:
+    st = _load_state()
+    st["last_auto_msk_day"] = _today_msk_str()
+    st["last_auto_ts_utc"] = datetime.now(timezone.utc).isoformat()
+    _save_state(st)
+
+
 def _ensure_posted_header() -> None:
     if not POSTED_TSV.exists():
         POSTED_TSV.write_text("timestamp\tuser_id\titem_id\tfeed\n", encoding="utf-8")
@@ -110,8 +146,7 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
         f.write(f"{ts}\t{user_id}\t{item_id}\t{feed}\n")
 
 
-# ===== Category C storage =====
-
+# ===== Category C posted (global, never repeat) =====
 def _ensure_c_posted_header() -> None:
     if not C_POSTED_TSV.exists():
         C_POSTED_TSV.write_text("ts_utc\tvideo_id\turl\ttitle\n", encoding="utf-8")
@@ -120,25 +155,30 @@ def _ensure_c_posted_header() -> None:
 def _load_c_posted_video_ids() -> set[str]:
     if not C_POSTED_TSV.exists():
         return set()
-    out = set()
+    out: set[str] = set()
     for line in C_POSTED_TSV.read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.startswith("ts_utc"):
             continue
         parts = line.split("\t")
         if len(parts) < 2:
             continue
-        out.add(parts[1])
+        vid = (parts[1] or "").strip()
+        if vid:
+            out.add(vid)
     return out
 
 
 def _mark_c_posted(video_id: str, url: str, title: str) -> None:
     _ensure_c_posted_header()
     ts = datetime.now(timezone.utc).isoformat()
+    video_id = (video_id or "").strip()
+    if not video_id:
+        return
+    url = (url or "").replace("\t", " ").strip()
+    title = (title or "").replace("\t", " ").strip()
     with C_POSTED_TSV.open("a", encoding="utf-8") as f:
         f.write(f"{ts}\t{video_id}\t{url}\t{title}\n")
 
-
-# ===== feedback =====
 
 def _load_sent_index() -> Dict[str, Any]:
     if not SENT_INDEX_JSON.exists():
@@ -150,28 +190,47 @@ def _load_sent_index() -> Dict[str, Any]:
 
 
 def _save_sent_index(d: Dict[str, Any]) -> None:
-    SENT_INDEX_JSON.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    try:
+        SENT_INDEX_JSON.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        log(f"sent_index write error: {e}")
 
 
-def _append_feedback(user_id: int, action: str, payload: Dict[str, Any]) -> None:
+def _ensure_feedback_header() -> None:
     if not FEEDBACK_TSV.exists():
         FEEDBACK_TSV.write_text(
             "ts_utc\tuser_id\taction\tfeed\tsid\tsrc\titem_id\tabs_path\n",
             encoding="utf-8",
         )
+
+
+def _append_feedback(user_id: int, action: str, payload: Dict[str, Any]) -> None:
+    _ensure_feedback_header()
     ts = datetime.now(timezone.utc).isoformat()
+    feed = payload.get("feed", "")
+    sid = payload.get("sid", "")
+    src = payload.get("src", "")
+    item_id = payload.get("item_id", "")
+    abs_path = payload.get("abs_path", "")
     with FEEDBACK_TSV.open("a", encoding="utf-8") as f:
-        f.write(
-            f"{ts}\t{user_id}\t{action}\t{payload.get('feed')}\t{payload.get('sid')}\t"
-            f"{payload.get('src')}\t{payload.get('item_id')}\t{payload.get('abs_path')}\n"
-        )
+        f.write(f"{ts}\t{user_id}\t{action}\t{feed}\t{sid}\t{src}\t{item_id}\t{abs_path}\n")
 
 
 def _sid(feed: str, item_id: str) -> str:
-    return hashlib.sha1(f"{feed}:{item_id}".encode()).hexdigest()[:12]
+    raw = f"{feed}:{item_id}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def _kb_for_sid(sid: str):
+def _kb_for_sid_a(sid: str):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Отлично", callback_data=f"fb:good:{sid}")
+    kb.button(text="👎 Плохо", callback_data=f"fb:bad:{sid}")
+    kb.button(text="⛔️ Бан", callback_data=f"fb:ban:{sid}")
+    kb.adjust(3)
+    return kb.as_markup()
+
+
+def _kb_for_sid_c(sid: str):
     kb = InlineKeyboardBuilder()
     kb.button(text="👍 Нравится", callback_data=f"fb:good:{sid}")
     kb.button(text="👎 Не нравится", callback_data=f"fb:bad:{sid}")
@@ -179,118 +238,473 @@ def _kb_for_sid(sid: str):
     return kb.as_markup()
 
 
-# ===== send =====
+def _meta_path(abs_path: str) -> Path:
+    return Path(str(abs_path) + ".meta.json")
 
-async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any]) -> bool:
 
-    if it["feed"] == "c_youtube":
+def _read_meta(abs_path: str) -> Dict[str, Any]:
+    mp = _meta_path(abs_path)
+    if not mp.exists():
+        return {}
+    try:
+        return json.loads(mp.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
-        sid = _sid("c_youtube", it["item_id"])
 
-        text = f"🎸 {it['title']}\n{it['url']}"
+def _clean_src_text(src: str) -> str:
+    s = (src or "").strip()
+    if not s:
+        return ""
+    try:
+        if "://" not in s and s.startswith("t.me/"):
+            s2 = "https://" + s
+        else:
+            s2 = s
+        u = urlparse(s2)
+        path = (u.path or "").strip("/")
+        if path:
+            if path.startswith("+"):
+                return "invite"
+            return path
+    except Exception:
+        pass
 
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=_kb_for_sid(sid),
-        )
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    s = s.strip().strip("/")
+    if s.startswith("+"):
+        return "invite"
+    return s
 
-        sent = _load_sent_index()
-        sent[sid] = {
-            "sid": sid,
-            "feed": "c_youtube",
-            "item_id": it["item_id"],
-            "abs_path": "",
-            "src": it["url"],
-        }
-        _save_sent_index(sent)
+
+def _stable_item_id(abs_path: str) -> str:
+    meta = _read_meta(abs_path)
+    src = (meta.get("src") or "").strip()
+    mid = meta.get("msg_id")
+    if src and mid is not None:
+        return f"{src}#{mid}"
+    try:
+        rp = str(Path(abs_path).resolve().relative_to(RAW_DIR.resolve()))
+        return rp.replace("\\", "/")
+    except Exception:
+        return abs_path
+
+
+def _caption_for_item(it: Dict[str, Any]) -> Optional[str]:
+    """
+    - A: показываем score + src
+    - B: ничего
+    - C: caption не используем (send_message)
+    """
+    feed = (it.get("feed") or "").strip()
+    if feed == "b_video":
+        return None
+    if feed == "c_youtube":
+        return None
+
+    abs_path = it.get("abs_path", "")
+    meta = _read_meta(abs_path)
+
+    src_raw = (meta.get("src") or it.get("src") or "").strip()
+    src = _clean_src_text(src_raw)
+
+    score = it.get("score", None)
+    parts = []
+    if score is not None:
+        try:
+            parts.append(f"score: {float(score):.4f}")
+        except Exception:
+            pass
+    if src:
+        parts.append(f"src: {src}")
+
+    text = "\n".join(parts).strip()
+    return text if text else None
+
+
+def _to_item(x: Any, feed: str) -> Optional[Dict[str, Any]]:
+    if x is None:
+        return None
+
+    if hasattr(x, "abs_path"):
+        abs_path = str(getattr(x, "abs_path"))
+        item_id = _stable_item_id(abs_path)
+        src = str(getattr(x, "src", "") or "")
+        score = getattr(x, "score", None)
+        return {"feed": feed, "item_id": item_id, "abs_path": abs_path, "src": src, "score": score}
+
+    if isinstance(x, dict):
+        abs_path = x.get("abs_path") or x.get("path") or x.get("file")
+        if not abs_path:
+            return None
+        abs_path = str(abs_path)
+        item_id = _stable_item_id(abs_path)
+        src = str(x.get("src") or x.get("channel") or "")
+        score = x.get("score")
+        return {"feed": feed, "item_id": item_id, "abs_path": abs_path, "src": src, "score": score}
+
+    if isinstance(x, (str, Path)):
+        abs_path = str(x)
+        item_id = _stable_item_id(abs_path)
+        return {"feed": feed, "item_id": item_id, "abs_path": abs_path, "src": "", "score": None}
+
+    return None
+
+
+def _dedupe_keep_order(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        key = f"{it.get('feed')}::{it.get('item_id')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out
+
+
+def _rank_a_videos(n: int) -> List[Dict[str, Any]]:
+    items = ranker.rank_top_n(user_id=0, category=ranker.CAT_A_VIDEO, n=max(0, n), feed="feed_a_video")
+    out = []
+    for x in items:
+        it = _to_item(x, "a_video")
+        if it:
+            out.append(it)
+    return out
+
+
+def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
+    if meme_ranker is None:
+        return []
+
+    uid = _chat_user_id()
+    out: List[Dict[str, Any]] = []
+
+    try:
+        if hasattr(meme_ranker, "rank_memes"):
+            cand = meme_ranker.rank_memes(uid, max(0, n))
+        elif hasattr(meme_ranker, "rank_top_n"):
+            cand = meme_ranker.rank_top_n(uid, max(0, n))
+        elif hasattr(meme_ranker, "rank"):
+            try:
+                cand = meme_ranker.rank(uid, max(0, n))
+            except TypeError:
+                cand = meme_ranker.rank()
+        else:
+            cand = []
+    except Exception as e:
+        log(f"memes rank error: {e}")
+        cand = []
+
+    for x in (cand or []):
+        it = _to_item(x, "a_meme")
+        if it:
+            out.append(it)
+        if len(out) >= n:
+            break
+    return out
+
+
+def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
+    if b_video_ranker is None:
+        return []
+
+    uid = _chat_user_id()
+    out: List[Dict[str, Any]] = []
+
+    try:
+        if hasattr(b_video_ranker, "rank_b_videos"):
+            try:
+                cand = b_video_ranker.rank_b_videos(uid, max(0, n))
+            except TypeError:
+                cand = b_video_ranker.rank_b_videos()
+        elif hasattr(b_video_ranker, "rank_top_n"):
+            cand = b_video_ranker.rank_top_n(uid, max(0, n))
+        elif hasattr(b_video_ranker, "rank"):
+            try:
+                cand = b_video_ranker.rank(uid, max(0, n))
+            except TypeError:
+                cand = b_video_ranker.rank()
+        else:
+            cand = []
+    except Exception as e:
+        log(f"B rank error: {e}")
+        cand = []
+
+    for x in (cand or []):
+        it = _to_item(x, "b_video")
+        if it:
+            out.append(it)
+        if len(out) >= n:
+            break
+    return out
+
+
+async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
+    # Category C: YouTube link as message
+    if (it.get("feed") or "").strip() == "c_youtube":
+        title = (it.get("title") or "").strip()
+        url = (it.get("url") or "").strip()
+        video_id = (it.get("video_id") or it.get("item_id") or "").strip()
+
+        if not url or not video_id:
+            return False
+
+        sid = None
+        reply_markup = None
+        if with_buttons:
+            sid = _sid("c_youtube", video_id)
+            reply_markup = _kb_for_sid_c(sid)
+
+        text_parts = []
+        if title:
+            text_parts.append(f"🎸 {title}")
+        text_parts.append(url)
+        text = "\n".join(text_parts).strip()
+
+        try:
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        except Exception as e:
+            log(f"send C error: {e}")
+            return False
+
+        if with_buttons and sid:
+            sent_index = _load_sent_index()
+            sent_index[sid] = {
+                "sid": sid,
+                "feed": "c_youtube",
+                "item_id": video_id,
+                "abs_path": "",
+                "src": url,
+            }
+            _save_sent_index(sent_index)
 
         return True
 
-    return False
+    # A/B: send file
+    abs_path = it["abs_path"]
+    p = Path(abs_path)
+    if not p.exists():
+        log(f"send skip missing file: {abs_path}")
+        return False
+
+    ext = p.suffix.lower()
+    caption = _caption_for_item(it)
+
+    reply_markup = None
+    sid = None
+    if with_buttons:
+        sid = _sid(it["feed"], it["item_id"])
+        reply_markup = _kb_for_sid_a(sid)
+
+    file = FSInputFile(str(p))
+
+    try:
+        if ext in {".jpg", ".jpeg", ".png", ".webp"}:
+            await bot.send_photo(chat_id=chat_id, photo=file, caption=caption, reply_markup=reply_markup)
+        elif ext in {".mp4", ".mov", ".mkv", ".webm", ".m4v"}:
+            await bot.send_video(chat_id=chat_id, video=file, caption=caption, reply_markup=reply_markup)
+        else:
+            await bot.send_document(chat_id=chat_id, document=file, caption=caption, reply_markup=reply_markup)
+    except Exception as e:
+        log(f"send error: {e}")
+        return False
+
+    if with_buttons and sid:
+        sent_index = _load_sent_index()
+        sent_index[sid] = {
+            "sid": sid,
+            "feed": it["feed"],
+            "item_id": it["item_id"],
+            "abs_path": it["abs_path"],
+            "src": it.get("src", ""),
+        }
+        _save_sent_index(sent_index)
+
+    return True
 
 
 async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
-
     chat_id = _resolve_chat_id()
-    posted_c = _load_c_posted_video_ids()
+    if not chat_id:
+        log("CHAT_ID missing -> cannot send")
+        return 0
+
+    user_id = _chat_user_id()
+
+    posted_a_video = _load_posted(user_id, "a_video")
+    posted_a_meme = _load_posted(user_id, "a_meme")
+    posted_b_video = _load_posted(user_id, "b_video")
+    posted_c_video_ids = _load_c_posted_video_ids()
 
     sent_total = 0
 
     for it in items:
+        feed = (it.get("feed") or "").strip()
+        item_id = (it.get("item_id") or "").strip()
 
-        if it["feed"] == "c_youtube":
-
-            vid = it["item_id"]
-
-            if vid in posted_c:
+        if feed == "a_video" and item_id in posted_a_video:
+            continue
+        if feed == "a_meme" and item_id in posted_a_meme:
+            continue
+        if feed == "b_video" and item_id in posted_b_video:
+            continue
+        if feed == "c_youtube":
+            vid = (it.get("video_id") or item_id or "").strip()
+            if not vid:
+                continue
+            if vid in posted_c_video_ids:
                 continue
 
-            ok = await _send_one(bot, chat_id, it)
+        with_buttons = (feed != "b_video")
 
-            if ok:
-                _mark_c_posted(vid, it["url"], it["title"])
-                sent_total += 1
+        ok = await _send_one(bot, chat_id, it, with_buttons=with_buttons)
+        if not ok:
+            continue
+
+        if feed == "c_youtube":
+            vid = (it.get("video_id") or item_id or "").strip()
+            _mark_c_posted(vid, (it.get("url") or ""), (it.get("title") or ""))
+            posted_c_video_ids.add(vid)
+        else:
+            _mark_posted(user_id, item_id, feed)
+            if feed == "a_video":
+                posted_a_video.add(item_id)
+            elif feed == "a_meme":
+                posted_a_meme.add(item_id)
+            elif feed == "b_video":
+                posted_b_video.add(item_id)
+
+        sent_total += 1
 
     return sent_total
 
 
-async def run_all(hours: int, *, reason: str):
+async def run_all(hours: int, *, reason: str) -> None:
+    async with _run_lock:
+        log(f"RUN start reason={reason} hours={hours}")
 
-    c_limit = 6 if hours >= 24 else 2 if hours >= 12 else 0
+        try:
+            log(f"ingest start hours={hours}")
+            await ingest_runner.ingest_hours(hours)
+            log("ingest done")
+        except Exception as e:
+            log(f"ingest error: {e}")
 
-    posted = _load_c_posted_video_ids()
+        try:
+            log("nsfw scoring start")
+            nsfw_runner.score_missing_b(hours=hours)
+            log("nsfw scoring done")
+        except Exception as e:
+            log(f"nsfw scoring stop: {e}")
 
-    c_items = c_youtube_fetcher.get_batch(
-        limit=c_limit,
-        posted_video_ids=posted,
-    )
+        a_memes = _rank_a_memes(A_MEMES_LIMIT)
+        a_videos = _rank_a_videos(A_VIDEOS_LIMIT)
+        b_videos = _rank_b_videos(B_VIDEOS_LIMIT)
 
-    bot = Bot(token=BOT_TOKEN)
+        log(f"ranked a_memes={len(a_memes)} a_videos={len(a_videos)} b_videos={len(b_videos)}")
 
-    await send_batch(bot, c_items)
+        # Category C: 6 for 24h, 2 for 12h
+        c_limit = 0
+        if hours >= 24:
+            c_limit = 6
+        elif hours >= 12:
+            c_limit = 2
 
-    await bot.session.close()
+        c_items: List[Dict[str, Any]] = []
+        try:
+            posted_c = _load_c_posted_video_ids()
+            c_items = c_youtube_fetcher.get_batch(limit=c_limit, posted_video_ids=posted_c)
+        except Exception as e:
+            log(f"C fetch error: {e}")
+            c_items = []
+
+        log(f"ranked c_youtube={len(c_items)} (limit={c_limit})")
+
+        items = _dedupe_keep_order(a_memes + a_videos + b_videos + c_items)
+
+        bot = Bot(token=BOT_TOKEN)
+        try:
+            sent = await send_batch(bot, items)
+            log(f"send done sent={sent}")
+        finally:
+            await bot.session.close()
+
+        log("RUN end")
 
 
 @router.message(Command("get12"))
 async def cmd_get12(msg: Message):
-    await msg.answer("Запуск C категории (2 ссылки)")
-    asyncio.create_task(run_all(12, reason="manual"))
+    await msg.answer("Ок. Запускаю прогон за 12 часов (A мемы/видео + B видео + C YouTube=2 ссылки).")
+    asyncio.create_task(run_all(12, reason="manual_get12"))
 
 
 @router.callback_query()
 async def on_feedback(cb: CallbackQuery):
+    data = (cb.data or "").strip()
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "fb":
+        await cb.answer("?", show_alert=False)
+        return
 
-    parts = cb.data.split(":")
-
+    action = parts[1]
     sid = parts[2]
 
-    sent = _load_sent_index()
+    sent_index = _load_sent_index()
+    payload = sent_index.get(sid)
+    if not payload:
+        await cb.answer("Старое/не найдено", show_alert=False)
+        return
 
-    payload = sent.get(sid)
+    if payload.get("feed") == "b_video":
+        await cb.answer("Ок", show_alert=False)
+        return
 
-    if payload:
-        _append_feedback(cb.from_user.id, parts[1], payload)
+    user_id = cb.from_user.id if cb.from_user else 0
+    _append_feedback(user_id, action, payload)
 
-    await cb.answer("OK")
+    if action == "good":
+        await cb.answer("Записал: Отлично ✅", show_alert=False)
+    elif action == "bad":
+        await cb.answer("Записал: Плохо 👎", show_alert=False)
+    elif action == "ban":
+        await cb.answer("Записал: Бан ⛔️", show_alert=False)
+    else:
+        await cb.answer("Записал", show_alert=False)
 
 
 async def scheduler_loop():
-
+    log("scheduler loop started")
     while True:
+        try:
+            if _in_auto_window_msk() and not _auto_ran_today():
+                log("auto window hit -> starting auto 24h run")
+                await run_all(24, reason="auto_daily_24h")
+                _mark_auto_ran_today()
+            else:
+                log("heartbeat")
+        except Exception as e:
+            log(f"scheduler error: {e}")
 
-        await run_all(24, reason="auto")
-
-        await asyncio.sleep(86400)
+        await asyncio.sleep(HEARTBEAT_SEC)
 
 
 async def main_async():
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN missing")
+
+    log("worker started")
+    log("manual command: /get12")
+    log("auto: once per day in MSK 00:00–06:00 window (24h)")
+    log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT} | C:24h=6 C:12h=2")
+    log("buttons: A (3) + C (2), B none")
+    log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
-
     dp = Dispatcher()
-
     dp.include_router(router)
 
     await asyncio.gather(
