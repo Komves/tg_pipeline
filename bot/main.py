@@ -7,6 +7,7 @@ from datetime import datetime, timezone, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
@@ -205,6 +206,34 @@ def _read_meta(abs_path: str) -> Dict[str, Any]:
         return {}
 
 
+def _clean_src_text(src: str) -> str:
+    s = (src or "").strip()
+    if not s:
+        return ""
+    try:
+        if "://" not in s and s.startswith("t.me/"):
+            s2 = "https://" + s
+        else:
+            s2 = s
+        u = urlparse(s2)
+        path = (u.path or "").strip("/")
+        if path:
+            if path.startswith("+"):
+                return "invite"
+            return path
+    except Exception:
+        pass
+
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    s = s.strip().strip("/")
+    if s.startswith("+"):
+        return "invite"
+    return s
+
+
 def _stable_item_id(abs_path: str) -> str:
     meta = _read_meta(abs_path)
     src = (meta.get("src") or "").strip()
@@ -218,9 +247,35 @@ def _stable_item_id(abs_path: str) -> str:
         return abs_path
 
 
-def _caption_for_item(_it: Dict[str, Any]) -> Optional[str]:
-    # ВАЖНО: полностью убрали подписи (и ссылки, и src, и score)
-    return None
+def _caption_for_item(it: Dict[str, Any]) -> Optional[str]:
+    """
+    Требование:
+    - ссылок НЕТ
+    - A: показываем score + src
+    - B: не показываем ничего (и без кнопок)
+    """
+    feed = (it.get("feed") or "").strip()
+    if feed == "b_video":
+        return None
+
+    abs_path = it.get("abs_path", "")
+    meta = _read_meta(abs_path)
+
+    src_raw = (meta.get("src") or it.get("src") or "").strip()
+    src = _clean_src_text(src_raw)
+
+    score = it.get("score", None)
+    parts = []
+    if score is not None:
+        try:
+            parts.append(f"score: {float(score):.4f}")
+        except Exception:
+            pass
+    if src:
+        parts.append(f"src: {src}")
+
+    text = "\n".join(parts).strip()
+    return text if text else None
 
 
 def _to_item(x: Any, feed: str) -> Optional[Dict[str, Any]]:
@@ -342,9 +397,10 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
 
 
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
-    p = Path(it["abs_path"])
+    abs_path = it["abs_path"]
+    p = Path(abs_path)
     if not p.exists():
-        log(f"send skip missing file: {it['abs_path']}")
+        log(f"send skip missing file: {abs_path}")
         return False
 
     ext = p.suffix.lower()
@@ -408,8 +464,9 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
         if feed == "b_video" and item_id in posted_b_video:
             continue
 
-        # кнопки пока оставляем как было: есть на всех (ты сказал так сейчас)
-        ok = await _send_one(bot, chat_id, it, with_buttons=True)
+        with_buttons = (feed != "b_video")
+
+        ok = await _send_one(bot, chat_id, it, with_buttons=with_buttons)
         if not ok:
             continue
 
@@ -465,7 +522,7 @@ async def run_all(hours: int, *, reason: str) -> None:
 
 @router.message(Command("get12"))
 async def cmd_get12(msg: Message):
-    await msg.answer("Ок. Запускаю прогон за 12 часов.")
+    await msg.answer("Ок. Запускаю прогон за 12 часов (A мемы/видео + B видео).")
     asyncio.create_task(run_all(12, reason="manual_get12"))
 
 
@@ -484,6 +541,10 @@ async def on_feedback(cb: CallbackQuery):
     payload = sent_index.get(sid)
     if not payload:
         await cb.answer("Старое/не найдено", show_alert=False)
+        return
+
+    if payload.get("feed") == "b_video":
+        await cb.answer("Ок", show_alert=False)
         return
 
     user_id = cb.from_user.id if cb.from_user else 0
@@ -523,6 +584,7 @@ async def main_async():
     log("manual command: /get12")
     log("auto: once per day in MSK 00:00–06:00 window (24h)")
     log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT}")
+    log("buttons: A only (anything except B)")
     log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
