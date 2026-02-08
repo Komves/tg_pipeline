@@ -8,6 +8,7 @@ import nsfw_runner
 import ranker
 
 from aiogram import Bot
+from aiogram.types import FSInputFile
 
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
@@ -34,7 +35,6 @@ def _resolve_chat_id() -> str:
         return CHAT_ID
 
     if ADMIN_USER_IDS:
-        # allow "123", "123,456", "123 456"
         s = ADMIN_USER_IDS.replace(",", " ").split()
         if s:
             return s[0].strip()
@@ -59,25 +59,34 @@ async def send(items):
 
     chat_id = _resolve_chat_id()
     if not chat_id:
-        log("CHAT_ID missing (and ADMIN_USER_IDS empty) -> cannot send")
+        log("CHAT_ID missing")
         return
 
     bot = Bot(token=BOT_TOKEN)
 
     sent = 0
+
     for it in items:
         path = it.abs_path
+
         try:
             log(f"sending {path} -> chat_id={chat_id}")
 
-            # IMPORTANT: send file object, NOT path string,
-            # because filenames may contain "https:" which Telegram treats as URL.
-            with open(path, "rb") as f:
-                try:
-                    await bot.send_video(chat_id=chat_id, video=f, caption=str(it.src))
-                except Exception:
-                    f.seek(0)
-                    await bot.send_document(chat_id=chat_id, document=f, caption=str(it.src))
+            file = FSInputFile(path)
+
+            try:
+                await bot.send_video(
+                    chat_id=chat_id,
+                    video=file,
+                    caption=str(it.src),
+                )
+            except Exception:
+                file = FSInputFile(path)
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=file,
+                    caption=str(it.src),
+                )
 
             sent += 1
 
@@ -85,6 +94,7 @@ async def send(items):
             log(f"send error: {e}")
 
     await bot.session.close()
+
     log(f"send done sent={sent}")
 
 
@@ -93,13 +103,11 @@ def run_cycle():
 
     asyncio.run(ingest())
 
-    # nsfw scoring (quota-safe)
     try:
         nsfw_runner.score_missing_b()
     except Exception as e:
         log(f"nsfw scoring error: {e}")
 
-    # ranking
     items = ranker.rank_top_n(
         user_id=0,
         category=ranker.CAT_A_VIDEO,
@@ -116,7 +124,7 @@ def run_cycle():
 
 def main():
     log("worker started")
-    log(f"env: BOT_TOKEN={'set' if BOT_TOKEN else 'missing'} CHAT_ID={'set' if CHAT_ID else 'missing'} ADMIN_USER_IDS={'set' if ADMIN_USER_IDS else 'missing'}")
+    log(f"env BOT_TOKEN={'set' if BOT_TOKEN else 'missing'}")
 
     while True:
         run_cycle()
