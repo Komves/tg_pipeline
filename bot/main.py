@@ -1,4 +1,4 @@
-# bot/main.py
+# BOT/main.py
 import os
 import json
 import asyncio
@@ -7,6 +7,11 @@ from datetime import datetime, timezone, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
+
+from aiogram import Bot, Dispatcher, Router
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import ingest_runner
 import nsfw_runner
@@ -21,11 +26,6 @@ try:
     import b_video_ranker
 except Exception:
     b_video_ranker = None
-
-from aiogram import Bot, Dispatcher, Router
-from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, FSInputFile
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 # =========================
@@ -44,19 +44,18 @@ FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 STATE_PATH = DATA_DIR / "daily_state.json"
 
-# working limits
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
 A_VIDEOS_LIMIT = int(os.getenv("A_VIDEOS_LIMIT", "20"))
 B_VIDEOS_LIMIT = int(os.getenv("B_VIDEOS_LIMIT", "5"))
 
-# heartbeat (NOT a run frequency)
-HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))  # 5 min
+HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
 
-# auto window MSK 00:00–06:00
 MSK = ZoneInfo("Europe/Moscow")
 AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
 _run_lock = asyncio.Lock()
+
+router = Router()
 
 
 # =========================
@@ -226,9 +225,6 @@ def _read_meta(abs_path: str) -> Dict[str, Any]:
 
 
 def _stable_item_id(abs_path: str) -> str:
-    """
-    Stable id: src#msg_id if present (dedupe 20979.mp4 and 20979 (1).mp4).
-    """
     meta = _read_meta(abs_path)
     src = (meta.get("src") or "").strip()
     mid = meta.get("msg_id")
@@ -242,9 +238,6 @@ def _stable_item_id(abs_path: str) -> str:
 
 
 def _caption_for_item(it: Dict[str, Any]) -> Optional[str]:
-    """
-    IMPORTANT: no item_id in caption (to avoid Telegram auto-link under each post).
-    """
     abs_path = it.get("abs_path", "")
     meta = _read_meta(abs_path)
 
@@ -254,14 +247,11 @@ def _caption_for_item(it: Dict[str, Any]) -> Optional[str]:
 
     parts = []
     if src:
-        parts.append(f"src: {src}")
-    if tg_date:
-        parts.append(f"tg_date: {tg_date}")
-    if score is not None:
-        try:
-            parts.append(f"score: {float(score):.4f}")
-        except Exception:
-            parts.append(f"score: {score}")
+        parts.append(f"{src}")
+    # tg_date/score можно оставить, но если не нужно — они просто не появятся
+    # ВАЖНО: item_id НЕ печатаем, чтобы Telegram не делал ссылку
+    # if tg_date: parts.append(f"tg_date: {tg_date}")
+    # if score is not None: parts.append(f"score: {score}")
 
     text = "\n".join(parts).strip()
     return text if text else None
@@ -496,7 +486,7 @@ async def run_all(hours: int, *, reason: str) -> None:
         except Exception as e:
             log(f"ingest error: {e}")
 
-        # B scoring: must never block A
+        # B scoring: never block A
         try:
             log("nsfw scoring start")
             nsfw_runner.score_missing_b(hours=hours)
@@ -504,11 +494,11 @@ async def run_all(hours: int, *, reason: str) -> None:
         except Exception as e:
             log(f"nsfw scoring stop: {e}")
 
-        a_videos = _rank_a_videos(A_VIDEOS_LIMIT)
         a_memes = _rank_a_memes(A_MEMES_LIMIT)
+        a_videos = _rank_a_videos(A_VIDEOS_LIMIT)
         b_videos = _rank_b_videos(B_VIDEOS_LIMIT)
 
-        log(f"ranked a_videos={len(a_videos)} a_memes={len(a_memes)} b_videos={len(b_videos)}")
+        log(f"ranked a_memes={len(a_memes)} a_videos={len(a_videos)} b_videos={len(b_videos)}")
 
         items = _dedupe_keep_order(a_memes + a_videos + b_videos)
 
@@ -523,7 +513,7 @@ async def run_all(hours: int, *, reason: str) -> None:
 
 
 # =========================
-# BOT
+# BOT COMMANDS / CALLBACKS
 # =========================
 @router.message(Command("get12"))
 async def cmd_get12(msg: Message):
@@ -592,10 +582,11 @@ async def main_async():
         raise RuntimeError("BOT_TOKEN missing")
 
     log("worker started")
-    log("manual command: /get12 (12h for ALL categories: A memes + A videos + B videos)")
-    log("auto: once per day in MSK 00:00–06:00 window (24h for ALL categories)")
+    log("manual command: /get12")
+    log("auto: once per day in MSK 00:00–06:00 window (24h)")
     log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT}")
-    log("feedback: A only (memes + videos). B has NO buttons.")
+    log("feedback: A only. B has NO buttons.")
+    log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
@@ -613,3 +604,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
