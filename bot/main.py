@@ -1,3 +1,4 @@
+# bot/main.py
 import os
 import json
 import asyncio
@@ -27,6 +28,9 @@ from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
+# =========================
+# ENV / PATHS
+# =========================
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 CHAT_ID = (os.getenv("CHAT_ID") or "").strip()
 ADMIN_USER_IDS = (os.getenv("ADMIN_USER_IDS") or "").strip()
@@ -38,23 +42,26 @@ RAW_DIR = DATA_DIR / "raw"
 POSTED_TSV = DATA_DIR / "a_posted_master.tsv"
 FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
-
 STATE_PATH = DATA_DIR / "daily_state.json"
 
+# working limits
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
 A_VIDEOS_LIMIT = int(os.getenv("A_VIDEOS_LIMIT", "20"))
 B_VIDEOS_LIMIT = int(os.getenv("B_VIDEOS_LIMIT", "5"))
 
-HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
+# heartbeat (NOT a run frequency)
+HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))  # 5 min
 
+# auto window MSK 00:00–06:00
 MSK = ZoneInfo("Europe/Moscow")
 AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
 _run_lock = asyncio.Lock()
 
-router = Router()
 
-
+# =========================
+# LOGGING
+# =========================
 def log(msg: str) -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[main] {now} {msg}", flush=True)
@@ -78,6 +85,9 @@ def _chat_user_id() -> int:
         return 0
 
 
+# =========================
+# STATE (auto daily 24h once per MSK day)
+# =========================
 def _load_state() -> dict:
     if not STATE_PATH.exists():
         return {}
@@ -114,6 +124,9 @@ def _mark_auto_ran_today() -> None:
     _save_state(st)
 
 
+# =========================
+# POSTED (anti-repeat)
+# =========================
 def _ensure_posted_header() -> None:
     if not POSTED_TSV.exists():
         POSTED_TSV.write_text("timestamp\tuser_id\titem_id\tfeed\n", encoding="utf-8")
@@ -142,6 +155,9 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
         f.write(f"{ts}\t{user_id}\t{item_id}\t{feed}\n")
 
 
+# =========================
+# FEEDBACK (A only)
+# =========================
 def _load_sent_index() -> Dict[str, Any]:
     if not SENT_INDEX_JSON.exists():
         return {}
@@ -192,7 +208,32 @@ def _kb_for_sid(sid: str):
     return kb.as_markup()
 
 
-def _guess_item_id_from_path(abs_path: str) -> str:
+# =========================
+# META / STABLE ID / CAPTION (NO LINKS)
+# =========================
+def _meta_path(abs_path: str) -> Path:
+    return Path(str(abs_path) + ".meta.json")
+
+
+def _read_meta(abs_path: str) -> Dict[str, Any]:
+    mp = _meta_path(abs_path)
+    if not mp.exists():
+        return {}
+    try:
+        return json.loads(mp.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _stable_item_id(abs_path: str) -> str:
+    """
+    Stable id: src#msg_id if present (dedupe 20979.mp4 and 20979 (1).mp4).
+    """
+    meta = _read_meta(abs_path)
+    src = (meta.get("src") or "").strip()
+    mid = meta.get("msg_id")
+    if src and mid is not None:
+        return f"{src}#{mid}"
     try:
         rp = str(Path(abs_path).resolve().relative_to(RAW_DIR.resolve()))
         return rp.replace("\\", "/")
@@ -200,28 +241,61 @@ def _guess_item_id_from_path(abs_path: str) -> str:
         return abs_path
 
 
+def _caption_for_item(it: Dict[str, Any]) -> Optional[str]:
+    """
+    IMPORTANT: no item_id in caption (to avoid Telegram auto-link under each post).
+    """
+    abs_path = it.get("abs_path", "")
+    meta = _read_meta(abs_path)
+
+    src = (meta.get("src") or it.get("src") or "").strip()
+    tg_date = (meta.get("tg_date") or "").strip()
+    score = it.get("score", None)
+
+    parts = []
+    if src:
+        parts.append(f"src: {src}")
+    if tg_date:
+        parts.append(f"tg_date: {tg_date}")
+    if score is not None:
+        try:
+            parts.append(f"score: {float(score):.4f}")
+        except Exception:
+            parts.append(f"score: {score}")
+
+    text = "\n".join(parts).strip()
+    return text if text else None
+
+
+# =========================
+# NORMALIZE OUTPUTS
+# =========================
 def _to_item(x: Any, feed: str) -> Optional[Dict[str, Any]]:
     if x is None:
         return None
+
     if hasattr(x, "abs_path"):
         abs_path = str(getattr(x, "abs_path"))
-        item_id = str(getattr(x, "item_id", "") or _guess_item_id_from_path(abs_path))
+        item_id = _stable_item_id(abs_path)
         src = str(getattr(x, "src", "") or "")
         score = getattr(x, "score", None)
         return {"feed": feed, "item_id": item_id, "abs_path": abs_path, "src": src, "score": score}
+
     if isinstance(x, dict):
         abs_path = x.get("abs_path") or x.get("path") or x.get("file")
         if not abs_path:
             return None
         abs_path = str(abs_path)
-        item_id = str(x.get("item_id") or x.get("id") or _guess_item_id_from_path(abs_path))
+        item_id = _stable_item_id(abs_path)
         src = str(x.get("src") or x.get("channel") or "")
         score = x.get("score")
         return {"feed": feed, "item_id": item_id, "abs_path": abs_path, "src": src, "score": score}
+
     if isinstance(x, (str, Path)):
         abs_path = str(x)
-        item_id = _guess_item_id_from_path(abs_path)
+        item_id = _stable_item_id(abs_path)
         return {"feed": feed, "item_id": item_id, "abs_path": abs_path, "src": "", "score": None}
+
     return None
 
 
@@ -237,6 +311,9 @@ def _dedupe_keep_order(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+# =========================
+# RANKERS
+# =========================
 def _rank_a_videos(n: int) -> List[Dict[str, Any]]:
     items = ranker.rank_top_n(user_id=0, category=ranker.CAT_A_VIDEO, n=max(0, n), feed="feed_a_video")
     out = []
@@ -255,13 +332,11 @@ def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
 
     try:
-        # prefer exact signature rank_memes(user_id, n)
         if hasattr(meme_ranker, "rank_memes"):
             cand = meme_ranker.rank_memes(uid, max(0, n))
         elif hasattr(meme_ranker, "rank_top_n"):
             cand = meme_ranker.rank_top_n(uid, max(0, n))
         elif hasattr(meme_ranker, "rank"):
-            # may accept (user_id, n) or no args
             try:
                 cand = meme_ranker.rank(uid, max(0, n))
             except TypeError:
@@ -316,6 +391,9 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
     return out
 
 
+# =========================
+# SENDING
+# =========================
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
     abs_path = it["abs_path"]
     p = Path(abs_path)
@@ -323,8 +401,8 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
         log(f"send skip missing file: {abs_path}")
         return False
 
-    caption = (it.get("src") or "").strip() or None
     ext = p.suffix.lower()
+    caption = _caption_for_item(it)
 
     reply_markup = None
     sid = None
@@ -404,6 +482,9 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
     return sent_total
 
 
+# =========================
+# RUN
+# =========================
 async def run_all(hours: int, *, reason: str) -> None:
     async with _run_lock:
         log(f"RUN start reason={reason} hours={hours}")
@@ -415,6 +496,7 @@ async def run_all(hours: int, *, reason: str) -> None:
         except Exception as e:
             log(f"ingest error: {e}")
 
+        # B scoring: must never block A
         try:
             log("nsfw scoring start")
             nsfw_runner.score_missing_b(hours=hours)
@@ -440,6 +522,9 @@ async def run_all(hours: int, *, reason: str) -> None:
         log("RUN end")
 
 
+# =========================
+# BOT
+# =========================
 @router.message(Command("get12"))
 async def cmd_get12(msg: Message):
     await msg.answer("Ок. Запускаю прогон за 12 часов (A мемы/видео + B видео).")
@@ -480,6 +565,9 @@ async def on_feedback(cb: CallbackQuery):
         await cb.answer("Записал", show_alert=False)
 
 
+# =========================
+# SCHEDULER LOOP
+# =========================
 async def scheduler_loop():
     log("scheduler loop started")
     while True:
@@ -496,6 +584,9 @@ async def scheduler_loop():
         await asyncio.sleep(HEARTBEAT_SEC)
 
 
+# =========================
+# MAIN
+# =========================
 async def main_async():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN missing")
