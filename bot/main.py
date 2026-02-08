@@ -18,10 +18,10 @@ CHAT_ID = (os.getenv("CHAT_ID") or "").strip()
 # fallback: first id from ADMIN_USER_IDS="357070178,...."
 ADMIN_USER_IDS = (os.getenv("ADMIN_USER_IDS") or "").strip()
 
-SLEEP_SECONDS = 900
-INGEST_HOURS = 72
-INGEST_TIMEOUT = 300
-RANK_N = 3
+SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "900"))
+INGEST_HOURS = int(os.getenv("INGEST_HOURS", "72"))
+INGEST_TIMEOUT = int(os.getenv("INGEST_TIMEOUT", "300"))
+RANK_N = int(os.getenv("RANK_N", "3"))
 
 
 def log(msg: str):
@@ -66,13 +66,21 @@ async def send(items):
 
     sent = 0
     for it in items:
+        path = it.abs_path
         try:
-            log(f"sending {it.abs_path} -> chat_id={chat_id}")
-            try:
-                await bot.send_video(chat_id=chat_id, video=it.abs_path, caption=str(it.src))
-            except Exception:
-                await bot.send_document(chat_id=chat_id, document=it.abs_path, caption=str(it.src))
+            log(f"sending {path} -> chat_id={chat_id}")
+
+            # IMPORTANT: send file object, NOT path string,
+            # because filenames may contain "https:" which Telegram treats as URL.
+            with open(path, "rb") as f:
+                try:
+                    await bot.send_video(chat_id=chat_id, video=f, caption=str(it.src))
+                except Exception:
+                    f.seek(0)
+                    await bot.send_document(chat_id=chat_id, document=f, caption=str(it.src))
+
             sent += 1
+
         except Exception as e:
             log(f"send error: {e}")
 
@@ -85,8 +93,13 @@ def run_cycle():
 
     asyncio.run(ingest())
 
-    nsfw_runner.score_missing_b()
+    # nsfw scoring (quota-safe)
+    try:
+        nsfw_runner.score_missing_b()
+    except Exception as e:
+        log(f"nsfw scoring error: {e}")
 
+    # ranking
     items = ranker.rank_top_n(
         user_id=0,
         category=ranker.CAT_A_VIDEO,
@@ -103,11 +116,11 @@ def run_cycle():
 
 def main():
     log("worker started")
-    log(f"env: CHAT_ID={'set' if CHAT_ID else 'missing'} ADMIN_USER_IDS={'set' if ADMIN_USER_IDS else 'missing'}")
+    log(f"env: BOT_TOKEN={'set' if BOT_TOKEN else 'missing'} CHAT_ID={'set' if CHAT_ID else 'missing'} ADMIN_USER_IDS={'set' if ADMIN_USER_IDS else 'missing'}")
 
     while True:
         run_cycle()
-        log("sleep 900s")
+        log(f"sleep {SLEEP_SECONDS}s")
         time.sleep(SLEEP_SECONDS)
 
 
