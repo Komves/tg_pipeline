@@ -5,8 +5,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-# IMPORTANT: import from bot.nsfw_client (Render реально грузит этот модуль)
-from bot.nsfw_client import score_image, QuotaExhausted, TemporaryNsfwError
+# IMPORTANT: local import (NOT bot.nsfw_client)
+from nsfw_client import score_image, QuotaExhausted, TemporaryNsfwError
 
 RAW = Path(os.getenv("DATA_DIR", "/data")) / "raw"
 TMP = Path("/tmp/nsfw_frames")
@@ -14,7 +14,7 @@ TMP.mkdir(parents=True, exist_ok=True)
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 
-# Hard limits per run (stop conditions)
+# Hard limits per run
 MAX_API_CALLS_PER_RUN = int(os.getenv("NSFW_MAX_API_CALLS_PER_RUN", "25"))
 MAX_VIDEOS_PER_RUN = int(os.getenv("NSFW_MAX_VIDEOS_PER_RUN", "3"))
 MAX_FRAMES_PER_VIDEO = int(os.getenv("NSFW_MAX_FRAMES_PER_VIDEO", "3"))
@@ -48,7 +48,7 @@ def _write_meta(media_path: Path, meta: dict) -> None:
 def _extract_frames(video: Path, out_dir: Path, n: int) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Clean old frames for this video stem to avoid mixing results
+    # Clean old frames
     for old in out_dir.glob(video.stem + "_*.jpg"):
         try:
             old.unlink()
@@ -62,8 +62,8 @@ def _extract_frames(video: Path, out_dir: Path, n: int) -> list[Path]:
         "-hide_banner",
         "-loglevel", "error",
         "-i", str(video),
-        "-vf", "fps=1/2",          # 1 frame per 2 sec
-        "-frames:v", str(n),       # hard cap frames
+        "-vf", "fps=1/2",
+        "-frames:v", str(n),
         str(out_pattern),
     ]
     subprocess.run(cmd, check=False)
@@ -73,7 +73,6 @@ def _extract_frames(video: Path, out_dir: Path, n: int) -> list[Path]:
 
 
 def _extract_score(res: dict) -> Optional[float]:
-    # пытаемся достать хоть какой-то score из json
     val = None
     if isinstance(res, dict):
         if "porn" in res:
@@ -92,12 +91,6 @@ def _extract_score(res: dict) -> Optional[float]:
 
 
 def score_missing_b(hours: int = 72, limit: int = 50) -> int:
-    """
-    Scores videos missing b_nsfw_score.
-    IMPORTANT: never infinite retry.
-    Stops early on quota, or when hard limits reached.
-    Returns number of videos scored (meta updated).
-    """
     now = datetime.now(timezone.utc)
     cut = now - timedelta(hours=hours)
 
@@ -106,8 +99,6 @@ def score_missing_b(hours: int = 72, limit: int = 50) -> int:
     scanned_candidates = 0
     quota_exhausted = False
 
-    # Keep backward compat: 'limit' is max scored videos,
-    # but we also apply MAX_VIDEOS_PER_RUN hard cap.
     max_videos_this_run = min(int(limit), MAX_VIDEOS_PER_RUN)
 
     for p in RAW.rglob("*"):
@@ -135,7 +126,6 @@ def score_missing_b(hours: int = 72, limit: int = 50) -> int:
 
         scanned_candidates += 1
 
-        # Extract frames (hard cap)
         frames = _extract_frames(p, TMP, n=MAX_FRAMES_PER_VIDEO)
         if not frames:
             continue
@@ -145,15 +135,15 @@ def score_missing_b(hours: int = 72, limit: int = 50) -> int:
         for fr in frames:
             if api_calls >= MAX_API_CALLS_PER_RUN:
                 break
+
             try:
                 res = score_image(str(fr))
-                api_calls += 1  # count attempt (API call happens inside score_image)
+                api_calls += 1
             except QuotaExhausted:
                 quota_exhausted = True
                 print("[nsfw] quota exhausted -> STOP scoring this run")
                 break
             except TemporaryNsfwError as e:
-                # no retry loop here; just skip this frame
                 print(f"[nsfw] temp error (skip frame): {e}")
                 continue
             except Exception as e:
@@ -183,4 +173,5 @@ def score_missing_b(hours: int = 72, limit: int = 50) -> int:
         f"scored_videos={scored_videos} api_calls={api_calls} "
         f"quota_exhausted={quota_exhausted}"
     )
+
     return scored_videos
