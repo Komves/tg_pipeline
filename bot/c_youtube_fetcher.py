@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ import requests
 
 
 YOUTUBE_WATCH = "https://www.youtube.com/watch?v="
+YOUTUBE_SEARCH_RSS = "https://www.youtube.com/feeds/videos.xml?search_query="
 
 _NS = {
     "atom": "http://www.w3.org/2005/Atom",
@@ -17,12 +19,36 @@ _NS = {
 }
 
 
+# База “случайных” поисковых запросов для рок/метал каверов.
+# Можно расширять как угодно — это и есть “источник”.
+DEFAULT_SEARCH_QUERIES: List[str] = [
+    "metal cover",
+    "rock cover",
+    "heavy metal cover",
+    "hard rock cover",
+    "guitar cover metal",
+    "vocal cover metal",
+    "кавер рок",
+    "кавер металл",
+    "рок кавер",
+    "метал кавер",
+    "metal cover русская песня",
+    "rock cover русская песня",
+    "кавер иностранная песня рок",
+    "кавер иностранная песня металл",
+    "рок кавер популярная песня",
+    "метал кавер популярная песня",
+    "metal cover pop song",
+    "rock cover pop song",
+]
+
+
 @dataclass(frozen=True)
 class CItem:
     video_id: str
     url: str
     title: str
-    source: str
+    source: str  # search query (для debug/логов)
 
 
 def _env_list(name: str) -> List[str]:
@@ -38,6 +64,7 @@ def _env_list(name: str) -> List[str]:
 
 
 def _include_keywords() -> List[str]:
+    # можно переопределить env-ом, но по умолчанию ок
     return _env_list("C_INCLUDE_KEYWORDS") or [
         "cover",
         "кавер",
@@ -59,6 +86,8 @@ def _exclude_keywords() -> List[str]:
         "стрим",
         "live stream",
         "podcast",
+        "interview",
+        "обзор",
     ]
 
 
@@ -70,10 +99,11 @@ def _looks_ok_title(title: str) -> bool:
     if exc and any(k in t for k in exc):
         return False
     inc = _include_keywords()
+    # Требуем хотя бы одно ключевое слово (чтобы не улетать в мусор)
     return bool(inc) and any(k in t for k in inc)
 
 
-def _extract_entry(entry: ET.Element) -> Optional[CItem]:
+def _extract_entry(entry: ET.Element) -> Optional[Dict[str, str]]:
     title_el = entry.find("atom:title", _NS)
     title = (title_el.text or "").strip() if title_el is not None else ""
 
@@ -100,15 +130,20 @@ def _extract_entry(entry: ET.Element) -> Optional[CItem]:
     if not _looks_ok_title(title):
         return None
 
-    return CItem(video_id=video_id, url=url, title=title, source="")
+    return {"video_id": video_id, "url": url, "title": title}
 
 
-def _fetch_feed(url: str, timeout: int = 15) -> List[CItem]:
+def _fetch_search_rss(query: str, timeout: int = 15) -> List[Dict[str, str]]:
+    # YouTube RSS принимает пробелы как +, но requests сам нормально проглотит,
+    # мы делаем минимально: заменим пробелы на +
+    q = query.strip().replace(" ", "+")
+    url = YOUTUBE_SEARCH_RSS + q
+
     r = requests.get(url, timeout=timeout)
     r.raise_for_status()
     root = ET.fromstring(r.text)
 
-    out: List[CItem] = []
+    out: List[Dict[str, str]] = []
     for entry in root.findall("atom:entry", _NS):
         it = _extract_entry(entry)
         if it:
@@ -120,47 +155,57 @@ def get_batch(*, limit: int, posted_video_ids: Set[str]) -> List[Dict[str, str]]
     """
     Возвращает items для main.py:
       {"feed":"c_youtube","item_id":video_id,"video_id":...,"url":...,"title":...,"src":...}
-    Настройка источников через env:
-      C_RSS_FEEDS = RSS-URL (через запятую или перенос строки)
+
+    Источник НЕ задан env-ом: каждый прогон берём несколько случайных search_query RSS.
     """
     limit = max(0, int(limit))
     if limit <= 0:
         return []
 
-    feeds = _env_list("C_RSS_FEEDS")
-    if not feeds:
+    # Можно управлять количеством “поисков” на один прогон:
+    # чем больше — тем выше шанс набрать limit, но больше запросов к YouTube RSS.
+    tries = int(os.getenv("C_SEARCH_TRIES", "6"))
+    tries = max(1, min(20, tries))
+
+    # База запросов: по умолчанию встроенная.
+    queries = _env_list("C_SEARCH_QUERIES") or DEFAULT_SEARCH_QUERIES
+    if not queries:
         return []
 
-    candidates: List[CItem] = []
-    for f in feeds:
+    # Случайный порядок
+    picked = queries[:]
+    random.shuffle(picked)
+    picked = picked[:tries]
+
+    seen_vid: Set[str] = set()
+    out: List[Dict[str, str]] = []
+
+    for q in picked:
         try:
-            items = _fetch_feed(f)
-            for it in items:
-                candidates.append(CItem(it.video_id, it.url, it.title, source=f))
+            items = _fetch_search_rss(q)
         except Exception:
             continue
 
-    seen: Set[str] = set()
-    out: List[Dict[str, str]] = []
-    for it in candidates:
-        if it.video_id in seen:
-            continue
-        seen.add(it.video_id)
+        for it in items:
+            vid = it["video_id"]
+            if vid in seen_vid:
+                continue
+            seen_vid.add(vid)
 
-        if it.video_id in posted_video_ids:
-            continue
+            if vid in posted_video_ids:
+                continue
 
-        out.append(
-            {
-                "feed": "c_youtube",
-                "item_id": it.video_id,
-                "video_id": it.video_id,
-                "url": it.url,
-                "title": it.title,
-                "src": it.source,
-            }
-        )
-        if len(out) >= limit:
-            break
+            out.append(
+                {
+                    "feed": "c_youtube",
+                    "item_id": vid,
+                    "video_id": vid,
+                    "url": it["url"],
+                    "title": it["title"],
+                    "src": q,  # для отладки: какой запрос нашёл
+                }
+            )
+            if len(out) >= limit:
+                return out
 
     return out
