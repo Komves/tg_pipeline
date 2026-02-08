@@ -7,6 +7,7 @@ from datetime import datetime, timezone, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
@@ -224,6 +225,42 @@ def _read_meta(abs_path: str) -> Dict[str, Any]:
         return {}
 
 
+def _clean_src_text(src: str) -> str:
+    """
+    Превращаем любые https://t.me/... или t.me/... в НЕ-ссылочный текст.
+    Возвращаем только "username" или "c/<id>" без протокола и домена.
+    """
+    s = (src or "").strip()
+    if not s:
+        return ""
+    try:
+        # добавим схему, если её нет, чтобы urlparse отработал
+        if "://" not in s and s.startswith("t.me/"):
+            s2 = "https://" + s
+        else:
+            s2 = s
+        u = urlparse(s2)
+        path = (u.path or "").strip("/")
+        if path:
+            # для обычного канала: username
+            # для инвайта/привата: +xxxx -> оставим как "invite"
+            if path.startswith("+"):
+                return "invite"
+            return path
+    except Exception:
+        pass
+
+    # fallback: просто режем домен
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    s = s.strip().strip("/")
+    if s.startswith("+"):
+        return "invite"
+    return s
+
+
 def _stable_item_id(abs_path: str) -> str:
     meta = _read_meta(abs_path)
     src = (meta.get("src") or "").strip()
@@ -238,23 +275,21 @@ def _stable_item_id(abs_path: str) -> str:
 
 
 def _caption_for_item(it: Dict[str, Any]) -> Optional[str]:
+    """
+    ВАЖНО: никакого t.me/https://... в подписи.
+    И никакого item_id.
+    """
     abs_path = it.get("abs_path", "")
     meta = _read_meta(abs_path)
 
-    src = (meta.get("src") or it.get("src") or "").strip()
-    tg_date = (meta.get("tg_date") or "").strip()
-    score = it.get("score", None)
+    src_raw = (meta.get("src") or it.get("src") or "").strip()
+    src = _clean_src_text(src_raw)
 
-    parts = []
+    # Можно вообще без текста — тогда будет 100% без ссылок.
+    # Но оставим коротко, чтобы понимать источник.
     if src:
-        parts.append(f"{src}")
-    # tg_date/score можно оставить, но если не нужно — они просто не появятся
-    # ВАЖНО: item_id НЕ печатаем, чтобы Telegram не делал ссылку
-    # if tg_date: parts.append(f"tg_date: {tg_date}")
-    # if score is not None: parts.append(f"score: {score}")
-
-    text = "\n".join(parts).strip()
-    return text if text else None
+        return f"src: {src}"
+    return None
 
 
 # =========================
@@ -442,8 +477,8 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
     sent_total = 0
 
     for it in items:
-        feed = it["feed"]
-        item_id = it["item_id"]
+        feed = (it.get("feed") or "").strip()
+        item_id = it.get("item_id") or ""
 
         if feed == "a_video" and item_id in posted_a_video:
             continue
@@ -452,7 +487,8 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
         if feed == "b_video" and item_id in posted_b_video:
             continue
 
-        with_buttons = feed in {"a_video", "a_meme"}  # A only (B no buttons)
+        # ГАРАНТИЯ: кнопки есть для всего, кроме B
+        with_buttons = (feed != "b_video")
 
         ok = await _send_one(bot, chat_id, it, with_buttons=with_buttons)
         if not ok:
@@ -486,7 +522,6 @@ async def run_all(hours: int, *, reason: str) -> None:
         except Exception as e:
             log(f"ingest error: {e}")
 
-        # B scoring: never block A
         try:
             log("nsfw scoring start")
             nsfw_runner.score_missing_b(hours=hours)
@@ -538,7 +573,8 @@ async def on_feedback(cb: CallbackQuery):
         await cb.answer("Старое/не найдено", show_alert=False)
         return
 
-    if payload.get("feed") not in {"a_video", "a_meme"}:
+    # на B даже если вдруг кнопки появятся — фидбек не пишем
+    if payload.get("feed") == "b_video":
         await cb.answer("Ок", show_alert=False)
         return
 
@@ -585,7 +621,7 @@ async def main_async():
     log("manual command: /get12")
     log("auto: once per day in MSK 00:00–06:00 window (24h)")
     log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT}")
-    log("feedback: A only. B has NO buttons.")
+    log("buttons: A only (anything except B)")
     log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
@@ -604,4 +640,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
