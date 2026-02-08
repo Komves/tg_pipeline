@@ -2,3 +2,4 @@ aiogram==3.24.0
 telethon==1.36.0
 pillow
 requests==2.31.0
+openai

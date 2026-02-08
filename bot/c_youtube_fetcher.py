@@ -1,184 +1,168 @@
 from __future__ import annotations
 
 import os
-import random
 import re
-import xml.etree.ElementTree as ET
-from typing import Dict, List, Optional, Set
+import time
+from typing import Dict, List, Set, Optional
+from urllib.parse import urlparse, parse_qs
 
-import requests
-
-
-YOUTUBE_SEARCH_RSS = "https://www.youtube.com/feeds/videos.xml?search_query="
-
-_NS = {
-    "atom": "http://www.w3.org/2005/Atom",
-    "yt": "http://www.youtube.com/xml/schemas/2015",
-}
-
-UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
-
-# запросы только про каверы + рок/метал
-SEARCH_QUERIES: List[str] = [
-    "metal cover",
-    "rock cover",
-    "heavy metal cover",
-    "hard rock cover",
-    "metal cover russian song",
-    "rock cover russian song",
-    "кавер рок",
-    "кавер металл",
-    "рок кавер",
-    "метал кавер",
-    "металл кавер",
-    "кавер песня рок",
-    "кавер песня металл",
-]
-
-EXCLUDE = [
-    "reaction",
-    "реакц",
-    "shorts",
-    "стрим",
-    "live stream",
-    "podcast",
-    "interview",
-    "tutorial",
-    "lesson",
-    "обзор",
-    "разбор",
-]
-
-# нужно: cover/кавер + rock/metal/рок/метал
-_RE_NEED = re.compile(r"(cover|кавер)", re.IGNORECASE)
-_RE_GENRE = re.compile(r"(rock|metal|рок|метал|металл)", re.IGNORECASE)
+from openai import OpenAI
 
 
-def _debug(msg: str) -> None:
-    if (os.getenv("C_DEBUG", "0") or "").strip() in ("1", "true", "yes", "on"):
-        print(f"[c_youtube] {msg}", flush=True)
+_YT_HOSTS = {"www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"}
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+DEFAULT_MODEL = os.getenv("C_OPENAI_MODEL", "gpt-5")  # можно переопределить env
+MAX_TRIES = int(os.getenv("C_OPENAI_TRIES", "3"))
+SLEEP_BETWEEN_TRIES_SEC = float(os.getenv("C_OPENAI_RETRY_SLEEP", "1.0"))
 
 
-def _ok_title(title: str) -> bool:
-    t = (title or "").strip()
-    if not t:
-        return False
-
-    low = t.lower()
-    for bad in EXCLUDE:
-        if bad in low:
-            return False
-
-    if not _RE_NEED.search(t):
-        return False
-
-    if not _RE_GENRE.search(t):
-        return False
-
-    return True
+def _extract_urls(text: str) -> List[str]:
+    if not text:
+        return []
+    return _URL_RE.findall(text)
 
 
-def _parse_entry(entry: ET.Element) -> Optional[Dict[str, str]]:
-    title_el = entry.find("atom:title", _NS)
-    vid_el = entry.find("yt:videoId", _NS)
+def _normalize_youtube_url(u: str) -> Optional[str]:
+    try:
+        u = u.strip().strip(").,;\"'")
+        if not u:
+            return None
 
-    if title_el is None or vid_el is None:
+        # youtu.be/<id>
+        if "youtu.be/" in u:
+            pu = urlparse(u)
+            if pu.hostname not in _YT_HOSTS:
+                return None
+            vid = pu.path.strip("/").split("/")[0]
+            if not vid:
+                return None
+            return f"https://www.youtube.com/watch?v={vid}"
+
+        pu = urlparse(u)
+        if pu.hostname not in _YT_HOSTS:
+            return None
+
+        # only watch URLs
+        if pu.path.rstrip("/") not in ("/watch",):
+            return None
+
+        qs = parse_qs(pu.query)
+        vid = (qs.get("v") or [""])[0].strip()
+        if not vid:
+            return None
+
+        return f"https://www.youtube.com/watch?v={vid}"
+    except Exception:
         return None
 
-    title = (title_el.text or "").strip()
-    vid = (vid_el.text or "").strip()
-    if not vid:
+
+def _video_id_from_url(u: str) -> Optional[str]:
+    try:
+        pu = urlparse(u)
+        qs = parse_qs(pu.query)
+        vid = (qs.get("v") or [""])[0].strip()
+        return vid or None
+    except Exception:
         return None
 
-    if not _ok_title(title):
-        return None
 
-    return {
-        "feed": "c_youtube",
-        "item_id": vid,
-        "video_id": vid,
-        "url": f"https://www.youtube.com/watch?v={vid}",
-        "title": title,
-        "src": "youtube_search",
-    }
+def _build_prompt(limit: int, banned_video_ids: Set[str]) -> str:
+    # ВАЖНО: просим ТОЛЬКО каверы, рок/метал, часть русских/часть иностранных
+    # И просим выводить только ссылки (по 1 в строке), чтобы легко парсить.
+    banned = ""
+    if banned_video_ids:
+        # чтобы не раздуть промпт, ограничим
+        sample = list(banned_video_ids)[:200]
+        banned = "\n\nНЕ ИСПОЛЬЗУЙ эти video_id (уже отправлялись):\n" + "\n".join(sample)
+
+    return (
+        f"Найди {limit} разных YouTube-ссылок на музыкальные клипы-КАВЕРЫ в стиле рок/метал "
+        f"(можно metal/rock cover). Нужны реальные видео. "
+        f"Смешай: часть каверов на иностранные известные песни, часть — на российские известные песни.\n\n"
+        f"ТРЕБОВАНИЯ:\n"
+        f"- Только каверы (в названии/описании должно быть cover/кавер или очевидно что это кавер).\n"
+        f"- Ссылки должны быть только на YouTube (формат https://www.youtube.com/watch?v=VIDEO_ID).\n"
+        f"- Без повторов внутри ответа.\n"
+        f"- В ответе выведи ТОЛЬКО ссылки, по одной в строке, без текста.\n"
+        f"{banned}"
+    )
 
 
-def _fetch(query: str) -> List[Dict[str, str]]:
-    url = YOUTUBE_SEARCH_RSS + query.replace(" ", "+")
-    _debug(f"fetch url={url}")
+def _call_openai_for_links(limit: int, posted_video_ids: Set[str]) -> List[str]:
+    client = OpenAI()
 
-    r = requests.get(url, headers={"User-Agent": UA}, timeout=20)
-    _debug(f"status={r.status_code} bytes={len(r.content)}")
+    prompt = _build_prompt(limit, posted_video_ids)
 
-    r.raise_for_status()
+    # Используем встроенный web_search tool в Responses API:
+    # модель реально ищет и возвращает найденное.
+    resp = client.responses.create(
+        model=DEFAULT_MODEL,
+        tools=[{"type": "web_search"}],
+        input=prompt,
+    )
 
-    root = ET.fromstring(r.text)
+    text = getattr(resp, "output_text", "") or ""
+    urls_raw = _extract_urls(text)
 
-    entries = root.findall("atom:entry", _NS)
-    _debug(f"entries={len(entries)}")
+    out: List[str] = []
+    seen_vid: Set[str] = set()
 
-    out: List[Dict[str, str]] = []
-    for e in entries:
-        it = _parse_entry(e)
-        if it:
-            out.append(it)
+    for u in urls_raw:
+        nu = _normalize_youtube_url(u)
+        if not nu:
+            continue
+        vid = _video_id_from_url(nu)
+        if not vid:
+            continue
+        if vid in seen_vid:
+            continue
+        if vid in posted_video_ids:
+            continue
+        seen_vid.add(vid)
+        out.append(nu)
+        if len(out) >= limit:
+            break
 
-    _debug(f"matched_after_filter={len(out)}")
     return out
 
 
 def get_batch(*, limit: int, posted_video_ids: Set[str]) -> List[Dict[str, str]]:
+    """
+    Возвращает items для main.py:
+      {"feed":"c_youtube","item_id":video_id,"video_id":...,"url":...,"title":...,"src":...}
+    Title берём пустым (можно расширить потом), url — реальный.
+    """
     limit = max(0, int(limit))
     if limit <= 0:
         return []
 
-    tries = int(os.getenv("C_SEARCH_TRIES", "8"))
-    tries = max(1, min(25, tries))
+    last_err: Optional[Exception] = None
 
-    queries = SEARCH_QUERIES[:]
-    random.shuffle(queries)
-    queries = queries[:tries]
-
-    _debug(f"limit={limit} tries={tries} posted_count={len(posted_video_ids)} queries={queries}")
-
-    out: List[Dict[str, str]] = []
-    seen: Set[str] = set()
-
-    total_entries = 0
-    total_matched = 0
-    total_dedup = 0
-    total_posted_skip = 0
-
-    for q in queries:
+    for attempt in range(1, MAX_TRIES + 1):
         try:
-            items = _fetch(q)
+            urls = _call_openai_for_links(limit=limit, posted_video_ids=posted_video_ids)
+            if urls:
+                items: List[Dict[str, str]] = []
+                for u in urls:
+                    vid = _video_id_from_url(u)
+                    if not vid:
+                        continue
+                    items.append(
+                        {
+                            "feed": "c_youtube",
+                            "item_id": vid,
+                            "video_id": vid,
+                            "url": u,
+                            "title": "",     # можно добавить позже (если надо)
+                            "src": "openai_web_search",
+                        }
+                    )
+                return items
         except Exception as e:
-            _debug(f"fetch_error query={q} err={e}")
-            continue
+            last_err = e
 
-        total_matched += len(items)
+        time.sleep(SLEEP_BETWEEN_TRIES_SEC)
 
-        for it in items:
-            vid = it["video_id"]
-
-            if vid in seen:
-                total_dedup += 1
-                continue
-            seen.add(vid)
-
-            if vid in posted_video_ids:
-                total_posted_skip += 1
-                continue
-
-            out.append(it)
-            if len(out) >= limit:
-                _debug(
-                    f"done: out={len(out)} matched={total_matched} dedup={total_dedup} posted_skip={total_posted_skip}"
-                )
-                return out
-
-    _debug(f"done: out={len(out)} matched={total_matched} dedup={total_dedup} posted_skip={total_posted_skip}")
-    return out
+    # не падаем — просто вернём пусто (main.py залогирует ranked c_youtube=0)
+    return []
