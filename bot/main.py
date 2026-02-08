@@ -294,35 +294,8 @@ def _stable_item_id(abs_path: str) -> str:
 
 
 def _caption_for_item(it: Dict[str, Any]) -> Optional[str]:
-    """
-    - A: показываем score + src
-    - B: ничего
-    - C: caption не используем (send_message)
-    """
-    feed = (it.get("feed") or "").strip()
-    if feed == "b_video":
-        return None
-    if feed == "c_youtube":
-        return None
-
-    abs_path = it.get("abs_path", "")
-    meta = _read_meta(abs_path)
-
-    src_raw = (meta.get("src") or it.get("src") or "").strip()
-    src = _clean_src_text(src_raw)
-
-    score = it.get("score", None)
-    parts = []
-    if score is not None:
-        try:
-            parts.append(f"score: {float(score):.4f}")
-        except Exception:
-            pass
-    if src:
-        parts.append(f"src: {src}")
-
-    text = "\n".join(parts).strip()
-    return text if text else None
+    # УБРАЛИ полностью caption для A/B/C: никаких score/src/каналов.
+    return None
 
 
 def _to_item(x: Any, feed: str) -> Optional[Dict[str, Any]]:

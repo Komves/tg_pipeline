@@ -18,9 +18,11 @@ _NS = {
     "yt": "http://www.youtube.com/xml/schemas/2015",
 }
 
+UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
-# База “случайных” поисковых запросов для рок/метал каверов.
-# Можно расширять как угодно — это и есть “источник”.
 DEFAULT_SEARCH_QUERIES: List[str] = [
     "metal cover",
     "rock cover",
@@ -36,10 +38,8 @@ DEFAULT_SEARCH_QUERIES: List[str] = [
     "rock cover русская песня",
     "кавер иностранная песня рок",
     "кавер иностранная песня металл",
-    "рок кавер популярная песня",
-    "метал кавер популярная песня",
-    "metal cover pop song",
     "rock cover pop song",
+    "metal cover pop song",
 ]
 
 
@@ -48,7 +48,7 @@ class CItem:
     video_id: str
     url: str
     title: str
-    source: str  # search query (для debug/логов)
+    source: str
 
 
 def _env_list(name: str) -> List[str]:
@@ -64,30 +64,21 @@ def _env_list(name: str) -> List[str]:
 
 
 def _include_keywords() -> List[str]:
-    # можно переопределить env-ом, но по умолчанию ок
     return _env_list("C_INCLUDE_KEYWORDS") or [
-        "cover",
-        "кавер",
-        "rock",
-        "рок",
-        "metal",
-        "метал",
-        "металл",
-        "tribute",
-        "version",
+        "cover", "кавер",
+        "rock", "рок",
+        "metal", "метал", "металл",
+        "tribute", "version",
     ]
 
 
 def _exclude_keywords() -> List[str]:
     return _env_list("C_EXCLUDE_KEYWORDS") or [
-        "reaction",
-        "реакц",
+        "reaction", "реакц",
         "shorts",
-        "стрим",
-        "live stream",
+        "стрим", "live stream",
         "podcast",
-        "interview",
-        "обзор",
+        "interview", "обзор",
     ]
 
 
@@ -99,7 +90,6 @@ def _looks_ok_title(title: str) -> bool:
     if exc and any(k in t for k in exc):
         return False
     inc = _include_keywords()
-    # Требуем хотя бы одно ключевое слово (чтобы не улетать в мусор)
     return bool(inc) and any(k in t for k in inc)
 
 
@@ -133,13 +123,11 @@ def _extract_entry(entry: ET.Element) -> Optional[Dict[str, str]]:
     return {"video_id": video_id, "url": url, "title": title}
 
 
-def _fetch_search_rss(query: str, timeout: int = 15) -> List[Dict[str, str]]:
-    # YouTube RSS принимает пробелы как +, но requests сам нормально проглотит,
-    # мы делаем минимально: заменим пробелы на +
+def _fetch_search_rss(query: str, timeout: int = 20) -> List[Dict[str, str]]:
     q = query.strip().replace(" ", "+")
     url = YOUTUBE_SEARCH_RSS + q
 
-    r = requests.get(url, timeout=timeout)
+    r = requests.get(url, timeout=timeout, headers={"User-Agent": UA})
     r.raise_for_status()
     root = ET.fromstring(r.text)
 
@@ -152,27 +140,17 @@ def _fetch_search_rss(query: str, timeout: int = 15) -> List[Dict[str, str]]:
 
 
 def get_batch(*, limit: int, posted_video_ids: Set[str]) -> List[Dict[str, str]]:
-    """
-    Возвращает items для main.py:
-      {"feed":"c_youtube","item_id":video_id,"video_id":...,"url":...,"title":...,"src":...}
-
-    Источник НЕ задан env-ом: каждый прогон берём несколько случайных search_query RSS.
-    """
     limit = max(0, int(limit))
     if limit <= 0:
         return []
 
-    # Можно управлять количеством “поисков” на один прогон:
-    # чем больше — тем выше шанс набрать limit, но больше запросов к YouTube RSS.
-    tries = int(os.getenv("C_SEARCH_TRIES", "6"))
-    tries = max(1, min(20, tries))
+    tries = int(os.getenv("C_SEARCH_TRIES", "8"))
+    tries = max(1, min(25, tries))
 
-    # База запросов: по умолчанию встроенная.
     queries = _env_list("C_SEARCH_QUERIES") or DEFAULT_SEARCH_QUERIES
     if not queries:
         return []
 
-    # Случайный порядок
     picked = queries[:]
     random.shuffle(picked)
     picked = picked[:tries]
@@ -202,7 +180,7 @@ def get_batch(*, limit: int, posted_video_ids: Set[str]) -> List[Dict[str, str]]
                     "video_id": vid,
                     "url": it["url"],
                     "title": it["title"],
-                    "src": q,  # для отладки: какой запрос нашёл
+                    "src": q,
                 }
             )
             if len(out) >= limit:
