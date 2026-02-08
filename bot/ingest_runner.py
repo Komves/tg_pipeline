@@ -29,22 +29,25 @@ API_ID = int(os.environ["TG_API_ID"])
 API_HASH = os.environ["TG_API_HASH"]
 
 
+def log(msg: str):
+    now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    print(f"[INGEST {now}] {msg}", flush=True)
+
+
 def load_sources() -> list[str]:
     if not SOURCES_FILE.exists():
         raise RuntimeError(f"sources.txt not found: {SOURCES_FILE}")
 
-    out: list[str] = []
-    with SOURCES_FILE.open("r", encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
+    out = []
+    for line in SOURCES_FILE.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s and not s.startswith("#"):
             out.append(s)
     return out
 
 
 def safe_channel_dir(name: str) -> Path:
-    safe = name.strip().replace("@", "").replace("/", "_").replace("\\", "_")
+    safe = name.strip().replace("@", "").replace("/", "_")
     p = RAW_DIR / safe
     p.mkdir(parents=True, exist_ok=True)
     return p
@@ -54,94 +57,99 @@ def cutoff_utc(hours: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=hours)
 
 
-def write_meta(media_path: Path, src: str, msg) -> None:
+def write_meta(media_path: Path, src: str, msg):
     meta_path = Path(str(media_path) + ".meta.json")
     payload = {
-        "tg_date": (msg.date.isoformat() if getattr(msg, "date", None) else None),
-        "msg_id": getattr(msg, "id", None),
+        "tg_date": msg.date.isoformat() if msg.date else None,
+        "msg_id": msg.id,
         "src": src,
-        "caption": getattr(msg, "message", None),
+        "caption": msg.message,
     }
-    try:
-        meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:
-        print(f"[meta] error write {meta_path}: {e}")
+    meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-async def download_media(client: TelegramClient, src: str, msg, channel_dir: Path) -> bool:
-    if not getattr(msg, "media", None):
+async def download_media(client, src, msg, channel_dir):
+    if not msg.media:
         return False
     try:
         target = channel_dir / f"{msg.id}"
         saved = await client.download_media(msg.media, file=str(target))
         if not saved:
             return False
-
-        media_path = Path(saved)
-        write_meta(media_path, src, msg)
+        write_meta(Path(saved), src, msg)
         return True
-
     except Exception as e:
-        print(f"[media] error src={src} msg_id={getattr(msg, 'id', '?')}: {e}")
+        log(f"download error {src} msg={msg.id} err={e}")
         return False
 
 
-async def ingest_hours(hours: int) -> None:
+async def ingest_hours(hours: int):
+    log("START ingest")
+
     sources = load_sources()
+    log(f"sources={len(sources)}")
+
     cutoff = cutoff_utc(hours)
 
-    print(f"[INGEST] hours={hours}")
-    print(f"[INGEST] sources_file={SOURCES_FILE} exists={SOURCES_FILE.exists()}")
-    print(f"[INGEST] data_dir={DATA_DIR}")
-    print(f"[INGEST] raw_dir={RAW_DIR}")
-    print(f"[INGEST] session_base={SESSION_BASE}")
-    print(f"[INGEST] sources_count={len(sources)}")
-
     client = TelegramClient(SESSION_BASE, API_ID, API_HASH)
+
+    log("connecting telegram...")
     await client.connect()
+    log("connected telegram")
 
     try:
         if not await client.is_user_authorized():
-            raise RuntimeError(
-                "Telethon session is NOT authorized.\n"
-                f"Expected session file on disk: {SESSION_BASE}.session\n"
-                "Fix: ensure TG_SESSION points to /data/tg_session and that /data contains tg_session.session\n"
-            )
+            raise RuntimeError("Telethon session NOT authorized")
+
+        total_downloaded = 0
 
         for src in sources:
+            log(f"channel start: {src}")
+
             channel_dir = safe_channel_dir(src)
             downloaded = 0
+            scanned = 0
 
             try:
                 entity = await client.get_entity(src)
+                log(f"entity ok: {src}")
 
                 async for msg in client.iter_messages(
                     entity,
                     offset_date=cutoff,
                     reverse=True,
                 ):
-                    if not getattr(msg, "media", None):
+                    scanned += 1
+
+                    if scanned % 50 == 0:
+                        log(f"{src} scanned={scanned} downloaded={downloaded}")
+
+                    if not msg.media:
                         continue
+
                     ok = await download_media(client, src, msg, channel_dir)
+
                     if ok:
                         downloaded += 1
+                        total_downloaded += 1
 
             except FloodWaitError as e:
-                print(f"[FloodWait] {src}: sleep {e.seconds}s")
+                log(f"FloodWait {src} sleep={e.seconds}s")
                 await asyncio.sleep(e.seconds)
 
             except Exception as e:
-                print(f"[ERROR] {src}: {e}")
+                log(f"channel error {src}: {e}")
 
-            print(f"[OK] {src}: downloaded={downloaded}")
+            log(f"channel done {src} scanned={scanned} downloaded={downloaded}")
+
+        log(f"INGEST DONE total_downloaded={total_downloaded}")
 
     finally:
         await client.disconnect()
+        log("telegram disconnected")
 
 
 if __name__ == "__main__":
     import sys
-    h = 24
-    if len(sys.argv) > 1:
-        h = int(sys.argv[1])
+    h = int(sys.argv[1]) if len(sys.argv) > 1 else 24
     asyncio.run(ingest_hours(h))
