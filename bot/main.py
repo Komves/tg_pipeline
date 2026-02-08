@@ -7,7 +7,6 @@ from datetime import datetime, timezone, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
-from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
@@ -29,9 +28,6 @@ except Exception:
     b_video_ranker = None
 
 
-# =========================
-# ENV / PATHS
-# =========================
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 CHAT_ID = (os.getenv("CHAT_ID") or "").strip()
 ADMIN_USER_IDS = (os.getenv("ADMIN_USER_IDS") or "").strip()
@@ -55,13 +51,9 @@ MSK = ZoneInfo("Europe/Moscow")
 AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
 _run_lock = asyncio.Lock()
-
 router = Router()
 
 
-# =========================
-# LOGGING
-# =========================
 def log(msg: str) -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[main] {now} {msg}", flush=True)
@@ -85,9 +77,6 @@ def _chat_user_id() -> int:
         return 0
 
 
-# =========================
-# STATE (auto daily 24h once per MSK day)
-# =========================
 def _load_state() -> dict:
     if not STATE_PATH.exists():
         return {}
@@ -124,9 +113,6 @@ def _mark_auto_ran_today() -> None:
     _save_state(st)
 
 
-# =========================
-# POSTED (anti-repeat)
-# =========================
 def _ensure_posted_header() -> None:
     if not POSTED_TSV.exists():
         POSTED_TSV.write_text("timestamp\tuser_id\titem_id\tfeed\n", encoding="utf-8")
@@ -155,9 +141,6 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
         f.write(f"{ts}\t{user_id}\t{item_id}\t{feed}\n")
 
 
-# =========================
-# FEEDBACK (A only)
-# =========================
 def _load_sent_index() -> Dict[str, Any]:
     if not SENT_INDEX_JSON.exists():
         return {}
@@ -208,9 +191,6 @@ def _kb_for_sid(sid: str):
     return kb.as_markup()
 
 
-# =========================
-# META / STABLE ID / CAPTION (NO LINKS)
-# =========================
 def _meta_path(abs_path: str) -> Path:
     return Path(str(abs_path) + ".meta.json")
 
@@ -223,42 +203,6 @@ def _read_meta(abs_path: str) -> Dict[str, Any]:
         return json.loads(mp.read_text(encoding="utf-8"))
     except Exception:
         return {}
-
-
-def _clean_src_text(src: str) -> str:
-    """
-    Превращаем любые https://t.me/... или t.me/... в НЕ-ссылочный текст.
-    Возвращаем только "username" или "c/<id>" без протокола и домена.
-    """
-    s = (src or "").strip()
-    if not s:
-        return ""
-    try:
-        # добавим схему, если её нет, чтобы urlparse отработал
-        if "://" not in s and s.startswith("t.me/"):
-            s2 = "https://" + s
-        else:
-            s2 = s
-        u = urlparse(s2)
-        path = (u.path or "").strip("/")
-        if path:
-            # для обычного канала: username
-            # для инвайта/привата: +xxxx -> оставим как "invite"
-            if path.startswith("+"):
-                return "invite"
-            return path
-    except Exception:
-        pass
-
-    # fallback: просто режем домен
-    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-            break
-    s = s.strip().strip("/")
-    if s.startswith("+"):
-        return "invite"
-    return s
 
 
 def _stable_item_id(abs_path: str) -> str:
@@ -274,27 +218,11 @@ def _stable_item_id(abs_path: str) -> str:
         return abs_path
 
 
-def _caption_for_item(it: Dict[str, Any]) -> Optional[str]:
-    """
-    ВАЖНО: никакого t.me/https://... в подписи.
-    И никакого item_id.
-    """
-    abs_path = it.get("abs_path", "")
-    meta = _read_meta(abs_path)
-
-    src_raw = (meta.get("src") or it.get("src") or "").strip()
-    src = _clean_src_text(src_raw)
-
-    # Можно вообще без текста — тогда будет 100% без ссылок.
-    # Но оставим коротко, чтобы понимать источник.
-    if src:
-        return f"src: {src}"
+def _caption_for_item(_it: Dict[str, Any]) -> Optional[str]:
+    # ВАЖНО: полностью убрали подписи (и ссылки, и src, и score)
     return None
 
 
-# =========================
-# NORMALIZE OUTPUTS
-# =========================
 def _to_item(x: Any, feed: str) -> Optional[Dict[str, Any]]:
     if x is None:
         return None
@@ -336,9 +264,6 @@ def _dedupe_keep_order(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-# =========================
-# RANKERS
-# =========================
 def _rank_a_videos(n: int) -> List[Dict[str, Any]]:
     items = ranker.rank_top_n(user_id=0, category=ranker.CAT_A_VIDEO, n=max(0, n), feed="feed_a_video")
     out = []
@@ -416,14 +341,10 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
     return out
 
 
-# =========================
-# SENDING
-# =========================
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
-    abs_path = it["abs_path"]
-    p = Path(abs_path)
+    p = Path(it["abs_path"])
     if not p.exists():
-        log(f"send skip missing file: {abs_path}")
+        log(f"send skip missing file: {it['abs_path']}")
         return False
 
     ext = p.suffix.lower()
@@ -487,10 +408,8 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
         if feed == "b_video" and item_id in posted_b_video:
             continue
 
-        # ГАРАНТИЯ: кнопки есть для всего, кроме B
-        with_buttons = (feed != "b_video")
-
-        ok = await _send_one(bot, chat_id, it, with_buttons=with_buttons)
+        # кнопки пока оставляем как было: есть на всех (ты сказал так сейчас)
+        ok = await _send_one(bot, chat_id, it, with_buttons=True)
         if not ok:
             continue
 
@@ -508,9 +427,6 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
     return sent_total
 
 
-# =========================
-# RUN
-# =========================
 async def run_all(hours: int, *, reason: str) -> None:
     async with _run_lock:
         log(f"RUN start reason={reason} hours={hours}")
@@ -547,12 +463,9 @@ async def run_all(hours: int, *, reason: str) -> None:
         log("RUN end")
 
 
-# =========================
-# BOT COMMANDS / CALLBACKS
-# =========================
 @router.message(Command("get12"))
 async def cmd_get12(msg: Message):
-    await msg.answer("Ок. Запускаю прогон за 12 часов (A мемы/видео + B видео).")
+    await msg.answer("Ок. Запускаю прогон за 12 часов.")
     asyncio.create_task(run_all(12, reason="manual_get12"))
 
 
@@ -573,11 +486,6 @@ async def on_feedback(cb: CallbackQuery):
         await cb.answer("Старое/не найдено", show_alert=False)
         return
 
-    # на B даже если вдруг кнопки появятся — фидбек не пишем
-    if payload.get("feed") == "b_video":
-        await cb.answer("Ок", show_alert=False)
-        return
-
     user_id = cb.from_user.id if cb.from_user else 0
     _append_feedback(user_id, action, payload)
 
@@ -591,9 +499,6 @@ async def on_feedback(cb: CallbackQuery):
         await cb.answer("Записал", show_alert=False)
 
 
-# =========================
-# SCHEDULER LOOP
-# =========================
 async def scheduler_loop():
     log("scheduler loop started")
     while True:
@@ -610,9 +515,6 @@ async def scheduler_loop():
         await asyncio.sleep(HEARTBEAT_SEC)
 
 
-# =========================
-# MAIN
-# =========================
 async def main_async():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN missing")
@@ -621,7 +523,6 @@ async def main_async():
     log("manual command: /get12")
     log("auto: once per day in MSK 00:00–06:00 window (24h)")
     log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT}")
-    log("buttons: A only (anything except B)")
     log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
