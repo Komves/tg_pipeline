@@ -1,4 +1,3 @@
-# bot/main.py
 import os
 import json
 import asyncio
@@ -12,7 +11,6 @@ import ingest_runner
 import nsfw_runner
 import ranker
 
-# optional modules (если есть в проекте — будут использованы)
 try:
     import meme_ranker
 except Exception:
@@ -29,45 +27,34 @@ from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-# =========================
-# ENV / PATHS
-# =========================
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 CHAT_ID = (os.getenv("CHAT_ID") or "").strip()
 ADMIN_USER_IDS = (os.getenv("ADMIN_USER_IDS") or "").strip()
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-
 RAW_DIR = DATA_DIR / "raw"
 
-# anti-repeat + feedback storage
 POSTED_TSV = DATA_DIR / "a_posted_master.tsv"
 FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 
-# scheduler state (auto 24h once per MSK day)
 STATE_PATH = DATA_DIR / "daily_state.json"
 
-# limits (WORKING MODE)
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
 A_VIDEOS_LIMIT = int(os.getenv("A_VIDEOS_LIMIT", "20"))
 B_VIDEOS_LIMIT = int(os.getenv("B_VIDEOS_LIMIT", "5"))
 
-# heartbeat only (not a work frequency)
-HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))  # 5 min
+HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
 
-# auto daily window MSK: 00:00–06:00
 MSK = ZoneInfo("Europe/Moscow")
-AUTO_DEADLINE_MSK = dtime(6, 0, 0)  # 06:00 MSK
+AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
-# prevent concurrent runs
 _run_lock = asyncio.Lock()
 
+router = Router()
 
-# =========================
-# LOGGING
-# =========================
+
 def log(msg: str) -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[main] {now} {msg}", flush=True)
@@ -91,9 +78,6 @@ def _chat_user_id() -> int:
         return 0
 
 
-# =========================
-# STATE (auto daily 24h)
-# =========================
 def _load_state() -> dict:
     if not STATE_PATH.exists():
         return {}
@@ -115,7 +99,6 @@ def _today_msk_str() -> str:
 
 
 def _in_auto_window_msk() -> bool:
-    # окно 00:00–06:00 МСК
     return datetime.now(MSK).time() <= AUTO_DEADLINE_MSK
 
 
@@ -131,10 +114,6 @@ def _mark_auto_ran_today() -> None:
     _save_state(st)
 
 
-# =========================
-# POSTED (anti-repeat)
-# schema: timestamp, user_id, item_id, feed
-# =========================
 def _ensure_posted_header() -> None:
     if not POSTED_TSV.exists():
         POSTED_TSV.write_text("timestamp\tuser_id\titem_id\tfeed\n", encoding="utf-8")
@@ -163,9 +142,6 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
         f.write(f"{ts}\t{user_id}\t{item_id}\t{feed}\n")
 
 
-# =========================
-# FEEDBACK (A only)
-# =========================
 def _load_sent_index() -> Dict[str, Any]:
     if not SENT_INDEX_JSON.exists():
         return {}
@@ -216,9 +192,6 @@ def _kb_for_sid(sid: str):
     return kb.as_markup()
 
 
-# =========================
-# NORMALIZE outputs
-# =========================
 def _guess_item_id_from_path(abs_path: str) -> str:
     try:
         rp = str(Path(abs_path).resolve().relative_to(RAW_DIR.resolve()))
@@ -230,16 +203,12 @@ def _guess_item_id_from_path(abs_path: str) -> str:
 def _to_item(x: Any, feed: str) -> Optional[Dict[str, Any]]:
     if x is None:
         return None
-
-    # RankedItem-like
     if hasattr(x, "abs_path"):
         abs_path = str(getattr(x, "abs_path"))
         item_id = str(getattr(x, "item_id", "") or _guess_item_id_from_path(abs_path))
         src = str(getattr(x, "src", "") or "")
         score = getattr(x, "score", None)
         return {"feed": feed, "item_id": item_id, "abs_path": abs_path, "src": src, "score": score}
-
-    # dict-like
     if isinstance(x, dict):
         abs_path = x.get("abs_path") or x.get("path") or x.get("file")
         if not abs_path:
@@ -249,13 +218,10 @@ def _to_item(x: Any, feed: str) -> Optional[Dict[str, Any]]:
         src = str(x.get("src") or x.get("channel") or "")
         score = x.get("score")
         return {"feed": feed, "item_id": item_id, "abs_path": abs_path, "src": src, "score": score}
-
-    # path-like
     if isinstance(x, (str, Path)):
         abs_path = str(x)
         item_id = _guess_item_id_from_path(abs_path)
         return {"feed": feed, "item_id": item_id, "abs_path": abs_path, "src": "", "score": None}
-
     return None
 
 
@@ -271,9 +237,6 @@ def _dedupe_keep_order(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-# =========================
-# RANKERS
-# =========================
 def _rank_a_videos(n: int) -> List[Dict[str, Any]]:
     items = ranker.rank_top_n(user_id=0, category=ranker.CAT_A_VIDEO, n=max(0, n), feed="feed_a_video")
     out = []
@@ -287,15 +250,28 @@ def _rank_a_videos(n: int) -> List[Dict[str, Any]]:
 def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
     if meme_ranker is None:
         return []
-    cand = []
-    if hasattr(meme_ranker, "rank_memes"):
-        cand = meme_ranker.rank_memes()
-    elif hasattr(meme_ranker, "rank"):
-        cand = meme_ranker.rank()
-    else:
-        return []
 
-    out = []
+    uid = _chat_user_id()
+    out: List[Dict[str, Any]] = []
+
+    try:
+        # prefer exact signature rank_memes(user_id, n)
+        if hasattr(meme_ranker, "rank_memes"):
+            cand = meme_ranker.rank_memes(uid, max(0, n))
+        elif hasattr(meme_ranker, "rank_top_n"):
+            cand = meme_ranker.rank_top_n(uid, max(0, n))
+        elif hasattr(meme_ranker, "rank"):
+            # may accept (user_id, n) or no args
+            try:
+                cand = meme_ranker.rank(uid, max(0, n))
+            except TypeError:
+                cand = meme_ranker.rank()
+        else:
+            cand = []
+    except Exception as e:
+        log(f"memes rank error: {e}")
+        cand = []
+
     for x in (cand or []):
         it = _to_item(x, "a_meme")
         if it:
@@ -308,15 +284,29 @@ def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
 def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
     if b_video_ranker is None:
         return []
-    cand = []
-    if hasattr(b_video_ranker, "rank_b_videos"):
-        cand = b_video_ranker.rank_b_videos()
-    elif hasattr(b_video_ranker, "rank"):
-        cand = b_video_ranker.rank()
-    else:
-        return []
 
-    out = []
+    uid = _chat_user_id()
+    out: List[Dict[str, Any]] = []
+
+    try:
+        if hasattr(b_video_ranker, "rank_b_videos"):
+            try:
+                cand = b_video_ranker.rank_b_videos(uid, max(0, n))
+            except TypeError:
+                cand = b_video_ranker.rank_b_videos()
+        elif hasattr(b_video_ranker, "rank_top_n"):
+            cand = b_video_ranker.rank_top_n(uid, max(0, n))
+        elif hasattr(b_video_ranker, "rank"):
+            try:
+                cand = b_video_ranker.rank(uid, max(0, n))
+            except TypeError:
+                cand = b_video_ranker.rank()
+        else:
+            cand = []
+    except Exception as e:
+        log(f"B rank error: {e}")
+        cand = []
+
     for x in (cand or []):
         it = _to_item(x, "b_video")
         if it:
@@ -326,9 +316,6 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
     return out
 
 
-# =========================
-# SENDING
-# =========================
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
     abs_path = it["abs_path"]
     p = Path(abs_path)
@@ -341,14 +328,12 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
 
     reply_markup = None
     sid = None
-
     if with_buttons:
         sid = _sid(it["feed"], it["item_id"])
         reply_markup = _kb_for_sid(sid)
 
     file = FSInputFile(str(p))
 
-    # NOTE: B отправляем без кнопок
     try:
         if ext in {".jpg", ".jpeg", ".png", ".webp"}:
             await bot.send_photo(chat_id=chat_id, photo=file, caption=caption, reply_markup=reply_markup)
@@ -360,7 +345,6 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
         log(f"send error: {e}")
         return False
 
-    # save sid mapping only for A
     if with_buttons and sid:
         sent_index = _load_sent_index()
         sent_index[sid] = {
@@ -383,18 +367,16 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
 
     user_id = _chat_user_id()
 
-    sent_total = 0
-
-    # posted sets per feed
     posted_a_video = _load_posted(user_id, "a_video")
     posted_a_meme = _load_posted(user_id, "a_meme")
     posted_b_video = _load_posted(user_id, "b_video")
+
+    sent_total = 0
 
     for it in items:
         feed = it["feed"]
         item_id = it["item_id"]
 
-        # anti-repeat by feed
         if feed == "a_video" and item_id in posted_a_video:
             continue
         if feed == "a_meme" and item_id in posted_a_meme:
@@ -402,7 +384,7 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
         if feed == "b_video" and item_id in posted_b_video:
             continue
 
-        with_buttons = feed in {"a_video", "a_meme"}  # A only
+        with_buttons = feed in {"a_video", "a_meme"}  # A only (B no buttons)
 
         ok = await _send_one(bot, chat_id, it, with_buttons=with_buttons)
         if not ok:
@@ -422,14 +404,10 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
     return sent_total
 
 
-# =========================
-# RUN (12h / 24h)
-# =========================
 async def run_all(hours: int, *, reason: str) -> None:
     async with _run_lock:
         log(f"RUN start reason={reason} hours={hours}")
 
-        # 1) ingest
         try:
             log(f"ingest start hours={hours}")
             await ingest_runner.ingest_hours(hours)
@@ -437,25 +415,21 @@ async def run_all(hours: int, *, reason: str) -> None:
         except Exception as e:
             log(f"ingest error: {e}")
 
-        # 2) nsfw scoring (only affects B; must never block)
         try:
             log("nsfw scoring start")
-            nsfw_runner.score_missing_b(hours=hours)  # лимиты внутри nsfw_runner + env
+            nsfw_runner.score_missing_b(hours=hours)
             log("nsfw scoring done")
         except Exception as e:
             log(f"nsfw scoring stop: {e}")
 
-        # 3) rank all categories
         a_videos = _rank_a_videos(A_VIDEOS_LIMIT)
         a_memes = _rank_a_memes(A_MEMES_LIMIT)
         b_videos = _rank_b_videos(B_VIDEOS_LIMIT)
 
         log(f"ranked a_videos={len(a_videos)} a_memes={len(a_memes)} b_videos={len(b_videos)}")
 
-        # order: A memes -> A videos -> B videos
         items = _dedupe_keep_order(a_memes + a_videos + b_videos)
 
-        # 4) send
         bot = Bot(token=BOT_TOKEN)
         try:
             sent = await send_batch(bot, items)
@@ -464,12 +438,6 @@ async def run_all(hours: int, *, reason: str) -> None:
             await bot.session.close()
 
         log("RUN end")
-
-
-# =========================
-# BOT (manual command + feedback)
-# =========================
-router = Router()
 
 
 @router.message(Command("get12"))
@@ -495,7 +463,6 @@ async def on_feedback(cb: CallbackQuery):
         await cb.answer("Старое/не найдено", show_alert=False)
         return
 
-    # feedback only for A feeds
     if payload.get("feed") not in {"a_video", "a_meme"}:
         await cb.answer("Ок", show_alert=False)
         return
@@ -513,9 +480,6 @@ async def on_feedback(cb: CallbackQuery):
         await cb.answer("Записал", show_alert=False)
 
 
-# =========================
-# SCHEDULER LOOP (auto 24h)
-# =========================
 async def scheduler_loop():
     log("scheduler loop started")
     while True:
@@ -532,9 +496,6 @@ async def scheduler_loop():
         await asyncio.sleep(HEARTBEAT_SEC)
 
 
-# =========================
-# MAIN
-# =========================
 async def main_async():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN missing")
@@ -542,7 +503,6 @@ async def main_async():
     log("worker started")
     log("manual command: /get12 (12h for ALL categories: A memes + A videos + B videos)")
     log("auto: once per day in MSK 00:00–06:00 window (24h for ALL categories)")
-
     log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT}")
     log("feedback: A only (memes + videos). B has NO buttons.")
 
