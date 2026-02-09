@@ -18,7 +18,7 @@ import nsfw_runner
 import ranker
 import c_youtube_fetcher
 
-import news_digest  # NEW
+import news_digest
 
 import memory
 import persona
@@ -47,7 +47,6 @@ FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 STATE_PATH = DATA_DIR / "daily_state.json"
 
-# Category C: posted (global, never repeat) + source cooldown
 C_POSTED_TSV = DATA_DIR / "c_posted_master.tsv"
 
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
@@ -59,7 +58,6 @@ HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
 MSK = ZoneInfo("Europe/Moscow")
 AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
-# News
 NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
 NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 
@@ -72,11 +70,13 @@ NEWS_SOURCES_FILE = NEWS_SOURCES_PRIMARY if NEWS_SOURCES_PRIMARY.exists() else N
 _run_lock = asyncio.Lock()
 router = Router()
 
-# ====== dialog context ======
-# если пользователь один раз обратился по имени — считаем следующие сообщения обращёнными N секунд
+# ===== dialog context =====
 DIALOG_TTL_SEC = int(os.getenv("V_DIALOG_TTL_SEC", "90"))
-_last_addressed: Dict[Tuple[int, int], float] = {}  # (chat_id, user_id) -> monotonic ts
-# ============================
+_last_addressed: Dict[Tuple[int, int], float] = {}  # (chat_id, user_id) -> loop.time()
+# ===== choice state =====
+CHOICE_TTL_SEC = int(os.getenv("V_CHOICE_TTL_SEC", "45"))
+_pending_choice: Dict[Tuple[int, int], float] = {}  # (chat_id, user_id) -> expire_ts(loop.time())
+# =========================
 
 
 def log(msg: str) -> None:
@@ -683,13 +683,17 @@ async def _delayed_answer(msg: Message, text: str, delay_sec: int) -> None:
 
 
 async def _typing_then_answer(msg: Message, text: str) -> None:
-    # видимость “печатает”
     try:
         await msg.bot.send_chat_action(chat_id=msg.chat.id, action="typing")
     except Exception:
         pass
-    await asyncio.sleep(random.uniform(0.7, 2.2))
+    await asyncio.sleep(random.uniform(0.6, 1.8))
     await msg.answer(text)
+
+
+def _key(msg: Message) -> Tuple[int, int]:
+    u = msg.from_user
+    return (msg.chat.id if msg.chat else 0, (u.id if u else 0))
 
 
 @router.message()
@@ -700,35 +704,72 @@ async def vesya_handler(msg: Message):
     if text.startswith("/"):
         return
 
+    loop = asyncio.get_event_loop()
+    k = _key(msg)
+    now = loop.time()
+
+    # 1) если ждём выбор после "Контент/Новости/Стриптиз?"
+    exp = _pending_choice.get(k)
+    if exp is not None:
+        if now <= exp:
+            choice = persona.classify_choice_reply(text)
+            if choice == "content":
+                _pending_choice.pop(k, None)
+                asyncio.create_task(run_all(12, reason="chat_choice_run_all"))
+                return
+            if choice == "news":
+                _pending_choice.pop(k, None)
+                asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="chat_choice_news"))
+                return
+            if choice == "strip":
+                _pending_choice.pop(k, None)
+                await _typing_then_answer(msg, persona.strip_reply())
+                return
+
+            # не понял — переспросить и обновить таймер
+            _pending_choice[k] = now + CHOICE_TTL_SEC
+            await _typing_then_answer(msg, persona.choice_prompt())
+            return
+        else:
+            _pending_choice.pop(k, None)
+
+    # 2) обычный интент по тексту
     ir = persona.detect_intent(text)
 
-    u = msg.from_user
-    chat_id_int = msg.chat.id if msg.chat else 0
-    user_id_int = (u.id if u else 0)
-
-    # контекст: если недавно уже обращались — считаем это продолжением диалога
+    # 3) контекст диалога (если недавно обращались) — но НЕ перебивает явные команды
     if not getattr(ir, "addressed", False):
-        key = (chat_id_int, user_id_int)
-        last_ts = _last_addressed.get(key)
-        if last_ts is not None:
-            if (asyncio.get_event_loop().time() - last_ts) <= DIALOG_TTL_SEC:
-                # продолжение диалога
-                ir = persona.IntentResult(addressed=True, intent="chat", question=text)
-            else:
-                _last_addressed.pop(key, None)
+        last_ts = _last_addressed.get(k)
+        if last_ts is not None and (now - last_ts) <= DIALOG_TTL_SEC:
+            # внутри диалога: проверим "явные" слова
+            if persona.NEWS_RE.search(text):
+                asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="dialog_news"))
+                return
+            if persona.CONTENT_EXPLICIT_RE.search(text):
+                asyncio.create_task(run_all(12, reason="dialog_run_all"))
+                return
+            if persona.IGNITE_RE.search(text):
+                _pending_choice[k] = now + CHOICE_TTL_SEC
+                await _typing_then_answer(msg, persona.choice_prompt())
+                return
 
+            # иначе — чат
+            await _typing_then_answer(msg, persona.answer_chat(text))
+            return
+
+    # если всё ещё не обращение — молчим
     if not getattr(ir, "addressed", False):
         return
 
-    # запоминаем, что диалог начат
-    _last_addressed[(chat_id_int, user_id_int)] = asyncio.get_event_loop().time()
+    # запоминаем начало/продление диалога
+    _last_addressed[k] = now
 
     # memory (fail-safe)
     try:
         profiles = memory.load_profiles()
+        u = msg.from_user
         prof = memory.ensure_user_profile(
             profiles,
-            user_id=user_id_int,
+            user_id=(u.id if u else 0),
             display_name=(u.full_name if u else ""),
             username=(u.username if u else ""),
         )
@@ -740,7 +781,7 @@ async def vesya_handler(msg: Message):
             {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "kind": "msg",
-                "uid": user_id_int,
+                "uid": (u.id if u else 0),
                 "text": text,
                 "intent": getattr(ir, "intent", ""),
             }
@@ -766,7 +807,7 @@ async def vesya_handler(msg: Message):
             await _typing_then_answer(msg, persona.alive_answer())
         return
 
-    # bot question
+    # bot_q
     if intent == "bot_q":
         await _typing_then_answer(msg, persona.bot_q_answer())
         return
@@ -782,50 +823,36 @@ async def vesya_handler(msg: Message):
         await _typing_then_answer(msg, persona.clarify_answer())
         return
 
-    # новости
+    # news
     if intent == "news":
         ack = persona.maybe_ack()
         if ack:
             await msg.answer(ack)
-        asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="chat_nl_news"))
+        asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="chat_news"))
         return
 
-    # музыка (только C, 2 ссылки)
-    if intent == "music":
+    # explicit run_all
+    if intent == "run_all":
         ack = persona.maybe_ack()
         if ack:
             await msg.answer(ack)
-
-        async def _run_music_only():
-            async with _run_lock:
-                bot = Bot(token=BOT_TOKEN)
-                try:
-                    posted_c = _load_c_posted_video_ids()
-                    last_by_source = _load_c_last_sent_by_source()
-                    c_items = c_youtube_fetcher.get_batch(
-                        limit=2,
-                        posted_video_ids=posted_c,
-                        last_sent_by_source=last_by_source,
-                    )
-                    if c_items:
-                        await send_batch(bot, c_items)
-                finally:
-                    await bot.session.close()
-
-        asyncio.create_task(_run_music_only())
+        asyncio.create_task(run_all(12, reason="chat_run_all"))
         return
 
-    # CHAT: настоящий диалог (а не get12)
+    # ambiguous ignite -> ask choice
+    if intent == "ignite_choice":
+        _pending_choice[k] = now + CHOICE_TTL_SEC
+        await _typing_then_answer(msg, persona.choice_prompt())
+        return
+
+    # chat
     if intent == "chat":
         q = getattr(ir, "question", "") or text
         await _typing_then_answer(msg, persona.answer_chat(q))
         return
 
-    # fallback: всё, что осталось — запускаем как /get12
-    ack = persona.maybe_ack()
-    if ack:
-        await msg.answer(ack)
-    asyncio.create_task(run_all(12, reason="chat_nl_get12"))
+    # fallback -> chat
+    await _typing_then_answer(msg, persona.answer_chat(text))
 
 
 @router.callback_query()
@@ -888,8 +915,7 @@ async def main_async():
     log("auto: once per day in MSK 00:00–06:00 window (24h)")
     log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT} | C:24h=6 C:12h=2")
     log(f"news: hours={NEWS_HOURS} limit={NEWS_LIMIT} sources={NEWS_SOURCES_FILE}")
-    log("buttons: A (3) + C (2), B none")
-    log(f"dialog ttl: {DIALOG_TTL_SEC}s")
+    log(f"dialog ttl: {DIALOG_TTL_SEC}s | choice ttl: {CHOICE_TTL_SEC}s")
     log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
