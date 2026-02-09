@@ -53,15 +53,20 @@ B_VIDEOS_LIMIT = int(os.getenv("B_VIDEOS_LIMIT", "5"))
 
 HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
 
+MSK = ZoneInfo("Europe/Moscow")
+AUTO_DEADLINE_MSK = dtime(6, 0, 0)
+
 # News
 NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
 NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-NEWS_SOURCES_FILE = REPO_ROOT / "tg_pipeline" / "news_sources.txt"
-
-MSK = ZoneInfo("Europe/Moscow")
-AUTO_DEADLINE_MSK = dtime(6, 0, 0)
+# УСТОЙЧИВО: сначала ищем рядом с main.py (bot/news_sources.txt),
+# если нет — fallback на <repo_root>/tg_pipeline/news_sources.txt (как было в старых путях).
+_THIS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _THIS_DIR.parent
+NEWS_SOURCES_PRIMARY = _THIS_DIR / "news_sources.txt"
+NEWS_SOURCES_FALLBACK = _REPO_ROOT / "tg_pipeline" / "news_sources.txt"
+NEWS_SOURCES_FILE = NEWS_SOURCES_PRIMARY if NEWS_SOURCES_PRIMARY.exists() else NEWS_SOURCES_FALLBACK
 
 _run_lock = asyncio.Lock()
 router = Router()
@@ -156,7 +161,6 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
 
 # ===== Category C posted (global, never repeat) =====
 def _ensure_c_posted_header() -> None:
-    # Новая версия с source (канал)
     if not C_POSTED_TSV.exists():
         C_POSTED_TSV.write_text("ts_utc\tvideo_id\turl\ttitle\tsource\n", encoding="utf-8")
 
@@ -178,10 +182,6 @@ def _load_c_posted_video_ids() -> set[str]:
 
 
 def _load_c_last_sent_by_source() -> Dict[str, str]:
-    """
-    source_key -> last ts_utc iso
-    Поддерживает старые строки без source (len<5): пропускаем.
-    """
     if not C_POSTED_TSV.exists():
         return {}
     out: Dict[str, str] = {}
@@ -300,7 +300,6 @@ def _stable_item_id(abs_path: str) -> str:
 
 
 def _caption_for_item(_it: Dict[str, Any]) -> Optional[str]:
-    # Убрали score/src и любые подписи
     return None
 
 
@@ -626,13 +625,6 @@ async def run_all(hours: int, *, reason: str) -> None:
 
 
 async def run_news(*, hours: int, limit: int, reason: str) -> None:
-    """
-    News pipeline:
-    - выполняется ТОЛЬКО по /news
-    - не трогает /data/raw
-    - хранит память показанного в /data/news_seen.tsv (3 дня)
-    - возвращает до 10 новых событий (если 0 — сообщает)
-    """
     async with _run_lock:
         log(f"NEWS start reason={reason} hours={hours} limit={limit}")
 
@@ -649,15 +641,18 @@ async def run_news(*, hours: int, limit: int, reason: str) -> None:
                 limit=limit,
             )
 
-            # Только новые; если 0 — пишем “нет”
             html_text = news_digest.build_html_message(items, hours=hours)
-            await bot.send_message(chat_id=chat_id, text=html_text, parse_mode="HTML", disable_web_page_preview=True)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=html_text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
 
-            # Помечаем показанным только если реально есть события
             if items:
                 news_digest.mark_digest_as_seen(items)
 
-            log(f"NEWS done items={len(items)}")
+            log(f"NEWS done items={len(items)} sources={NEWS_SOURCES_FILE}")
         except Exception as e:
             log(f"NEWS error: {e}")
         finally:
