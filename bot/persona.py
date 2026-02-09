@@ -10,61 +10,57 @@ from typing import Optional
 from openai import OpenAI
 
 
-# --- name detection (Веся / Весь / Веська / т.п.) ---
 NAME_RE = re.compile(r"(^|\s)(веся|веська|весь|вес(?:ь|я))([\s,!.?:;]|$)", re.IGNORECASE)
 
-# intents
 NEWS_RE = re.compile(r"\b(новост|сводк|че там в мире|что в мире|что происходит|в мире)\b", re.IGNORECASE)
 MUSIC_RE = re.compile(r"\b(музык|музон|кавер|cover|что послушать|ютуб|youtube)\b", re.IGNORECASE)
-ALIVE_RE = re.compile(r"\b(кто жив|есть кто жив|кто тут|все спят|живые есть|кто не спит)\b", re.IGNORECASE)
-INFO_Q_RE = re.compile(r"\b(что такое|как работает|как сделать|почему|зачем|объясни)\b", re.IGNORECASE)
+ALIVE_RE = re.compile(r"\b(кто жив|есть кто жив|кто тут|живые есть)\b", re.IGNORECASE)
+INFO_Q_RE = re.compile(r"\b(что такое|как работает|почему|объясни)\b", re.IGNORECASE)
+
 
 ACKS = [
     "сек",
-    "ща",
     "смотрю",
-    "ищу",
-    "подожди",
+    "ща гляну",
 ]
 
 CLARIFY = [
-    "что именно",
+    "что именно?",
     "уточни",
-    "конкретнее",
-    "про что ты",
-    "сформулируй нормально",
+    "про что ты?",
 ]
 
 ALIVE_ANSWERS = [
     "я здесь",
     "вижу",
-    "пока тихо",
-    "живые есть, но прячутся",
-    "похоже, ты один",
+    "не сплю",
 ]
 
-BOT_Q = re.compile(r"\b(ты бот|бот ли ты|ты человек)\b", re.IGNORECASE)
 BOT_Q_ANSWERS = [
-    "а ты?",
-    "мы все боты в этом мире",
-    "зависит от определения",
-    "это принципиально?",
+    "а ты как думаешь?",
+    "это важно?",
+]
+
+PING_ANSWERS = [
+    "я тут",
+    "слушаю",
+    "да?",
+    "что",
+    "чем помочь",
 ]
 
 EXCUSES = [
     "отвлеклась",
-    "была на связи с начальством",
-    "вышла за вином",
-    "носик пудрила",
-    "не могла ответить",
+    "была занята",
+    "пропустила сообщение",
 ]
 
 
 @dataclass(frozen=True)
 class IntentResult:
     addressed: bool
-    intent: str  # get12/news/music/alive_check/info_q/unclear/bot_q
-    question: str = ""  # for info_q
+    intent: str
+    question: str = ""
 
 
 def is_addressed(text: str) -> bool:
@@ -72,121 +68,94 @@ def is_addressed(text: str) -> bool:
 
 
 def strip_name_prefix(text: str) -> str:
-    t = (text or "").strip()
-    # убираем первое вхождение имени + знаки после него
-    t = NAME_RE.sub(" ", t, count=1).strip()
-    return t
+    return NAME_RE.sub(" ", text or "", count=1).strip()
 
 
 def detect_intent(text: str) -> IntentResult:
+
     raw = (text or "").strip()
     addressed = is_addressed(raw)
-    t = strip_name_prefix(raw) if addressed else raw
 
-    # "ты бот?"
-    if addressed and BOT_Q.search(t):
-        return IntentResult(addressed=True, intent="bot_q", question="")
+    if not addressed:
+        return IntentResult(False, "none")
 
-    if addressed and ALIVE_RE.search(t):
-        return IntentResult(addressed=True, intent="alive_check", question="")
+    t = strip_name_prefix(raw).lower()
 
-    if addressed and NEWS_RE.search(t):
-        return IntentResult(addressed=True, intent="news", question="")
+    if BOT_Q_ANSWERS and "бот" in t:
+        return IntentResult(True, "bot_q")
 
-    if addressed and MUSIC_RE.search(t):
-        return IntentResult(addressed=True, intent="music", question="")
+    if ALIVE_RE.search(t):
+        return IntentResult(True, "alive_check")
 
-    # info question
-    if addressed and (("?" in t) or INFO_Q_RE.search(t)):
-        q = t.strip()
-        if len(q) >= 6:
-            return IntentResult(addressed=True, intent="info_q", question=q)
+    if NEWS_RE.search(t):
+        return IntentResult(True, "news")
 
-    if addressed:
-        # если очень коротко/невнятно — уточняем
-        short = re.sub(r"\s+", " ", t).strip()
-        if len(short) <= 2 or short in {"ну", "давай", "нормально", "жги", "огня", "че", "что"}:
-            return IntentResult(addressed=True, intent="unclear", question="")
-        # по умолчанию — основной пайплайн
-        return IntentResult(addressed=True, intent="get12", question="")
+    if MUSIC_RE.search(t):
+        return IntentResult(True, "music")
 
-    return IntentResult(addressed=False, intent="none", question="")
+    if "?" in t or INFO_Q_RE.search(t):
+        return IntentResult(True, "info_q", t)
+
+    if len(t.strip()) <= 2:
+        return IntentResult(True, "ping")
+
+    return IntentResult(True, "unclear")
+
+
+# ===== delay теперь редкий — 8% =====
+
+def maybe_delay_seconds_for_ping() -> Optional[int]:
+
+    if random.random() < 0.08:
+        return random.randint(60, 180)
+
+    return None
 
 
 def maybe_ack() -> Optional[str]:
-    # иногда отправляем короткое "смотрю/сек"
-    if random.random() < 0.55:
+
+    if random.random() < 0.25:
         return random.choice(ACKS)
+
     return None
-
-
-def maybe_delay_seconds_for_ping() -> Optional[int]:
-    # иногда "пропадает" на 2–5 минут
-    if random.random() < 0.28:
-        return random.randint(120, 300)
-    return None
-
-
-def answer_bot_q() -> str:
-    return random.choice(BOT_Q_ANSWERS)
-
-
-def answer_alive() -> str:
-    return random.choice(ALIVE_ANSWERS)
-
-
-def answer_clarify() -> str:
-    return random.choice(CLARIFY)
-
-
-# ---- COMPAT WRAPPERS (важно для main.py) ----
-def clarify_answer() -> str:
-    # main.py ожидает persona.clarify_answer()
-    return answer_clarify()
-
-
-def alive_answer() -> str:
-    return answer_alive()
-
-
-def bot_q_answer() -> str:
-    return answer_bot_q()
 
 
 def ping_answer() -> str:
-    # простой ping-ответ; если main.py сам делает ack/delay — ок, но пусть будет безопасно
-    return "че надо"
+    return random.choice(PING_ANSWERS)
+
+
+def alive_answer() -> str:
+    return random.choice(ALIVE_ANSWERS)
+
+
+def bot_q_answer() -> str:
+    return random.choice(BOT_Q_ANSWERS)
+
+
+def clarify_answer() -> str:
+    return random.choice(CLARIFY)
 
 
 def excuse_text() -> str:
     return random.choice(EXCUSES)
 
 
-def info_answer(question: str) -> str:
-    # main.py может ожидать persona.info_answer()
-    return answer_info_fast(question)
-
-
 def answer_info_fast(question: str) -> str:
-    """
-    Быстрый ответ: GPT-5 без web_search. Если ключа нет — короткий fallback.
-    """
-    if not (os.getenv("OPENAI_API_KEY") or "").strip():
-        # fallback без палевных "нет доступа"
-        return "сформулируй чуть конкретнее. я отвечу."
+
+    if not os.getenv("OPENAI_API_KEY"):
+        return "сформулируй конкретнее"
 
     try:
+
         client = OpenAI()
+
         resp = client.responses.create(
-            model=os.getenv("V_INFO_MODEL", "gpt-5"),
-            input=(
-                "Отвечай по-русски. Коротко и по делу. "
-                "Стиль: разговорный, иногда саркастичный, но без клоунады. "
-                "Если вопрос неоднозначный — задай 1 уточняющий вопрос.\n\n"
-                f"Вопрос: {question}"
-            ),
+            model="gpt-5",
+            input=f"Ответь коротко и понятно по-русски: {question}",
         )
-        text = (getattr(resp, "output_text", "") or "").strip()
-        return text or "не люблю пустые вопросы. уточни."
+
+        return resp.output_text.strip()
+
     except Exception:
-        return "не сейчас. уточни вопрос — попробую нормально."
+
+        return "не могу сейчас нормально ответить"
