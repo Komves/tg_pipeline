@@ -29,7 +29,7 @@ MODEL_Q = re.compile(r"\b(какая модель|какой llm|на какой
 IDENTITY_Q = re.compile(
     r"\b("
     r"как тебя зовут|кто ты|твое имя|твоё имя|фамили|отчеств|полное имя|"
-    r"звание|кто ты по званию|ты капитан|ты фсб|фсб"
+    r"звание|кто ты по званию|ты капитан|ты фсб|фсб|где служишь"
     r")\b",
     re.IGNORECASE,
 )
@@ -46,12 +46,12 @@ EXCUSES = ["отвлеклась", "была занята", "промахнул�
 # ======= CANON (внутреннее знание) =======
 VESYA_FULL_NAME = os.getenv("V_FULL_NAME", "Комаи Веслава Сергеевна")
 VESYA_RANK = os.getenv("V_RANK", "капитан")
-VESYA_AGENCY_HINT = os.getenv("V_AGENCY_HINT", "ФСБ")  # только для намёков
+VESYA_AGENCY_HINT = os.getenv("V_AGENCY_HINT", "ФСБ")
 # ========================================
 
 FSB_EASTER_PROB = float(os.getenv("V_FSB_EASTER_PROB", "0.25"))  # 25%
 
-# ======= photo memory (refs) =======
+# ======= photo refs =======
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 VESYA_DIR = DATA_DIR / "vesya"
 VESYA_DIR.mkdir(parents=True, exist_ok=True)
@@ -59,7 +59,7 @@ REF_DIR = VESYA_DIR / "refs"
 REF_DIR.mkdir(parents=True, exist_ok=True)
 REF_INDEX = VESYA_DIR / "refs.json"
 MAX_REFS = int(os.getenv("V_REF_MAX", "50"))
-# =================================
+# =========================
 
 
 @dataclass(frozen=True)
@@ -120,7 +120,7 @@ def maybe_ack() -> Optional[str]:
 
 
 def maybe_delay_seconds_for_ping() -> Optional[int]:
-    # реже, чтобы не бесило
+    # редко, чтобы не раздражало
     if random.random() < 0.05:
         return random.randint(8, 20)
     return None
@@ -220,8 +220,31 @@ def answer_info_fast(question: str) -> str:
 
 
 # ==========================
-# PHOTO: "это я" + refs
+# PHOTO: refs + "это я" (режим B)
 # ==========================
+
+_SELF_PHOTO_LINES = [
+    "ага. узнаю. не лучший ракурс, но ладно.",
+    "это лишнее. убери из чата — и живём дальше.",
+    "мило. но не злоупотребляй.",
+    "ну… да. я. дальше что?",
+    "похоже, ты нашёл то, что не искал.",
+    "я бы это не светила. особенно тут.",
+]
+
+_NOT_SELF_LINES = [
+    "мимо.",
+    "не моё.",
+    "похожа, но не я.",
+    "нет. не та.",
+]
+
+_UNSURE_LINES = [
+    "похоже. но что ты хочешь этим сказать?",
+    "и? комментарий от меня нужен или ты просто хвастаешься?",
+    "красиво. но зачем мне это прислал?",
+]
+
 
 def _load_refs() -> List[Dict[str, Any]]:
     if not REF_INDEX.exists():
@@ -246,9 +269,7 @@ def _sha1_bytes(b: bytes) -> str:
     return hashlib.sha1(b).hexdigest()
 
 
-def _data_url_png_or_jpg(img_bytes: bytes) -> str:
-    # без определения формата — кладём как jpeg по умолчанию (модель всё равно поймёт)
-    # если хочешь строго — можно детектить сигнатуры, но не надо.
+def _data_url(img_bytes: bytes) -> str:
     b64 = base64.b64encode(img_bytes).decode("utf-8")
     return f"data:image/jpeg;base64,{b64}"
 
@@ -259,7 +280,6 @@ def _store_ref_if_new(img_bytes: bytes) -> None:
     if any((r.get("sha1") == h) for r in refs):
         return
 
-    # лимит
     if len(refs) >= MAX_REFS:
         refs = refs[-(MAX_REFS - 1):]
 
@@ -273,17 +293,16 @@ def _store_ref_if_new(img_bytes: bytes) -> None:
     _save_refs(refs)
 
 
-def _get_ref_images_data_urls(max_n: int = 4) -> List[str]:
+def _get_ref_urls(max_n: int = 4) -> List[str]:
     refs = _load_refs()
     urls: List[str] = []
-    # берём последние (самые свежие)
     for r in reversed(refs[-max_n:]):
         p = r.get("path")
         if not p:
             continue
         try:
             b = Path(p).read_bytes()
-            urls.append(_data_url_png_or_jpg(b))
+            urls.append(_data_url(b))
         except Exception:
             continue
     return urls
@@ -291,56 +310,79 @@ def _get_ref_images_data_urls(max_n: int = 4) -> List[str]:
 
 def answer_photo(img_bytes: bytes, caption: str = "") -> str:
     """
-    Возвращает ответ в стиле Веси на фото.
-    Логика:
-      - если похожа на "Весю" (по рефам/стилю) -> говорит как "узнала себя" (не обязательно прямым текстом)
-      - если не похожа -> нейтрально/подозрительно, может переспросить
+    Режим B: по умолчанию считаем, что это Веся (если стиль совпадает).
+    Никаких "подтверждаю личность / источник кадра" — только живой ответ.
     """
-    client = _openai_client()
-    if client is None or not img_bytes:
-        return "вижу. и что ты от меня хочешь?"
+    if not img_bytes:
+        return "и что ты мне этим показываешь?"
 
-    # берём рефы (если уже присылали)
-    ref_urls = _get_ref_images_data_urls(max_n=4)
-    this_url = _data_url_png_or_jpg(img_bytes)
+    client = _openai_client()
+    # без ключа — просто живой self-line (режим B)
+    if client is None:
+        _store_ref_if_new(img_bytes)
+        return random.choice(_SELF_PHOTO_LINES)
+
+    ref_urls = _get_ref_urls(max_n=4)
+    this_url = _data_url(img_bytes)
     cap = (caption or "").strip()
 
     system = VESYA_SYSTEM + """
 Отдельное правило для фото:
-- Твоя задача: понять, "это Веся" или "не Веся".
-- Если это Веся: отвечай как будто узнала себя. Не обязательно говорить "это я", лучше намёком/контролем.
-- Если сомневаешься: задай 1 короткий уточняющий вопрос.
-- Если точно не Веся: отвечай сухо: "не моё" / "мимо" / "не похожа", без объяснений.
+- НЕ используй формулировки про "верификацию личности", "подтверждение личности", "источник кадра", "биометрию" и т.п.
+- Это ролевая легенда: если фото в стиле/образе Веси — отвечай как на своё фото.
+- Если явно не похоже (другая возрастная группа/пол/совсем другой человек) — коротко "не моё".
+- Если сомневаешься — не уходи в канцелярит, задай 1 человеческий вопрос.
 Длина: 1–2 строки.
+"""
+
+    user_prompt = """
+Определи один из вариантов: SELF / NOT_SELF / UNSURE.
+Верни JSON строго вида:
+{"tag":"SELF|NOT_SELF|UNSURE","reply":"..."}
+reply должен быть в стиле Веси, 1–2 строки, без канцелярита.
 """
 
     try:
         model = os.getenv("V_VISION_MODEL", os.getenv("V_CHAT_MODEL", "gpt-5"))
-        content = [
-            {"type": "input_text", "text": f"Подпись пользователя: {cap or '(нет)'}"},
-            {"type": "input_text", "text": "Сначала определи: это Веся? Используй рефы (если есть) и общий стиль образа."},
-        ]
 
-        # добавим рефы как контекст
+        content = [
+            {"type": "input_text", "text": f"Подпись: {cap or '(нет)'}"},
+            {"type": "input_text", "text": user_prompt},
+        ]
         for u in ref_urls:
             content.append({"type": "input_image", "image_url": u})
-
-        # текущее фото
         content.append({"type": "input_image", "image_url": this_url})
 
         resp = client.responses.create(
             model=model,
             input=[{"role": "system", "content": system}, {"role": "user", "content": content}],
         )
+        raw = (getattr(resp, "output_text",l, None) or getattr(resp, "output_text", "") or "").strip()
 
-        text = (getattr(resp, "output_text", "") or "").strip()
-        if not text:
-            text = "любопытно."
+        # безопасный парсер JSON
+        tag = "SELF"
+        reply = ""
+        try:
+            j = json.loads(raw)
+            tag = (j.get("tag") or "SELF").strip().upper()
+            reply = (j.get("reply") or "").strip()
+        except Exception:
+            # если модель не дала JSON — не ломаемся
+            tag = "SELF"
+            reply = ""
 
-        # если у нас ещё мало рефов — сохраняем фото как реф (это соответствует твоему сценарию “я сгенерил её фотки”)
-        if len(_load_refs()) < 8:
+        if tag == "NOT_SELF":
+            out = reply or random.choice(_NOT_SELF_LINES)
+        elif tag == "UNSURE":
+            out = reply or random.choice(_UNSURE_LINES)
+        else:
+            out = reply or random.choice(_SELF_PHOTO_LINES)
+
+        # копим рефы (быстрее обучится на твоих генерациях)
+        if len(_load_refs()) < 12:
             _store_ref_if_new(img_bytes)
 
-        return text
+        return out
     except Exception:
-        return "вижу. странно. откуда это?"
+        _store_ref_if_new(img_bytes)
+        return random.choice(_SELF_PHOTO_LINES)
