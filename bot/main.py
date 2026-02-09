@@ -4,16 +4,17 @@ import json
 import asyncio
 import hashlib
 import random
-import time
+import requests
 from datetime import datetime, timezone, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.enums import ChatAction
 
 import ingest_runner
 import nsfw_runner
@@ -24,15 +25,16 @@ import news_digest
 import memory
 import persona
 
-# ---------- dialog manager (fail-safe import) ----------
 try:
-    import dialog_manager
-    DIALOG_ENABLED = True
-except Exception as e:
-    print(f"[main] dialog_manager disabled: {e}", flush=True)
-    dialog_manager = None
-    DIALOG_ENABLED = False
-# ------------------------------------------------------
+    import meme_ranker
+except Exception:
+    meme_ranker = None
+
+try:
+    import b_video_ranker
+except Exception:
+    b_video_ranker = None
+
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 CHAT_ID = (os.getenv("CHAT_ID") or "").strip()
@@ -353,9 +355,7 @@ def _rank_a_videos(n: int) -> List[Dict[str, Any]]:
 
 
 def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
-    try:
-        import meme_ranker
-    except Exception:
+    if meme_ranker is None:
         return []
 
     uid = _chat_user_id()
@@ -387,9 +387,7 @@ def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
 
 
 def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
-    try:
-        import b_video_ranker
-    except Exception:
+    if b_video_ranker is None:
         return []
 
     uid = _chat_user_id()
@@ -421,6 +419,49 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
         if len(out) >= n:
             break
     return out
+
+
+def _youtube_available(url: str) -> bool:
+    """
+    Исключаем "Video no longer available": проверка через oEmbed.
+    Для удалённых/приватных/недоступных часто будет 404.
+    """
+    url = (url or "").strip()
+    if not url:
+        return False
+    try:
+        oembed = "https://www.youtube.com/oembed"
+        r = requests.get(oembed, params={"url": url, "format": "json"}, timeout=6)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+async def _typing_loop(bot: Bot, chat_id: int, stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _answer_with_typing(msg: Message, text: str, min_sec: int = 3, max_sec: int = 7) -> None:
+    stop = asyncio.Event()
+    task = asyncio.create_task(_typing_loop(msg.bot, msg.chat.id, stop))
+    try:
+        await asyncio.sleep(0.05)
+        await asyncio.sleep(random.randint(min_sec, max_sec))
+        await msg.answer(text)
+    finally:
+        stop.set()
+        try:
+            await task
+        except Exception:
+            pass
 
 
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
@@ -609,6 +650,18 @@ async def run_all(hours: int, *, reason: str) -> None:
             log(f"C fetch error: {e}")
             c_items = []
 
+        # === FIX Category C: выкидываем недоступные видео (oEmbed 404) ===
+        if c_items:
+            before = len(c_items)
+            filtered = []
+            for it in c_items:
+                url = (it.get("url") or "").strip()
+                if url and _youtube_available(url):
+                    filtered.append(it)
+            c_items = filtered
+            log(f"C availability filter: {before} -> {len(c_items)}")
+        # ===============================================================
+
         log(f"ranked c_youtube={len(c_items)} (limit={c_limit})")
 
         items = _dedupe_keep_order(a_memes + a_videos + b_videos + c_items)
@@ -671,17 +724,42 @@ async def cmd_news(msg: Message):
 
 
 # =========================
+# PHOTO: Vesya recognition
+# =========================
+@router.message(F.photo)
+async def vesya_photo(msg: Message):
+    # в личке — всегда реагирует
+    # в группе — реагирует если есть "Веся" в подписи или если это reply на сообщение бота
+    cap = (msg.caption or "").strip()
+    is_reply_to_bot = (
+        msg.reply_to_message
+        and msg.reply_to_message.from_user
+        and msg.reply_to_message.from_user.id == msg.bot.id
+    )
+    is_private = (getattr(msg.chat, "type", "") == "private")
+
+    if not is_private and (not persona.is_addressed(cap) and not is_reply_to_bot):
+        return
+
+    # скачиваем фото (самое большое)
+    try:
+        ph = msg.photo[-1]
+        file = await msg.bot.get_file(ph.file_id)
+        bio = await msg.bot.download_file(file.file_path)
+        img_bytes = bio.read() if hasattr(bio, "read") else bytes(bio)
+    except Exception as e:
+        log(f"photo download error: {e}")
+        return
+
+    answer = persona.answer_photo(img_bytes, caption=cap)
+
+    # имитация набора
+    await _answer_with_typing(msg, answer, min_sec=2, max_sec=6)
+
+
+# =========================
 # VESYA (chat control)
 # =========================
-
-async def _delayed_answer(msg: Message, text: str, delay_sec: int) -> None:
-    await asyncio.sleep(max(0, int(delay_sec)))
-    try:
-        await msg.answer(text)
-    except Exception as e:
-        log(f"delayed answer error: {e}")
-
-
 @router.message()
 async def vesya_handler(msg: Message):
     text = (msg.text or "").strip()
@@ -690,56 +768,9 @@ async def vesya_handler(msg: Message):
     if text.startswith("/"):
         return
 
-    chat_id = msg.chat.id
-    user_id = msg.from_user.id if msg.from_user else 0
-
-    is_reply_to_bot = (
-        msg.reply_to_message
-        and msg.reply_to_message.from_user
-        and msg.reply_to_message.from_user.id == msg.bot.id
-    )
-
-    addressed = False
-    stripped = ""
-    try:
-        addressed = persona.is_addressed(text)
-        stripped = persona.strip_name_prefix(text) if addressed else ""
-    except Exception:
-        addressed = False
-        stripped = ""
-
-    if addressed and (not stripped or stripped.strip() == ""):
-        intent = "ping"
-        ir = None
-    else:
-        if addressed:
-            ir = persona.detect_intent(text)
-            intent = (getattr(ir, "intent", "") or "").strip()
-        else:
-            ir = None
-            intent = "chat"
-
-    # ---------- contextual dialog ----------
-    if not addressed and DIALOG_ENABLED:
-        try:
-            should_reply, should_clarify = dialog_manager.should_reply(
-                addressed=False,
-                is_reply_to_bot=bool(is_reply_to_bot),
-                text=text,
-                chat_id=chat_id,
-                user_id=user_id,
-            )
-            dialog_manager.mark_user_message(chat_id, user_id)
-
-            if should_clarify:
-                await msg.answer("ты мне?")
-                return
-
-            if not should_reply:
-                return
-        except Exception as e:
-            log(f"dialog_manager error: {e}")
-    # --------------------------------------
+    ir = persona.detect_intent(text)
+    if not getattr(ir, "addressed", False):
+        return
 
     try:
         profiles = memory.load_profiles()
@@ -751,7 +782,7 @@ async def vesya_handler(msg: Message):
             username=(u.username if u else ""),
         )
         memory.update_night_owl(prof, hour_local=datetime.now(MSK).hour)
-        memory.bump_intent(prof, intent or "unclear")
+        memory.bump_intent(prof, getattr(ir, "intent", "unclear") or "unclear")
         memory.save_profiles(profiles)
 
         memory.append_event(
@@ -760,81 +791,40 @@ async def vesya_handler(msg: Message):
                 "kind": "msg",
                 "uid": (u.id if u else 0),
                 "text": text,
-                "intent": intent,
+                "intent": getattr(ir, "intent", ""),
             }
         )
         memory.prune_memory()
     except Exception:
         pass
 
-    if intent == "ping":
-        try:
-            d = persona.maybe_delay_seconds_for_ping()
-        except Exception:
-            d = None
+    intent = (getattr(ir, "intent", "") or "").strip()
 
+    if intent == "ping":
+        d = persona.maybe_delay_seconds_for_ping()
         if d:
-            asyncio.create_task(_delayed_answer(msg, f"{persona.ping_answer()}. {persona.excuse_text()}.", d))
+            await _answer_with_typing(msg, f"{persona.ping_answer()}. {persona.excuse_text()}.", min_sec=max(2, d), max_sec=max(3, d + 2))
         else:
             await msg.answer(persona.ping_answer())
-
-        if DIALOG_ENABLED:
-            try:
-                dialog_manager.mark_bot_replied(chat_id, user_id)
-            except Exception:
-                pass
         return
 
     if intent == "alive_check":
-        if random.random() < 0.55:
-            if random.random() < 0.25:
-                asyncio.create_task(_delayed_answer(msg, persona.alive_answer(), random.randint(20, 120)))
-            else:
-                await msg.answer(persona.alive_answer())
-        if DIALOG_ENABLED:
-            try:
-                dialog_manager.mark_bot_replied(chat_id, user_id)
-            except Exception:
-                pass
+        if random.random() < 0.60:
+            await msg.answer(persona.alive_answer())
         return
 
     if intent == "bot_q":
         await msg.answer(persona.bot_q_answer())
-        if DIALOG_ENABLED:
-            try:
-                dialog_manager.mark_bot_replied(chat_id, user_id)
-            except Exception:
-                pass
         return
 
     if intent == "info_q":
-        q = getattr(ir, "question", "") if ir else ""
-        if not q:
-            q = text
-        await msg.answer(persona.answer_info_fast(q))
-        if DIALOG_ENABLED:
-            try:
-                dialog_manager.mark_bot_replied(chat_id, user_id)
-            except Exception:
-                pass
+        q = getattr(ir, "question", "") or text
+        ans = persona.answer_info_fast(q)
+        await _answer_with_typing(msg, ans, min_sec=3, max_sec=8)
         return
 
     if intent == "unclear":
         await msg.answer(persona.clarify_answer())
-        if DIALOG_ENABLED:
-            try:
-                dialog_manager.mark_bot_replied(chat_id, user_id)
-            except Exception:
-                pass
-        return
-
-    if intent == "chat" and not addressed:
-        await msg.answer(persona.answer_info_fast(text))
-        if DIALOG_ENABLED:
-            try:
-                dialog_manager.mark_bot_replied(chat_id, user_id)
-            except Exception:
-                pass
         return
 
     ack = persona.maybe_ack()
@@ -843,11 +833,6 @@ async def vesya_handler(msg: Message):
 
     if intent == "news":
         asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="chat_nl_news"))
-        if DIALOG_ENABLED:
-            try:
-                dialog_manager.mark_bot_replied(chat_id, user_id)
-            except Exception:
-                pass
         return
 
     if intent == "music":
@@ -863,25 +848,21 @@ async def vesya_handler(msg: Message):
                         posted_video_ids=posted_c,
                         last_sent_by_source=last_by_source,
                     )
+                    # фильтр доступности
+                    if c_items:
+                        c_items = [it for it in c_items if _youtube_available((it.get("url") or "").strip())]
                     if c_items:
                         await send_batch(bot, c_items)
                 finally:
                     await bot.session.close()
 
         asyncio.create_task(_run_music_only())
-        if DIALOG_ENABLED:
-            try:
-                dialog_manager.mark_bot_replied(chat_id, user_id)
-            except Exception:
-                pass
         return
 
-    asyncio.create_task(run_all(12, reason="chat_nl_get12"))
-    if DIALOG_ENABLED:
-        try:
-            dialog_manager.mark_bot_replied(chat_id, user_id)
-        except Exception:
-            pass
+    # default: обычный ответ через LLM в стиле
+    q = getattr(ir, "question", "") or persona.strip_name_prefix(text) or text
+    ans = persona.answer_info_fast(q)
+    await _answer_with_typing(msg, ans, min_sec=4, max_sec=9)
 
 
 @router.callback_query()
@@ -945,6 +926,8 @@ async def main_async():
     log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT} | C:24h=6 C:12h=2")
     log(f"news: hours={NEWS_HOURS} limit={NEWS_LIMIT} sources={NEWS_SOURCES_FILE}")
     log("buttons: A (3) + C (2), B none")
+    log("C fix: youtube oEmbed availability filter = ON")
+    log("photo: vesya recognize = ON")
     log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
