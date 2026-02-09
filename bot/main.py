@@ -3,6 +3,7 @@ import os
 import json
 import asyncio
 import hashlib
+import random
 from datetime import datetime, timezone, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,9 @@ import ranker
 import c_youtube_fetcher
 
 import news_digest  # NEW
+
+import memory
+import persona
 
 try:
     import meme_ranker
@@ -669,6 +673,129 @@ async def cmd_get12(msg: Message):
 async def cmd_news(msg: Message):
     await msg.answer(f"Ок. Собираю главные новости за последние {NEWS_HOURS} часов (до {NEWS_LIMIT}), только новые.")
     asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="manual_news"))
+
+
+# =========================
+# VESYA (chat control)
+# =========================
+
+async def _delayed_answer(msg: Message, text: str, delay_sec: int) -> None:
+    await asyncio.sleep(max(0, int(delay_sec)))
+    try:
+        await msg.answer(text)
+    except Exception as e:
+        log(f"delayed answer error: {e}")
+
+
+@router.message()
+async def vesya_handler(msg: Message):
+    text = (msg.text or "").strip()
+    if not text:
+        return
+    if text.startswith("/"):
+        return
+
+    ir = persona.detect_intent(text)
+    if not getattr(ir, "addressed", False):
+        return
+
+    # memory: не ломает, даже если что-то пойдёт не так
+    try:
+        profiles = memory.load_profiles()
+        u = msg.from_user
+        prof = memory.ensure_user_profile(
+            profiles,
+            user_id=(u.id if u else 0),
+            display_name=(u.full_name if u else ""),
+            username=(u.username if u else ""),
+        )
+        memory.update_night_owl(prof, hour_local=datetime.now(MSK).hour)
+        memory.bump_intent(prof, getattr(ir, "intent", "unclear") or "unclear")
+        memory.save_profiles(profiles)
+
+        memory.append_event(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "kind": "msg",
+                "uid": (u.id if u else 0),
+                "text": text,
+                "intent": getattr(ir, "intent", ""),
+            }
+        )
+        memory.prune_memory()
+    except Exception:
+        pass
+
+    intent = (getattr(ir, "intent", "") or "").strip()
+
+    # "Веся" — иногда с задержкой/отмазкой
+    if intent == "ping":
+        d = persona.maybe_delay_ping_seconds()
+        if d:
+            asyncio.create_task(_delayed_answer(msg, f"{persona.ping_answer()}. {persona.excuse_text()}.", d))
+        else:
+            await msg.answer(persona.ping_answer())
+        return
+
+    # "есть кто живой" — иногда отвечает, иногда игнор
+    if intent == "alive_check":
+        if random.random() < 0.55:
+            if random.random() < 0.25:
+                asyncio.create_task(_delayed_answer(msg, persona.alive_answer(), random.randint(20, 120)))
+            else:
+                await msg.answer(persona.alive_answer())
+        return
+
+    # "ты бот?"
+    if intent == "bot_q":
+        await msg.answer(persona.bot_q_answer())
+        return
+
+    # инфо-вопросы — быстро (LLM без web_search)
+    if intent == "info_q":
+        q = getattr(ir, "question", "") or text
+        await msg.answer(persona.answer_info_fast(q))
+        return
+
+    # невнятно — уточнить
+    if intent == "unclear":
+        await msg.answer(persona.clarify_answer())
+        return
+
+    # иногда подтверждение
+    ack = persona.maybe_ack()
+    if ack:
+        await msg.answer(ack)
+
+    # новости
+    if intent == "news":
+        asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="chat_nl_news"))
+        return
+
+    # музыка (только C, 2 ссылки)
+    if intent == "music":
+
+        async def _run_music_only():
+            async with _run_lock:
+                bot = Bot(token=BOT_TOKEN)
+                try:
+                    posted_c = _load_c_posted_video_ids()
+                    last_by_source = _load_c_last_sent_by_source()
+                    c_items = c_youtube_fetcher.get_batch(
+                        limit=2,
+                        posted_video_ids=posted_c,
+                        last_sent_by_source=last_by_source,
+                    )
+                    if c_items:
+                        await send_batch(bot, c_items)
+                finally:
+                    await bot.session.close()
+
+        asyncio.create_task(_run_music_only())
+        return
+
+    # default: основной пайплайн как /get12
+    asyncio.create_task(run_all(12, reason="chat_nl_get12"))
 
 
 @router.callback_query()
