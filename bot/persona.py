@@ -17,9 +17,7 @@ NAME_RE = re.compile(r"(^|\s)(веся|веська|весь|вес(?:ь|я))([\
 NEWS_RE = re.compile(r"\b(новост|сводк|че там в мире|что в мире|что происходит|в мире)\b", re.IGNORECASE)
 MUSIC_RE = re.compile(r"\b(музык|музон|кавер|cover|что послушать|ютуб|youtube)\b", re.IGNORECASE)
 ALIVE_RE = re.compile(r"\b(кто жив|есть кто жив|кто тут|все спят|живые есть|кто не спит)\b", re.IGNORECASE)
-
 INFO_Q_RE = re.compile(r"\b(что такое|как работает|как сделать|почему|зачем|объясни)\b", re.IGNORECASE)
-
 
 ACKS = [
     "сек",
@@ -65,7 +63,7 @@ EXCUSES = [
 @dataclass(frozen=True)
 class IntentResult:
     addressed: bool
-    intent: str  # get12/news/music/alive_check/info_q/unclear
+    intent: str  # get12/news/music/alive_check/info_q/unclear/bot_q
     question: str = ""  # for info_q
 
 
@@ -141,8 +139,32 @@ def answer_clarify() -> str:
     return random.choice(CLARIFY)
 
 
+# ---- COMPAT WRAPPERS (важно для main.py) ----
+def clarify_answer() -> str:
+    # main.py ожидает persona.clarify_answer()
+    return answer_clarify()
+
+
+def alive_answer() -> str:
+    return answer_alive()
+
+
+def bot_q_answer() -> str:
+    return answer_bot_q()
+
+
+def ping_answer() -> str:
+    # простой ping-ответ; если main.py сам делает ack/delay — ок, но пусть будет безопасно
+    return "че надо"
+
+
 def excuse_text() -> str:
     return random.choice(EXCUSES)
+
+
+def info_answer(question: str) -> str:
+    # main.py может ожидать persona.info_answer()
+    return answer_info_fast(question)
 
 
 def answer_info_fast(question: str) -> str:
