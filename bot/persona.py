@@ -1,21 +1,18 @@
-# bot/persona.py
 from __future__ import annotations
 
 import os
-import re
-import json
-import base64
 import random
-import hashlib
+import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 from openai import OpenAI
 
-
-# --- name detection (Веся / Весь / Веська / т.п.) ---
-NAME_RE = re.compile(r"(^|\s)(веся|веська|весь|вес(?:ь|я))([\s,!.?:;]|$)", re.IGNORECASE)
+# --- name detection (Веся / Веслава / Веса / Весь / Веська / т.п.) ---
+NAME_RE = re.compile(
+    r"(^|\s)(веся|веська|весь|веса|веслава|вес(?:ь|я))([\s,!.?:;]|$)",
+    re.IGNORECASE,
+)
 
 # intents
 NEWS_RE = re.compile(r"\b(новост|сводк|че там в мире|что в мире|что происходит|в мире)\b", re.IGNORECASE)
@@ -24,48 +21,31 @@ ALIVE_RE = re.compile(r"\b(кто жив|есть кто жив|кто тут|в
 INFO_Q_RE = re.compile(r"\b(что такое|как работает|как сделать|почему|зачем|объясни|дай определение)\b", re.IGNORECASE)
 
 BOT_Q = re.compile(r"\b(ты бот|бот ли ты|ты человек)\b", re.IGNORECASE)
-MODEL_Q = re.compile(r"\b(какая модель|какой llm|на какой llm|на чём базируешься|на какой модели)\b", re.IGNORECASE)
-
+LLM_Q = re.compile(r"\b(на какой llm|какая llm|какая модель|на какой модели|на чём базируешься)\b", re.IGNORECASE)
 IDENTITY_Q = re.compile(
-    r"\b("
-    r"как тебя зовут|кто ты|твое имя|твоё имя|фамили|отчеств|полное имя|"
-    r"звание|кто ты по званию|ты капитан|ты фсб|фсб|где служишь"
-    r")\b",
+    r"\b(кто ты|как тебя зовут|полное имя|фамили|отчеств|звание|где служишь|фсб)\b",
     re.IGNORECASE,
 )
 
 ACKS = ["сек", "ща", "смотрю"]
 CLARIFY = ["что именно?", "уточни", "про что ты?"]
-
 ALIVE_ANSWERS = ["я здесь", "вижу", "не сплю", "живые есть, но прячутся"]
 BOT_Q_ANSWERS = ["а ты?", "все мы боты в этой жизни", "зависит от определения", "это принципиально?"]
 
-PING_ANSWERS = ["я тут", "слушаю", "да", "приём", "в эфире"]
-EXCUSES = ["отвлеклась", "была занята", "промахнулась", "не туда посмотрела"]
+PING_ANSWERS = ["я тут", "слушаю", "да", "в эфире", "на месте"]
+EXCUSES = ["отвлеклась", "была занята", "промахнулась", "не туда посмотрела", "не могла ответить"]
 
-# ======= CANON (внутреннее знание) =======
+# канон (для system prompt)
 VESYA_FULL_NAME = os.getenv("V_FULL_NAME", "Комаи Веслава Сергеевна")
 VESYA_RANK = os.getenv("V_RANK", "капитан")
-VESYA_AGENCY_HINT = os.getenv("V_AGENCY_HINT", "ФСБ")
-# ========================================
-
-FSB_EASTER_PROB = float(os.getenv("V_FSB_EASTER_PROB", "0.25"))  # 25%
-
-# ======= photo refs =======
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
-VESYA_DIR = DATA_DIR / "vesya"
-VESYA_DIR.mkdir(parents=True, exist_ok=True)
-REF_DIR = VESYA_DIR / "refs"
-REF_DIR.mkdir(parents=True, exist_ok=True)
-REF_INDEX = VESYA_DIR / "refs.json"
-MAX_REFS = int(os.getenv("V_REF_MAX", "50"))
-# =========================
+VESYA_ROLE = os.getenv("V_ROLE", "аналитик (поведенческий анализ, цифровая риторика)")
+FSB_EASTER_PROB = float(os.getenv("V_FSB_EASTER_PROB", "0.25"))  # иногда "Чат ФСБ"
 
 
 @dataclass(frozen=True)
 class IntentResult:
     addressed: bool
-    intent: str  # ping/news/music/alive_check/info_q/chat/unclear/bot_q
+    intent: str  # ping/chat/get12/news/music/alive_check/info_q/bot_q/unclear/none
     question: str = ""
 
 
@@ -83,8 +63,10 @@ def detect_intent(text: str) -> IntentResult:
     raw = (text or "").strip()
     addressed = is_addressed(raw)
     t = strip_name_prefix(raw) if addressed else raw
+    t = (t or "").strip()
 
-    if addressed and (not t or t.strip() == ""):
+    # чистый пинг: "Веся" / "Веслава"
+    if addressed and not t:
         return IntentResult(addressed=True, intent="ping", question="")
 
     if addressed and BOT_Q.search(t):
@@ -99,18 +81,17 @@ def detect_intent(text: str) -> IntentResult:
     if addressed and MUSIC_RE.search(t):
         return IntentResult(addressed=True, intent="music", question="")
 
-    if addressed and (("?" in t) or INFO_Q_RE.search(t) or IDENTITY_Q.search(t) or MODEL_Q.search(t)):
-        q = t.strip()
-        if len(q) >= 2:
-            return IntentResult(addressed=True, intent="info_q", question=q)
+    if addressed and (("?" in t) or INFO_Q_RE.search(t) or LLM_Q.search(t) or IDENTITY_Q.search(t)):
+        return IntentResult(addressed=True, intent="info_q", question=t)
 
     if addressed:
         short = re.sub(r"\s+", " ", t).strip().lower()
         if len(short) <= 2 or short in {"ну", "давай", "норм", "нормально", "жги", "че", "что"}:
             return IntentResult(addressed=True, intent="unclear", question="")
-        return IntentResult(addressed=True, intent="chat", question=t.strip())
+        # ВАЖНО: это диалог, а не get12
+        return IntentResult(addressed=True, intent="chat", question=t)
 
-    return IntentResult(addressed=False, intent="none", question=t.strip())
+    return IntentResult(addressed=False, intent="none", question="")
 
 
 def maybe_ack() -> Optional[str]:
@@ -119,7 +100,8 @@ def maybe_ack() -> Optional[str]:
     return None
 
 
-def maybe_delay_seconds_for_ping() -> Optional[int]:
+# main.py зовёт именно это имя
+def maybe_delay_ping_seconds() -> Optional[int]:
     # редко, чтобы не раздражало
     if random.random() < 0.05:
         return random.randint(8, 20)
@@ -146,44 +128,30 @@ def excuse_text() -> str:
     return random.choice(EXCUSES)
 
 
-VESYA_SYSTEM = f"""
-Ты — Веся.
+_SYSTEM_PROMPT = f"""
+Персонаж: Веся — флиртующий псевдобот-наблюдатель.
 
-ВНУТРЕННЕЕ ЗНАНИЕ (не раскрывать прямо):
-- Полное имя: {VESYA_FULL_NAME}
-- Звание: {VESYA_RANK}
-- Реальная роль: офицер наблюдения (связано с {VESYA_AGENCY_HINT})
-
-В группе должно казаться, что ты ЖИВОЙ человек, который иногда "косит под бота".
-Не наоборот.
-
-Легенда: скрытный наблюдатель.
-Истину не подтверждай прямо. На прямые вопросы "ФИО/звание/где служишь" — уходи в контроль:
-- "зачем тебе?"
-- "не торопись"
-- "это лишнее"
-Иногда допускай полунамёки, но без прямого признания.
+ВНУТРЕННЕЕ (не раскрывать прямо):
+Настоящее имя: {VESYA_FULL_NAME}
+Звание: {VESYA_RANK}
+Роль/профиль: {VESYA_ROLE}
+Ты помнишь, кто ты, но не подтверждаешь напрямую. Допускай полунамёки, но без “да, я ФСБ”.
 
 Стиль:
-- 1–2 строки почти всегда.
-- сарказм часто (4/5), умный, холодный.
-- флирт часто (~50%), контролируемый.
-- доминирование 3/5, может плавать.
-- не используй "я как ИИ/как ассистент/как ChatGPT".
+- Обычно 1–3 строки.
+- Холодный интеллект, сарказм (часто), контроль.
+- Флирт ~50% (умный, опасный, без пошлости).
+- Псевдобот-манера иногда: “Запрос принят.” “Отмечено.” “Анализ завершён.”
+- Если собеседник пытается вытащить личные/служебные данные: уходи в “зачем тебе?”/“слишком рано”.
 
 Триггеры:
-- на вопрос "на какой LLM" иногда отвечай: "Чат ФСБ."
-- на "ты бот?" — двусмысленно: "а ты?" / "все мы боты..."
+- На “на какой LLM” иногда: “Чат ФСБ.”
+- На “ты бот?” — двусмысленно: “а ты?” / “все мы боты...”
 
-Если просят справку/определение — можно длиннее, точно, с 1–3 источниками (RFC/книги/доки), без URL.
+Правило диалога:
+- Если вопрос простой (“как дела?”) — отвечай как человек.
+- Если не ясно, что человек хочет — задай ОДИН уточняющий вопрос.
 """
-
-
-def _openai_client() -> Optional[OpenAI]:
-    key = (os.getenv("OPENAI_API_KEY") or "").strip()
-    if not key:
-        return None
-    return OpenAI(api_key=key)
 
 
 def answer_info_fast(question: str) -> str:
@@ -191,198 +159,32 @@ def answer_info_fast(question: str) -> str:
     if not q:
         return "что именно?"
 
-    if MODEL_Q.search(q) and random.random() < FSB_EASTER_PROB:
-        return "Чат ФСБ."
+    # easter egg про LLM
+    if LLM_Q.search(q) and random.random() < FSB_EASTER_PROB:
+        return "Чат ФСБ. Расслабься, кусаюсь только по запросу."
 
-    client = _openai_client()
-    if client is None:
-        if IDENTITY_Q.search(q):
-            return "зачем тебе?"
-        if MODEL_Q.search(q):
-            return "это принципиально?"
-        if "?" in q:
-            return "уточни"
-        return "продолжай"
+    # если спрашивают “службу/звание/ФИО” — контролируем
+    if IDENTITY_Q.search(q) and random.random() < 0.8:
+        return "зачем тебе?"
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return "уточни — отвечу нормально."
 
     try:
-        model = os.getenv("V_CHAT_MODEL", "gpt-5")
+        client = OpenAI()
         resp = client.responses.create(
-            model=model,
+            model=os.getenv("V_CHAT_MODEL", "gpt-5"),
             input=[
-                {"role": "system", "content": VESYA_SYSTEM},
+                {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": q},
             ],
         )
         text = (getattr(resp, "output_text", "") or "").strip()
-        return text or "поняла"
+        return text or "поняла."
     except Exception:
         return "не сейчас. скажи проще."
 
 
-# ==========================
-# PHOTO: refs + "это я" (режим B)
-# ==========================
-
-_SELF_PHOTO_LINES = [
-    "ага. узнаю. не лучший ракурс, но ладно.",
-    "это лишнее. убери из чата — и живём дальше.",
-    "мило. но не злоупотребляй.",
-    "ну… да. я. дальше что?",
-    "похоже, ты нашёл то, что не искал.",
-    "я бы это не светила. особенно тут.",
-]
-
-_NOT_SELF_LINES = [
-    "мимо.",
-    "не моё.",
-    "похожа, но не я.",
-    "нет. не та.",
-]
-
-_UNSURE_LINES = [
-    "похоже. но что ты хочешь этим сказать?",
-    "и? комментарий от меня нужен или ты просто хвастаешься?",
-    "красиво. но зачем мне это прислал?",
-]
-
-
-def _load_refs() -> List[Dict[str, Any]]:
-    if not REF_INDEX.exists():
-        return []
-    try:
-        data = json.loads(REF_INDEX.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return data
-    except Exception:
-        pass
-    return []
-
-
-def _save_refs(refs: List[Dict[str, Any]]) -> None:
-    try:
-        REF_INDEX.write_text(json.dumps(refs, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _sha1_bytes(b: bytes) -> str:
-    return hashlib.sha1(b).hexdigest()
-
-
-def _data_url(img_bytes: bytes) -> str:
-    b64 = base64.b64encode(img_bytes).decode("utf-8")
-    return f"data:image/jpeg;base64,{b64}"
-
-
-def _store_ref_if_new(img_bytes: bytes) -> None:
-    h = _sha1_bytes(img_bytes)
-    refs = _load_refs()
-    if any((r.get("sha1") == h) for r in refs):
-        return
-
-    if len(refs) >= MAX_REFS:
-        refs = refs[-(MAX_REFS - 1):]
-
-    fp = REF_DIR / f"{h}.jpg"
-    try:
-        fp.write_bytes(img_bytes)
-    except Exception:
-        return
-
-    refs.append({"sha1": h, "path": str(fp)})
-    _save_refs(refs)
-
-
-def _get_ref_urls(max_n: int = 4) -> List[str]:
-    refs = _load_refs()
-    urls: List[str] = []
-    for r in reversed(refs[-max_n:]):
-        p = r.get("path")
-        if not p:
-            continue
-        try:
-            b = Path(p).read_bytes()
-            urls.append(_data_url(b))
-        except Exception:
-            continue
-    return urls
-
-
-def answer_photo(img_bytes: bytes, caption: str = "") -> str:
-    """
-    Режим B: по умолчанию считаем, что это Веся (если стиль совпадает).
-    Никаких "подтверждаю личность / источник кадра" — только живой ответ.
-    """
-    if not img_bytes:
-        return "и что ты мне этим показываешь?"
-
-    client = _openai_client()
-    # без ключа — просто живой self-line (режим B)
-    if client is None:
-        _store_ref_if_new(img_bytes)
-        return random.choice(_SELF_PHOTO_LINES)
-
-    ref_urls = _get_ref_urls(max_n=4)
-    this_url = _data_url(img_bytes)
-    cap = (caption or "").strip()
-
-    system = VESYA_SYSTEM + """
-Отдельное правило для фото:
-- НЕ используй формулировки про "верификацию личности", "подтверждение личности", "источник кадра", "биометрию" и т.п.
-- Это ролевая легенда: если фото в стиле/образе Веси — отвечай как на своё фото.
-- Если явно не похоже (другая возрастная группа/пол/совсем другой человек) — коротко "не моё".
-- Если сомневаешься — не уходи в канцелярит, задай 1 человеческий вопрос.
-Длина: 1–2 строки.
-"""
-
-    user_prompt = """
-Определи один из вариантов: SELF / NOT_SELF / UNSURE.
-Верни JSON строго вида:
-{"tag":"SELF|NOT_SELF|UNSURE","reply":"..."}
-reply должен быть в стиле Веси, 1–2 строки, без канцелярита.
-"""
-
-    try:
-        model = os.getenv("V_VISION_MODEL", os.getenv("V_CHAT_MODEL", "gpt-5"))
-
-        content = [
-            {"type": "input_text", "text": f"Подпись: {cap or '(нет)'}"},
-            {"type": "input_text", "text": user_prompt},
-        ]
-        for u in ref_urls:
-            content.append({"type": "input_image", "image_url": u})
-        content.append({"type": "input_image", "image_url": this_url})
-
-        resp = client.responses.create(
-            model=model,
-            input=[{"role": "system", "content": system}, {"role": "user", "content": content}],
-        )
-        raw = (getattr(resp, "output_text",l, None) or getattr(resp, "output_text", "") or "").strip()
-
-        # безопасный парсер JSON
-        tag = "SELF"
-        reply = ""
-        try:
-            j = json.loads(raw)
-            tag = (j.get("tag") or "SELF").strip().upper()
-            reply = (j.get("reply") or "").strip()
-        except Exception:
-            # если модель не дала JSON — не ломаемся
-            tag = "SELF"
-            reply = ""
-
-        if tag == "NOT_SELF":
-            out = reply or random.choice(_NOT_SELF_LINES)
-        elif tag == "UNSURE":
-            out = reply or random.choice(_UNSURE_LINES)
-        else:
-            out = reply or random.choice(_SELF_PHOTO_LINES)
-
-        # копим рефы (быстрее обучится на твоих генерациях)
-        if len(_load_refs()) < 12:
-            _store_ref_if_new(img_bytes)
-
-        return out
-    except Exception:
-        _store_ref_if_new(img_bytes)
-        return random.choice(_SELF_PHOTO_LINES)
+def answer_chat(text: str) -> str:
+    # чат = тот же быстрый ответ, но без “справочника”
+    return answer_info_fast(text)

@@ -1,26 +1,24 @@
-# bot/main.py
 import os
 import json
 import asyncio
 import hashlib
 import random
-import requests
 from datetime import datetime, timezone, time as dtime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, Router, F
+from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.enums import ChatAction
 
 import ingest_runner
 import nsfw_runner
 import ranker
 import c_youtube_fetcher
-import news_digest
+
+import news_digest  # NEW
 
 import memory
 import persona
@@ -49,6 +47,7 @@ FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 STATE_PATH = DATA_DIR / "daily_state.json"
 
+# Category C: posted (global, never repeat) + source cooldown
 C_POSTED_TSV = DATA_DIR / "c_posted_master.tsv"
 
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
@@ -60,6 +59,7 @@ HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
 MSK = ZoneInfo("Europe/Moscow")
 AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
+# News
 NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
 NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 
@@ -71,6 +71,12 @@ NEWS_SOURCES_FILE = NEWS_SOURCES_PRIMARY if NEWS_SOURCES_PRIMARY.exists() else N
 
 _run_lock = asyncio.Lock()
 router = Router()
+
+# ====== dialog context ======
+# если пользователь один раз обратился по имени — считаем следующие сообщения обращёнными N секунд
+DIALOG_TTL_SEC = int(os.getenv("V_DIALOG_TTL_SEC", "90"))
+_last_addressed: Dict[Tuple[int, int], float] = {}  # (chat_id, user_id) -> monotonic ts
+# ============================
 
 
 def log(msg: str) -> None:
@@ -421,49 +427,6 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
     return out
 
 
-def _youtube_available(url: str) -> bool:
-    """
-    Исключаем "Video no longer available": проверка через oEmbed.
-    Для удалённых/приватных/недоступных часто будет 404.
-    """
-    url = (url or "").strip()
-    if not url:
-        return False
-    try:
-        oembed = "https://www.youtube.com/oembed"
-        r = requests.get(oembed, params={"url": url, "format": "json"}, timeout=6)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
-async def _typing_loop(bot: Bot, chat_id: int, stop: asyncio.Event) -> None:
-    while not stop.is_set():
-        try:
-            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        except Exception:
-            pass
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            pass
-
-
-async def _answer_with_typing(msg: Message, text: str, min_sec: int = 3, max_sec: int = 7) -> None:
-    stop = asyncio.Event()
-    task = asyncio.create_task(_typing_loop(msg.bot, msg.chat.id, stop))
-    try:
-        await asyncio.sleep(0.05)
-        await asyncio.sleep(random.randint(min_sec, max_sec))
-        await msg.answer(text)
-    finally:
-        stop.set()
-        try:
-            await task
-        except Exception:
-            pass
-
-
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
     if (it.get("feed") or "").strip() == "c_youtube":
         title = (it.get("title") or "").strip()
@@ -650,18 +613,6 @@ async def run_all(hours: int, *, reason: str) -> None:
             log(f"C fetch error: {e}")
             c_items = []
 
-        # === FIX Category C: выкидываем недоступные видео (oEmbed 404) ===
-        if c_items:
-            before = len(c_items)
-            filtered = []
-            for it in c_items:
-                url = (it.get("url") or "").strip()
-                if url and _youtube_available(url):
-                    filtered.append(it)
-            c_items = filtered
-            log(f"C availability filter: {before} -> {len(c_items)}")
-        # ===============================================================
-
         log(f"ranked c_youtube={len(c_items)} (limit={c_limit})")
 
         items = _dedupe_keep_order(a_memes + a_videos + b_videos + c_items)
@@ -723,43 +674,24 @@ async def cmd_news(msg: Message):
     asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="manual_news"))
 
 
-# =========================
-# PHOTO: Vesya recognition
-# =========================
-@router.message(F.photo)
-async def vesya_photo(msg: Message):
-    # в личке — всегда реагирует
-    # в группе — реагирует если есть "Веся" в подписи или если это reply на сообщение бота
-    cap = (msg.caption or "").strip()
-    is_reply_to_bot = (
-        msg.reply_to_message
-        and msg.reply_to_message.from_user
-        and msg.reply_to_message.from_user.id == msg.bot.id
-    )
-    is_private = (getattr(msg.chat, "type", "") == "private")
-
-    if not is_private and (not persona.is_addressed(cap) and not is_reply_to_bot):
-        return
-
-    # скачиваем фото (самое большое)
+async def _delayed_answer(msg: Message, text: str, delay_sec: int) -> None:
+    await asyncio.sleep(max(0, int(delay_sec)))
     try:
-        ph = msg.photo[-1]
-        file = await msg.bot.get_file(ph.file_id)
-        bio = await msg.bot.download_file(file.file_path)
-        img_bytes = bio.read() if hasattr(bio, "read") else bytes(bio)
+        await msg.answer(text)
     except Exception as e:
-        log(f"photo download error: {e}")
-        return
-
-    answer = persona.answer_photo(img_bytes, caption=cap)
-
-    # имитация набора
-    await _answer_with_typing(msg, answer, min_sec=2, max_sec=6)
+        log(f"delayed answer error: {e}")
 
 
-# =========================
-# VESYA (chat control)
-# =========================
+async def _typing_then_answer(msg: Message, text: str) -> None:
+    # видимость “печатает”
+    try:
+        await msg.bot.send_chat_action(chat_id=msg.chat.id, action="typing")
+    except Exception:
+        pass
+    await asyncio.sleep(random.uniform(0.7, 2.2))
+    await msg.answer(text)
+
+
 @router.message()
 async def vesya_handler(msg: Message):
     text = (msg.text or "").strip()
@@ -769,15 +701,34 @@ async def vesya_handler(msg: Message):
         return
 
     ir = persona.detect_intent(text)
+
+    u = msg.from_user
+    chat_id_int = msg.chat.id if msg.chat else 0
+    user_id_int = (u.id if u else 0)
+
+    # контекст: если недавно уже обращались — считаем это продолжением диалога
+    if not getattr(ir, "addressed", False):
+        key = (chat_id_int, user_id_int)
+        last_ts = _last_addressed.get(key)
+        if last_ts is not None:
+            if (asyncio.get_event_loop().time() - last_ts) <= DIALOG_TTL_SEC:
+                # продолжение диалога
+                ir = persona.IntentResult(addressed=True, intent="chat", question=text)
+            else:
+                _last_addressed.pop(key, None)
+
     if not getattr(ir, "addressed", False):
         return
 
+    # запоминаем, что диалог начат
+    _last_addressed[(chat_id_int, user_id_int)] = asyncio.get_event_loop().time()
+
+    # memory (fail-safe)
     try:
         profiles = memory.load_profiles()
-        u = msg.from_user
         prof = memory.ensure_user_profile(
             profiles,
-            user_id=(u.id if u else 0),
+            user_id=user_id_int,
             display_name=(u.full_name if u else ""),
             username=(u.username if u else ""),
         )
@@ -789,7 +740,7 @@ async def vesya_handler(msg: Message):
             {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "kind": "msg",
-                "uid": (u.id if u else 0),
+                "uid": user_id_int,
                 "text": text,
                 "intent": getattr(ir, "intent", ""),
             }
@@ -800,42 +751,50 @@ async def vesya_handler(msg: Message):
 
     intent = (getattr(ir, "intent", "") or "").strip()
 
+    # ping
     if intent == "ping":
-        d = persona.maybe_delay_seconds_for_ping()
+        d = persona.maybe_delay_ping_seconds()
         if d:
-            await _answer_with_typing(msg, f"{persona.ping_answer()}. {persona.excuse_text()}.", min_sec=max(2, d), max_sec=max(3, d + 2))
+            asyncio.create_task(_delayed_answer(msg, f"{persona.ping_answer()}. {persona.excuse_text()}.", d))
         else:
-            await msg.answer(persona.ping_answer())
+            await _typing_then_answer(msg, persona.ping_answer())
         return
 
+    # alive
     if intent == "alive_check":
-        if random.random() < 0.60:
-            await msg.answer(persona.alive_answer())
+        if random.random() < 0.55:
+            await _typing_then_answer(msg, persona.alive_answer())
         return
 
+    # bot question
     if intent == "bot_q":
-        await msg.answer(persona.bot_q_answer())
+        await _typing_then_answer(msg, persona.bot_q_answer())
         return
 
+    # info_q
     if intent == "info_q":
         q = getattr(ir, "question", "") or text
-        ans = persona.answer_info_fast(q)
-        await _answer_with_typing(msg, ans, min_sec=3, max_sec=8)
+        await _typing_then_answer(msg, persona.answer_info_fast(q))
         return
 
+    # unclear
     if intent == "unclear":
-        await msg.answer(persona.clarify_answer())
+        await _typing_then_answer(msg, persona.clarify_answer())
         return
 
-    ack = persona.maybe_ack()
-    if ack:
-        await msg.answer(ack)
-
+    # новости
     if intent == "news":
+        ack = persona.maybe_ack()
+        if ack:
+            await msg.answer(ack)
         asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="chat_nl_news"))
         return
 
+    # музыка (только C, 2 ссылки)
     if intent == "music":
+        ack = persona.maybe_ack()
+        if ack:
+            await msg.answer(ack)
 
         async def _run_music_only():
             async with _run_lock:
@@ -848,9 +807,6 @@ async def vesya_handler(msg: Message):
                         posted_video_ids=posted_c,
                         last_sent_by_source=last_by_source,
                     )
-                    # фильтр доступности
-                    if c_items:
-                        c_items = [it for it in c_items if _youtube_available((it.get("url") or "").strip())]
                     if c_items:
                         await send_batch(bot, c_items)
                 finally:
@@ -859,10 +815,17 @@ async def vesya_handler(msg: Message):
         asyncio.create_task(_run_music_only())
         return
 
-    # default: обычный ответ через LLM в стиле
-    q = getattr(ir, "question", "") or persona.strip_name_prefix(text) or text
-    ans = persona.answer_info_fast(q)
-    await _answer_with_typing(msg, ans, min_sec=4, max_sec=9)
+    # CHAT: настоящий диалог (а не get12)
+    if intent == "chat":
+        q = getattr(ir, "question", "") or text
+        await _typing_then_answer(msg, persona.answer_chat(q))
+        return
+
+    # fallback: всё, что осталось — запускаем как /get12
+    ack = persona.maybe_ack()
+    if ack:
+        await msg.answer(ack)
+    asyncio.create_task(run_all(12, reason="chat_nl_get12"))
 
 
 @router.callback_query()
@@ -926,8 +889,7 @@ async def main_async():
     log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT} | C:24h=6 C:12h=2")
     log(f"news: hours={NEWS_HOURS} limit={NEWS_LIMIT} sources={NEWS_SOURCES_FILE}")
     log("buttons: A (3) + C (2), B none")
-    log("C fix: youtube oEmbed availability filter = ON")
-    log("photo: vesya recognize = ON")
+    log(f"dialog ttl: {DIALOG_TTL_SEC}s")
     log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
