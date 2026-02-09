@@ -19,23 +19,20 @@ import ingest_runner
 import nsfw_runner
 import ranker
 import c_youtube_fetcher
-
-import news_digest  # NEW
+import news_digest
 
 import memory
 import persona
-import dialog_manager  # NEW (contextual dialog)
 
+# ---------- dialog manager (fail-safe import) ----------
 try:
-    import meme_ranker
-except Exception:
-    meme_ranker = None
-
-try:
-    import b_video_ranker
-except Exception:
-    b_video_ranker = None
-
+    import dialog_manager
+    DIALOG_ENABLED = True
+except Exception as e:
+    print(f"[main] dialog_manager disabled: {e}", flush=True)
+    dialog_manager = None
+    DIALOG_ENABLED = False
+# ------------------------------------------------------
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 CHAT_ID = (os.getenv("CHAT_ID") or "").strip()
@@ -50,7 +47,6 @@ FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 STATE_PATH = DATA_DIR / "daily_state.json"
 
-# Category C: posted (global, never repeat) + source cooldown
 C_POSTED_TSV = DATA_DIR / "c_posted_master.tsv"
 
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
@@ -62,12 +58,9 @@ HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
 MSK = ZoneInfo("Europe/Moscow")
 AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
-# News
 NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
 NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 
-# УСТОЙЧИВО: сначала ищем рядом с main.py (bot/news_sources.txt),
-# если нет — fallback на <repo_root>/tg_pipeline/news_sources.txt (как было в старых путях).
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
 NEWS_SOURCES_PRIMARY = _THIS_DIR / "news_sources.txt"
@@ -165,7 +158,6 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
         f.write(f"{ts}\t{user_id}\t{item_id}\t{feed}\n")
 
 
-# ===== Category C posted (global, never repeat) =====
 def _ensure_c_posted_header() -> None:
     if not C_POSTED_TSV.exists():
         C_POSTED_TSV.write_text("ts_utc\tvideo_id\turl\ttitle\tsource\n", encoding="utf-8")
@@ -361,7 +353,9 @@ def _rank_a_videos(n: int) -> List[Dict[str, Any]]:
 
 
 def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
-    if meme_ranker is None:
+    try:
+        import meme_ranker
+    except Exception:
         return []
 
     uid = _chat_user_id()
@@ -393,7 +387,9 @@ def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
 
 
 def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
-    if b_video_ranker is None:
+    try:
+        import b_video_ranker
+    except Exception:
         return []
 
     uid = _chat_user_id()
@@ -428,7 +424,6 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
 
 
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
-    # C: YouTube link message
     if (it.get("feed") or "").strip() == "c_youtube":
         title = (it.get("title") or "").strip()
         url = (it.get("url") or "").strip()
@@ -468,7 +463,6 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
 
         return True
 
-    # A/B: files
     abs_path = it["abs_path"]
     p = Path(abs_path)
     if not p.exists():
@@ -596,7 +590,6 @@ async def run_all(hours: int, *, reason: str) -> None:
 
         log(f"ranked a_memes={len(a_memes)} a_videos={len(a_videos)} b_videos={len(b_videos)}")
 
-        # Category C: 6 for 24h, 2 for 12h
         c_limit = 0
         if hours >= 24:
             c_limit = 6
@@ -700,14 +693,12 @@ async def vesya_handler(msg: Message):
     chat_id = msg.chat.id
     user_id = msg.from_user.id if msg.from_user else 0
 
-    # reply-to-bot detection (важно для группы)
     is_reply_to_bot = (
         msg.reply_to_message
         and msg.reply_to_message.from_user
         and msg.reply_to_message.from_user.id == msg.bot.id
     )
 
-    # 1) сначала смотрим: это прямое обращение?
     addressed = False
     stripped = ""
     try:
@@ -717,12 +708,10 @@ async def vesya_handler(msg: Message):
         addressed = False
         stripped = ""
 
-    # 2) если обращение и пусто после имени -> ping
     if addressed and (not stripped or stripped.strip() == ""):
         intent = "ping"
         ir = None
     else:
-        # 3) иначе пытаемся распарсить intent (только если addressed)
         if addressed:
             ir = persona.detect_intent(text)
             intent = (getattr(ir, "intent", "") or "").strip()
@@ -730,9 +719,8 @@ async def vesya_handler(msg: Message):
             ir = None
             intent = "chat"
 
-    # 4) контекстная логика: если НЕ addressed, но похоже, что диалог продолжается — отвечаем/уточняем
-    #    (если dialog_manager упадет — просто ведём себя как раньше: отвечаем только на addressed)
-    if not addressed:
+    # ---------- contextual dialog ----------
+    if not addressed and DIALOG_ENABLED:
         try:
             should_reply, should_clarify = dialog_manager.should_reply(
                 addressed=False,
@@ -749,11 +737,10 @@ async def vesya_handler(msg: Message):
 
             if not should_reply:
                 return
-        except Exception:
-            # fail-safe: как раньше — игнор
-            return
+        except Exception as e:
+            log(f"dialog_manager error: {e}")
+    # --------------------------------------
 
-    # memory: не ломает, даже если что-то пойдёт не так
     try:
         profiles = memory.load_profiles()
         u = msg.from_user
@@ -780,9 +767,7 @@ async def vesya_handler(msg: Message):
     except Exception:
         pass
 
-    # "Веся" — иногда с задержкой/отмазкой
     if intent == "ping":
-        d = None
         try:
             d = persona.maybe_delay_seconds_for_ping()
         except Exception:
@@ -793,79 +778,78 @@ async def vesya_handler(msg: Message):
         else:
             await msg.answer(persona.ping_answer())
 
-        try:
-            dialog_manager.mark_bot_replied(chat_id, user_id)
-        except Exception:
-            pass
+        if DIALOG_ENABLED:
+            try:
+                dialog_manager.mark_bot_replied(chat_id, user_id)
+            except Exception:
+                pass
         return
 
-    # "есть кто живой" — иногда отвечает, иногда игнор
     if intent == "alive_check":
         if random.random() < 0.55:
             if random.random() < 0.25:
                 asyncio.create_task(_delayed_answer(msg, persona.alive_answer(), random.randint(20, 120)))
             else:
                 await msg.answer(persona.alive_answer())
-        try:
-            dialog_manager.mark_bot_replied(chat_id, user_id)
-        except Exception:
-            pass
+        if DIALOG_ENABLED:
+            try:
+                dialog_manager.mark_bot_replied(chat_id, user_id)
+            except Exception:
+                pass
         return
 
-    # "ты бот?"
     if intent == "bot_q":
         await msg.answer(persona.bot_q_answer())
-        try:
-            dialog_manager.mark_bot_replied(chat_id, user_id)
-        except Exception:
-            pass
+        if DIALOG_ENABLED:
+            try:
+                dialog_manager.mark_bot_replied(chat_id, user_id)
+            except Exception:
+                pass
         return
 
-    # инфо-вопросы — быстро (LLM без web_search)
     if intent == "info_q":
         q = getattr(ir, "question", "") if ir else ""
         if not q:
             q = text
         await msg.answer(persona.answer_info_fast(q))
-        try:
-            dialog_manager.mark_bot_replied(chat_id, user_id)
-        except Exception:
-            pass
+        if DIALOG_ENABLED:
+            try:
+                dialog_manager.mark_bot_replied(chat_id, user_id)
+            except Exception:
+                pass
         return
 
-    # невнятно — уточнить
     if intent == "unclear":
         await msg.answer(persona.clarify_answer())
-        try:
-            dialog_manager.mark_bot_replied(chat_id, user_id)
-        except Exception:
-            pass
+        if DIALOG_ENABLED:
+            try:
+                dialog_manager.mark_bot_replied(chat_id, user_id)
+            except Exception:
+                pass
         return
 
-    # если это контекстный чат (не было обращения по имени) — отвечаем как info_fast
     if intent == "chat" and not addressed:
         await msg.answer(persona.answer_info_fast(text))
-        try:
-            dialog_manager.mark_bot_replied(chat_id, user_id)
-        except Exception:
-            pass
+        if DIALOG_ENABLED:
+            try:
+                dialog_manager.mark_bot_replied(chat_id, user_id)
+            except Exception:
+                pass
         return
 
-    # иногда подтверждение
     ack = persona.maybe_ack()
     if ack:
         await msg.answer(ack)
 
-    # новости
     if intent == "news":
         asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="chat_nl_news"))
-        try:
-            dialog_manager.mark_bot_replied(chat_id, user_id)
-        except Exception:
-            pass
+        if DIALOG_ENABLED:
+            try:
+                dialog_manager.mark_bot_replied(chat_id, user_id)
+            except Exception:
+                pass
         return
 
-    # музыка (только C, 2 ссылки)
     if intent == "music":
 
         async def _run_music_only():
@@ -885,18 +869,19 @@ async def vesya_handler(msg: Message):
                     await bot.session.close()
 
         asyncio.create_task(_run_music_only())
+        if DIALOG_ENABLED:
+            try:
+                dialog_manager.mark_bot_replied(chat_id, user_id)
+            except Exception:
+                pass
+        return
+
+    asyncio.create_task(run_all(12, reason="chat_nl_get12"))
+    if DIALOG_ENABLED:
         try:
             dialog_manager.mark_bot_replied(chat_id, user_id)
         except Exception:
             pass
-        return
-
-    # default: основной пайплайн как /get12
-    asyncio.create_task(run_all(12, reason="chat_nl_get12"))
-    try:
-        dialog_manager.mark_bot_replied(chat_id, user_id)
-    except Exception:
-        pass
 
 
 @router.callback_query()
