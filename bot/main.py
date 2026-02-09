@@ -43,7 +43,7 @@ FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 STATE_PATH = DATA_DIR / "daily_state.json"
 
-# Category C (YouTube) posted log (global, never repeat)
+# Category C: posted (global, never repeat) + source cooldown
 C_POSTED_TSV = DATA_DIR / "c_posted_master.tsv"
 
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
@@ -148,8 +148,9 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
 
 # ===== Category C posted (global, never repeat) =====
 def _ensure_c_posted_header() -> None:
+    # Новая версия с source (канал)
     if not C_POSTED_TSV.exists():
-        C_POSTED_TSV.write_text("ts_utc\tvideo_id\turl\ttitle\n", encoding="utf-8")
+        C_POSTED_TSV.write_text("ts_utc\tvideo_id\turl\ttitle\tsource\n", encoding="utf-8")
 
 
 def _load_c_posted_video_ids() -> set[str]:
@@ -168,7 +169,31 @@ def _load_c_posted_video_ids() -> set[str]:
     return out
 
 
-def _mark_c_posted(video_id: str, url: str, title: str) -> None:
+def _load_c_last_sent_by_source() -> Dict[str, str]:
+    """
+    source_key -> last ts_utc iso
+    Поддерживает старые строки без source (len<5): пропускаем.
+    """
+    if not C_POSTED_TSV.exists():
+        return {}
+    out: Dict[str, str] = {}
+    for line in C_POSTED_TSV.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.startswith("ts_utc"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        ts = (parts[0] or "").strip()
+        source = (parts[4] or "").strip().lower()
+        if not ts or not source:
+            continue
+        prev = out.get(source)
+        if not prev or ts > prev:
+            out[source] = ts
+    return out
+
+
+def _mark_c_posted(video_id: str, url: str, title: str, source: str) -> None:
     _ensure_c_posted_header()
     ts = datetime.now(timezone.utc).isoformat()
     video_id = (video_id or "").strip()
@@ -176,8 +201,9 @@ def _mark_c_posted(video_id: str, url: str, title: str) -> None:
         return
     url = (url or "").replace("\t", " ").strip()
     title = (title or "").replace("\t", " ").strip()
+    source = (source or "").replace("\t", " ").strip().lower()
     with C_POSTED_TSV.open("a", encoding="utf-8") as f:
-        f.write(f"{ts}\t{video_id}\t{url}\t{title}\n")
+        f.write(f"{ts}\t{video_id}\t{url}\t{title}\t{source}\n")
 
 
 def _load_sent_index() -> Dict[str, Any]:
@@ -252,34 +278,6 @@ def _read_meta(abs_path: str) -> Dict[str, Any]:
         return {}
 
 
-def _clean_src_text(src: str) -> str:
-    s = (src or "").strip()
-    if not s:
-        return ""
-    try:
-        if "://" not in s and s.startswith("t.me/"):
-            s2 = "https://" + s
-        else:
-            s2 = s
-        u = urlparse(s2)
-        path = (u.path or "").strip("/")
-        if path:
-            if path.startswith("+"):
-                return "invite"
-            return path
-    except Exception:
-        pass
-
-    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-            break
-    s = s.strip().strip("/")
-    if s.startswith("+"):
-        return "invite"
-    return s
-
-
 def _stable_item_id(abs_path: str) -> str:
     meta = _read_meta(abs_path)
     src = (meta.get("src") or "").strip()
@@ -293,8 +291,8 @@ def _stable_item_id(abs_path: str) -> str:
         return abs_path
 
 
-def _caption_for_item(it: Dict[str, Any]) -> Optional[str]:
-    # УБРАЛИ полностью caption для A/B/C: никаких score/src/каналов.
+def _caption_for_item(_it: Dict[str, Any]) -> Optional[str]:
+    # Убрали score/src и любые подписи
     return None
 
 
@@ -417,7 +415,7 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
 
 
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
-    # Category C: YouTube link as message
+    # C: YouTube link message
     if (it.get("feed") or "").strip() == "c_youtube":
         title = (it.get("title") or "").strip()
         url = (it.get("url") or "").strip()
@@ -457,7 +455,7 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
 
         return True
 
-    # A/B: send file
+    # A/B: files
     abs_path = it["abs_path"]
     p = Path(abs_path)
     if not p.exists():
@@ -540,7 +538,12 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
 
         if feed == "c_youtube":
             vid = (it.get("video_id") or item_id or "").strip()
-            _mark_c_posted(vid, (it.get("url") or ""), (it.get("title") or ""))
+            _mark_c_posted(
+                vid,
+                (it.get("url") or ""),
+                (it.get("title") or ""),
+                (it.get("source") or ""),
+            )
             posted_c_video_ids.add(vid)
         else:
             _mark_posted(user_id, item_id, feed)
@@ -590,7 +593,12 @@ async def run_all(hours: int, *, reason: str) -> None:
         c_items: List[Dict[str, Any]] = []
         try:
             posted_c = _load_c_posted_video_ids()
-            c_items = c_youtube_fetcher.get_batch(limit=c_limit, posted_video_ids=posted_c)
+            last_by_source = _load_c_last_sent_by_source()
+            c_items = c_youtube_fetcher.get_batch(
+                limit=c_limit,
+                posted_video_ids=posted_c,
+                last_sent_by_source=last_by_source,
+            )
         except Exception as e:
             log(f"C fetch error: {e}")
             c_items = []
@@ -640,11 +648,11 @@ async def on_feedback(cb: CallbackQuery):
     _append_feedback(user_id, action, payload)
 
     if action == "good":
-        await cb.answer("Записал: Отлично ✅", show_alert=False)
+        await cb.answer("Записал ✅", show_alert=False)
     elif action == "bad":
-        await cb.answer("Записал: Плохо 👎", show_alert=False)
+        await cb.answer("Записал 👎", show_alert=False)
     elif action == "ban":
-        await cb.answer("Записал: Бан ⛔️", show_alert=False)
+        await cb.answer("Записал ⛔️", show_alert=False)
     else:
         await cb.answer("Записал", show_alert=False)
 
