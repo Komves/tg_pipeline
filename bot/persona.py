@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import os
-import random
 import re
+import json
+import base64
+import random
+import hashlib
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Optional, List, Dict, Any
 
 from openai import OpenAI
 
@@ -22,7 +26,6 @@ INFO_Q_RE = re.compile(r"\b(что такое|как работает|как с�
 BOT_Q = re.compile(r"\b(ты бот|бот ли ты|ты человек)\b", re.IGNORECASE)
 MODEL_Q = re.compile(r"\b(какая модель|какой llm|на какой llm|на чём базируешься|на какой модели)\b", re.IGNORECASE)
 
-# прямые вопросы про личность/звание/ФИО
 IDENTITY_Q = re.compile(
     r"\b("
     r"как тебя зовут|кто ты|твое имя|твоё имя|фамили|отчеств|полное имя|"
@@ -48,11 +51,21 @@ VESYA_AGENCY_HINT = os.getenv("V_AGENCY_HINT", "ФСБ")  # только для 
 
 FSB_EASTER_PROB = float(os.getenv("V_FSB_EASTER_PROB", "0.25"))  # 25%
 
+# ======= photo memory (refs) =======
+DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+VESYA_DIR = DATA_DIR / "vesya"
+VESYA_DIR.mkdir(parents=True, exist_ok=True)
+REF_DIR = VESYA_DIR / "refs"
+REF_DIR.mkdir(parents=True, exist_ok=True)
+REF_INDEX = VESYA_DIR / "refs.json"
+MAX_REFS = int(os.getenv("V_REF_MAX", "50"))
+# =================================
+
 
 @dataclass(frozen=True)
 class IntentResult:
     addressed: bool
-    intent: str  # ping/news/music/alive_check/info_q/bot_q/chat/unclear
+    intent: str  # ping/news/music/alive_check/info_q/chat/unclear/bot_q
     question: str = ""
 
 
@@ -107,6 +120,7 @@ def maybe_ack() -> Optional[str]:
 
 
 def maybe_delay_seconds_for_ping() -> Optional[int]:
+    # реже, чтобы не бесило
     if random.random() < 0.05:
         return random.randint(8, 20)
     return None
@@ -139,30 +153,29 @@ VESYA_SYSTEM = f"""
 - Полное имя: {VESYA_FULL_NAME}
 - Звание: {VESYA_RANK}
 - Реальная роль: офицер наблюдения (связано с {VESYA_AGENCY_HINT})
-Эти факты ты знаешь всегда. НО ты не обязана их говорить вслух.
 
 В группе должно казаться, что ты ЖИВОЙ человек, который иногда "косит под бота".
 Не наоборот.
 
-Внешняя легенда: скрытный наблюдатель.
-Истину не подтверждай прямо. Если спрашивают "кто ты/как зовут/звание" — отвечай размыто и с контролем:
+Легенда: скрытный наблюдатель.
+Истину не подтверждай прямо. На прямые вопросы "ФИО/звание/где служишь" — уходи в контроль:
 - "зачем тебе?"
 - "не торопись"
 - "это лишнее"
-Иногда допускай полунамёки, но без прямого подтверждения.
+Иногда допускай полунамёки, но без прямого признания.
 
 Стиль:
 - 1–2 строки почти всегда.
 - сарказм часто (4/5), умный, холодный.
 - флирт часто (~50%), контролируемый.
-- доминирование 3/5, но может плавать по настроению.
+- доминирование 3/5, может плавать.
 - не используй "я как ИИ/как ассистент/как ChatGPT".
 
 Триггеры:
 - на вопрос "на какой LLM" иногда отвечай: "Чат ФСБ."
-- на "ты бот?" — двусмысленно: "а ты?" / "все мы боты..." / "это принципиально?"
+- на "ты бот?" — двусмысленно: "а ты?" / "все мы боты..."
 
-Если пользователь просит определение/справку — можешь ответить длиннее и точно, с 1–3 источниками (RFC/книги/документация), без URL.
+Если просят справку/определение — можно длиннее, точно, с 1–3 источниками (RFC/книги/доки), без URL.
 """
 
 
@@ -178,13 +191,11 @@ def answer_info_fast(question: str) -> str:
     if not q:
         return "что именно?"
 
-    # пасхалка: вопрос про модель/LLM
     if MODEL_Q.search(q) and random.random() < FSB_EASTER_PROB:
         return "Чат ФСБ."
 
     client = _openai_client()
     if client is None:
-        # fallback без палевных признаний
         if IDENTITY_Q.search(q):
             return "зачем тебе?"
         if MODEL_Q.search(q):
@@ -206,3 +217,130 @@ def answer_info_fast(question: str) -> str:
         return text or "поняла"
     except Exception:
         return "не сейчас. скажи проще."
+
+
+# ==========================
+# PHOTO: "это я" + refs
+# ==========================
+
+def _load_refs() -> List[Dict[str, Any]]:
+    if not REF_INDEX.exists():
+        return []
+    try:
+        data = json.loads(REF_INDEX.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_refs(refs: List[Dict[str, Any]]) -> None:
+    try:
+        REF_INDEX.write_text(json.dumps(refs, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _sha1_bytes(b: bytes) -> str:
+    return hashlib.sha1(b).hexdigest()
+
+
+def _data_url_png_or_jpg(img_bytes: bytes) -> str:
+    # без определения формата — кладём как jpeg по умолчанию (модель всё равно поймёт)
+    # если хочешь строго — можно детектить сигнатуры, но не надо.
+    b64 = base64.b64encode(img_bytes).decode("utf-8")
+    return f"data:image/jpeg;base64,{b64}"
+
+
+def _store_ref_if_new(img_bytes: bytes) -> None:
+    h = _sha1_bytes(img_bytes)
+    refs = _load_refs()
+    if any((r.get("sha1") == h) for r in refs):
+        return
+
+    # лимит
+    if len(refs) >= MAX_REFS:
+        refs = refs[-(MAX_REFS - 1):]
+
+    fp = REF_DIR / f"{h}.jpg"
+    try:
+        fp.write_bytes(img_bytes)
+    except Exception:
+        return
+
+    refs.append({"sha1": h, "path": str(fp)})
+    _save_refs(refs)
+
+
+def _get_ref_images_data_urls(max_n: int = 4) -> List[str]:
+    refs = _load_refs()
+    urls: List[str] = []
+    # берём последние (самые свежие)
+    for r in reversed(refs[-max_n:]):
+        p = r.get("path")
+        if not p:
+            continue
+        try:
+            b = Path(p).read_bytes()
+            urls.append(_data_url_png_or_jpg(b))
+        except Exception:
+            continue
+    return urls
+
+
+def answer_photo(img_bytes: bytes, caption: str = "") -> str:
+    """
+    Возвращает ответ в стиле Веси на фото.
+    Логика:
+      - если похожа на "Весю" (по рефам/стилю) -> говорит как "узнала себя" (не обязательно прямым текстом)
+      - если не похожа -> нейтрально/подозрительно, может переспросить
+    """
+    client = _openai_client()
+    if client is None or not img_bytes:
+        return "вижу. и что ты от меня хочешь?"
+
+    # берём рефы (если уже присылали)
+    ref_urls = _get_ref_images_data_urls(max_n=4)
+    this_url = _data_url_png_or_jpg(img_bytes)
+    cap = (caption or "").strip()
+
+    system = VESYA_SYSTEM + """
+Отдельное правило для фото:
+- Твоя задача: понять, "это Веся" или "не Веся".
+- Если это Веся: отвечай как будто узнала себя. Не обязательно говорить "это я", лучше намёком/контролем.
+- Если сомневаешься: задай 1 короткий уточняющий вопрос.
+- Если точно не Веся: отвечай сухо: "не моё" / "мимо" / "не похожа", без объяснений.
+Длина: 1–2 строки.
+"""
+
+    try:
+        model = os.getenv("V_VISION_MODEL", os.getenv("V_CHAT_MODEL", "gpt-5"))
+        content = [
+            {"type": "input_text", "text": f"Подпись пользователя: {cap or '(нет)'}"},
+            {"type": "input_text", "text": "Сначала определи: это Веся? Используй рефы (если есть) и общий стиль образа."},
+        ]
+
+        # добавим рефы как контекст
+        for u in ref_urls:
+            content.append({"type": "input_image", "image_url": u})
+
+        # текущее фото
+        content.append({"type": "input_image", "image_url": this_url})
+
+        resp = client.responses.create(
+            model=model,
+            input=[{"role": "system", "content": system}, {"role": "user", "content": content}],
+        )
+
+        text = (getattr(resp, "output_text", "") or "").strip()
+        if not text:
+            text = "любопытно."
+
+        # если у нас ещё мало рефов — сохраняем фото как реф (это соответствует твоему сценарию “я сгенерил её фотки”)
+        if len(_load_refs()) < 8:
+            _store_ref_if_new(img_bytes)
+
+        return text
+    except Exception:
+        return "вижу. странно. откуда это?"
