@@ -1,4 +1,4 @@
-# BOT/main.py
+# bot/main.py
 import os
 import json
 import asyncio
@@ -699,6 +699,16 @@ async def vesya_handler(msg: Message):
     if not getattr(ir, "addressed", False):
         return
 
+    # special-case: "Веся" (только обращение) -> ping
+    try:
+        stripped = persona.strip_name_prefix(text)
+    except Exception:
+        stripped = text
+    if (stripped or "").strip() == "":
+        intent = "ping"
+    else:
+        intent = (getattr(ir, "intent", "") or "").strip()
+
     # memory: не ломает, даже если что-то пойдёт не так
     try:
         profiles = memory.load_profiles()
@@ -710,7 +720,7 @@ async def vesya_handler(msg: Message):
             username=(u.username if u else ""),
         )
         memory.update_night_owl(prof, hour_local=datetime.now(MSK).hour)
-        memory.bump_intent(prof, getattr(ir, "intent", "unclear") or "unclear")
+        memory.bump_intent(prof, intent or "unclear")
         memory.save_profiles(profiles)
 
         memory.append_event(
@@ -719,18 +729,22 @@ async def vesya_handler(msg: Message):
                 "kind": "msg",
                 "uid": (u.id if u else 0),
                 "text": text,
-                "intent": getattr(ir, "intent", ""),
+                "intent": intent,
             }
         )
         memory.prune_memory()
     except Exception:
         pass
 
-    intent = (getattr(ir, "intent", "") or "").strip()
-
     # "Веся" — иногда с задержкой/отмазкой
     if intent == "ping":
-        d = persona.maybe_delay_ping_seconds()
+        # было: persona.maybe_delay_ping_seconds() (такой функции нет)
+        d = None
+        try:
+            d = persona.maybe_delay_seconds_for_ping()
+        except Exception:
+            d = None
+
         if d:
             asyncio.create_task(_delayed_answer(msg, f"{persona.ping_answer()}. {persona.excuse_text()}.", d))
         else:
@@ -763,7 +777,11 @@ async def vesya_handler(msg: Message):
         return
 
     # иногда подтверждение
-    ack = persona.maybe_ack()
+    ack = None
+    try:
+        ack = persona.maybe_ack()
+    except Exception:
+        ack = None
     if ack:
         await msg.answer(ack)
 
