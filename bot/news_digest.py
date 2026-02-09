@@ -41,6 +41,7 @@ API_ID = int(os.environ["TG_API_ID"])
 API_HASH = os.environ["TG_API_HASH"]
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
+_WS_RE = re.compile(r"\s+")
 
 
 def _now_utc() -> datetime:
@@ -69,6 +70,7 @@ def _is_text_only_links(text: str) -> bool:
         return True
 
     no_urls = _URL_RE.sub(" ", t)
+    # оставить только буквы/цифры
     alnum = re.sub(
         r"[^0-9A-Za-zА-Яа-яЁёЇїІіЄєҐґ\u00C0-\u024F\u1E00-\u1EFF]",
         "",
@@ -82,10 +84,50 @@ def _ensure_seen_header() -> None:
         NEWS_SEEN_TSV.write_text("ts_utc\tevent_id\turl\ttitle\n", encoding="utf-8")
 
 
-def _load_seen_ids() -> set[str]:
+def _url_hash(url: str) -> str:
+    u = (url or "").strip()
+    return hashlib.sha1(u.encode("utf-8")).hexdigest()[:16]
+
+
+def _norm_event_text(s: str) -> str:
+    """
+    Нормализация "смысла" события для стабильного event_id:
+    - lower
+    - убираем URL
+    - убираем лишние символы (оставляем буквы/цифры/пробел)
+    - схлопываем пробелы
+    """
+    if not s:
+        return ""
+    t = s.lower()
+    t = _URL_RE.sub(" ", t)
+    t = re.sub(r"[^0-9a-zа-яёіїєґ\u00C0-\u024F\u1E00-\u1EFF\s]", " ", t, flags=re.IGNORECASE)
+    t = _WS_RE.sub(" ", t).strip()
+    return t
+
+
+def _event_id_from_title_summary(title: str, summary: str) -> str:
+    base = (_norm_event_text(title) + " | " + _norm_event_text(summary)).strip()
+    if not base:
+        base = _norm_event_text(title) or _norm_event_text(summary)
+    if not base:
+        # последний фолбэк — пустое (не должно быть), вернём фиксированное
+        base = "empty"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_seen_sets() -> tuple[set[str], set[str]]:
+    """
+    Возвращает два множества:
+      - seen_event_ids: чтобы не повторять СОБЫТИЯ
+      - seen_url_ids: чтобы не повторять ТОЧНО ТЕ ЖЕ ПОСТЫ (back-compat со старым файлом)
+    """
     if not NEWS_SEEN_TSV.exists():
-        return set()
-    out: set[str] = set()
+        return set(), set()
+
+    seen_event: set[str] = set()
+    seen_url: set[str] = set()
+
     for line in NEWS_SEEN_TSV.read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.startswith("ts_utc"):
             continue
@@ -94,8 +136,12 @@ def _load_seen_ids() -> set[str]:
             continue
         eid = (parts[1] or "").strip()
         if eid:
-            out.add(eid)
-    return out
+            seen_event.add(eid)
+        if len(parts) >= 3:
+            u = (parts[2] or "").strip()
+            if u:
+                seen_url.add(_url_hash(u))
+    return seen_event, seen_url
 
 
 def _append_seen(event_id: str, url: str, title: str) -> None:
@@ -168,7 +214,7 @@ def _post_url(username: str, msg_id: int) -> str:
 
 def _build_prompt(posts: List[Dict[str, str]], limit: int) -> str:
     """
-    Возвращаем строго JSON:
+    Просим строго JSON:
       [{ "title": "...", "summary": "...", "url": "https://t.me/..." }, ...]
     """
     posts = posts[:2000]
@@ -219,20 +265,12 @@ class DigestItem:
     url: str
 
 
-def _event_id_from_url(url: str) -> str:
-    # стабильный id для памяти показанного
-    h = hashlib.sha1((url or "").strip().encode("utf-8")).hexdigest()
-    return h[:16]
-
-
 async def fetch_posts_last_hours(sources: List[str], hours: int) -> List[Dict[str, str]]:
     """
     Требования:
-    - только TG каналы
     - pinned игнорировать
     - посты без текста игнорировать
     - посты "только ссылка" игнорировать
-    - edits не учитываем
     - forwarded включаем
     """
     cutoff = _now_utc() - timedelta(hours=max(1, int(hours)))
@@ -315,10 +353,13 @@ def build_html_message(items: List[DigestItem], *, hours: int) -> str:
 
 async def get_news_digest(*, news_sources_path: Path, hours: int = 12, limit: int = 10) -> List[DigestItem]:
     """
-    Главная функция, которую вызывает main.py
+    Главная функция для main.py:
+    - память на 3 дня
+    - анти-повтор по событиям (title+summary)
+    - back-compat: не повторяем также точные URL, даже если старый файл был url-hash
     """
     _prune_seen(RETENTION_DAYS)
-    seen = _load_seen_ids()
+    seen_event_ids, seen_url_ids = _load_seen_sets()
 
     sources = load_news_sources(news_sources_path)
     posts = await fetch_posts_last_hours(sources, hours)
@@ -335,22 +376,25 @@ async def get_news_digest(*, news_sources_path: Path, hours: int = 12, limit: in
 
     out: List[DigestItem] = []
     for x in (data or []):
+        title = str(x.get("title") or "").strip()
+        summary = str(x.get("summary") or "").strip()
         url = str(x.get("url") or "").strip()
+
         if not url.startswith("https://t.me/"):
             continue
 
-        eid = _event_id_from_url(url)
-        if eid in seen:
+        # анти-повтор по событию (смысл)
+        event_id = _event_id_from_title_summary(title, summary)
+
+        # анти-повтор по URL (на всякий случай/back-compat)
+        uh = _url_hash(url)
+
+        if event_id in seen_event_ids:
+            continue
+        if uh in seen_url_ids:
             continue
 
-        out.append(
-            DigestItem(
-                event_id=eid,
-                title=str(x.get("title") or "").strip(),
-                summary=str(x.get("summary") or "").strip(),
-                url=url,
-            )
-        )
+        out.append(DigestItem(event_id=event_id, title=title, summary=summary, url=url))
         if len(out) >= max(0, int(limit)):
             break
 
