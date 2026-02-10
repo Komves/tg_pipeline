@@ -826,12 +826,13 @@ async def main_async():
     log(f"news: hours={NEWS_HOURS} limit={NEWS_LIMIT} sources={NEWS_SOURCES_FILE}")
     log("buttons: A (3) + C (2), B none")
     log(f"dialog ttl: {os.getenv('V_DIALOG_TTL_SEC','300')}s | typing max: {DIALOG_TYPING_MAX_SEC}s")
-    log(f"C fetch timeout: {C_FETCH_TIMEOUT_SEC}s")
     log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
-    dp.include_router(router)  # CRITICAL
+
+    # CRITICAL — регистрируем router с диалогом
+    dp.include_router(router)
 
     await asyncio.gather(
         dp.start_polling(bot),
@@ -843,6 +844,6 @@ def main():
     asyncio.run(main_async())
 
 
+# CRITICAL ENTRYPOINT — БЕЗ ЭТОГО БОТ НЕ СТАРТУЕТ
 if __name__ == "__main__":
     main()
-```
