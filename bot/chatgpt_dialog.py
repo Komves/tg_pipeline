@@ -65,6 +65,7 @@ class _Session:
 
 _sessions: Dict[Tuple[int, int], _Session] = {}
 
+
 # =========================
 # REGEX
 # =========================
@@ -85,6 +86,25 @@ CLARIFY = [
     "контент, новости или просто поговорить? стриптиз не обещаю, но потроллить — да 😌",
 ]
 
+# Жёсткие отмазки, когда фото похоже на Весю
+DENY_ME_HARD = [
+    "Инфа по этому фото закрыта. Спроси что-нибудь попроще.",
+    "Откуда у тебя это? Не, правда — откуда.",
+    "Скажем так: лучше тебе это не хранить. Удали.",
+    "Ты сейчас лезешь не туда. И да, я это заметила.",
+    "Файл вижу. Происхождение — не обсуждаю. Дальше — без меня.",
+    "Ты уверен, что хочешь продолжать? Мне — всё равно. Тебе — может быть нет.",
+    "Плохая привычка — собирать чужие фото. Особенно такие.",
+    "Это старое. И ты его не должен был видеть.",
+    "Я не подтверждаю и не опровергаю. Но ты удали.",
+]
+
+DENY_NOT_ME = [
+    "Не-а. Мимо.",
+    "Похожа, но нет.",
+    "Хорошая попытка, но это не я.",
+    "Нет. И не надо на меня это вешать 😌",
+]
 
 # =========================
 # SESSION API
@@ -305,6 +325,7 @@ def describe_or_compare_photo(user_text: str, image_bytes: bytes) -> DialogDecis
 
     asks_me = bool(IS_IT_YOU_RE.search((user_text or "").lower()))
 
+    # load last 3 persona refs
     idx = _load_persona_index()
     refs = (idx.get("photos") or [])[-3:]
     ref_bytes: List[bytes] = []
@@ -316,23 +337,23 @@ def describe_or_compare_photo(user_text: str, image_bytes: bytes) -> DialogDecis
 
     client = OpenAI()
 
+    # ===== COMPARE (hard deny style) =====
     if asks_me and ref_bytes:
         try:
             content: List[dict] = [
                 {
                     "type": "input_text",
                     "text": (
-                        "Сравни фото пользователя с референсами Веси. Это один и тот же ОБРАЗ?\n"
-                        "Ответь строго JSON: {\"is_me\":true|false,\"confidence\":0..1,\"reply\":\"коротко, в стиле Веси\"}"
+                        "Сравни фото пользователя с референсами Веси (как ОБРАЗ).\n"
+                        "Верни строго JSON: {\"is_me\":true|false,\"confidence\":0..1}\n"
+                        "Никаких объяснений, только JSON."
                     ),
                 }
             ]
 
-            for i, b in enumerate(ref_bytes, 1):
-                content.append({"type": "input_text", "text": f"Референс #{i} (Веся):"})
+            for b in ref_bytes:
                 content.append({"type": "input_image", "image_base64": _b64(b)})
 
-            content.append({"type": "input_text", "text": "Фото пользователя:"})
             content.append({"type": "input_image", "image_base64": _b64(image_bytes)})
 
             resp = client.responses.create(
@@ -349,19 +370,32 @@ def describe_or_compare_photo(user_text: str, image_bytes: bytes) -> DialogDecis
                 data = json.loads(m.group(0)) if m else {}
 
             is_me = bool(data.get("is_me"))
-            reply = _sanitize_reply(data.get("reply") or "")
-            if not reply:
-                reply = "Узнаю. (как образ — да.)" if is_me else "Не-а. (как образ — не совпадает.)"
-            return DialogDecision(intent="chat", reply=reply)
+            conf = float(data.get("confidence") or 0.0)
+
+            # если совпало (или модель “не уверена, но похоже”) — отмазываемся ЖЁСТКО
+            if is_me or conf >= 0.55:
+                reply = random.choice(DENY_ME_HARD)
+                return DialogDecision(intent="chat", reply=reply)
+
+            return DialogDecision(intent="chat", reply=random.choice(DENY_NOT_ME))
+
         except Exception as e:
             _dbg(f"vision compare EXC: {type(e).__name__}: {e}")
-            return DialogDecision(intent="chat", reply="вижу фото, но мозги споткнулись. кинь ещё раз?")
+            # без вопросов, жёстко
+            return DialogDecision(intent="chat", reply="фото вижу. обсуждать это — нет.")
 
+    # ===== DESCRIBE =====
     try:
         resp = client.responses.create(
             model=VISION_MODEL,
             input=[
-                {"role": "system", "content": "Ты — Веся. Опиши фото коротко и остроумно (1–3 строки), без занудства. Не заканчивай вопросом."},
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты — Веся. Реагируй на фото коротко и резко (1–3 строки), "
+                        "с сарказмом и лёгким флиртом. Без пошлости. Не заканчивай вопросом."
+                    ),
+                },
                 {
                     "role": "user",
                     "content": [
@@ -375,7 +409,7 @@ def describe_or_compare_photo(user_text: str, image_bytes: bytes) -> DialogDecis
         return DialogDecision(intent="chat", reply=out)
     except Exception as e:
         _dbg(f"vision describe EXC: {type(e).__name__}: {e}")
-        return DialogDecision(intent="chat", reply="вижу фото, но объяснить словами не успела. повтори?")
+        return DialogDecision(intent="chat", reply="фото вижу. реакцию — потом.")
 
 
 # =========================
@@ -414,6 +448,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     add_user(chat_id, user_id, user_text)
     touch(chat_id, user_id)
 
+    # "Запомни" -> try to attach last photo if exists
     if REMEMBER_HINT_RE.search(_strip_name(user_text)):
         last_path = pop_last_user_photo(chat_id, user_id)
         if last_path and Path(last_path).exists():
@@ -435,7 +470,10 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
                 add_assistant(chat_id, user_id, dd.reply)
                 return dd
 
-        dd = DialogDecision(intent="chat", reply="Ок. Что именно запомнить: одну фразу текстом или фото? (если фото — просто пришли и повтори «Запомни»).")
+        dd = DialogDecision(
+            intent="chat",
+            reply="Ок. Что именно запомнить: одну фразу текстом или фото? (если фото — просто пришли и повтори «Запомни»).",
+        )
         add_assistant(chat_id, user_id, dd.reply)
         return dd
 
