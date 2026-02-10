@@ -32,6 +32,8 @@ _SYSTEM_PROMPT = """
 Ты — Веся.
 Ответ строго JSON:
 {"intent":"chat|content|news|end","reply":"текст"}
+
+Если пользователь задаёт вопрос (например "что такое HTTP"), intent всегда "chat".
 """
 
 
@@ -181,7 +183,6 @@ def decide(chat_id: int, user_id: int, text: str) -> DialogDecision:
         resp = client.responses.create(
             model=DIALOG_MODEL,
             input=[{"role": "system", "content": _SYSTEM_PROMPT}, *get_history(chat_id, user_id)],
-            temperature=0.7,
         )
 
         out = getattr(resp, "output_text", None) or getattr(resp, "text", None) or ""
