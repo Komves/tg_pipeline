@@ -321,14 +321,27 @@ def describe_or_compare_photo(user_text: str, image_bytes: bytes) -> DialogDecis
 
     client = OpenAI()
 
+    # compare
     if asks_me and ref_bytes:
         try:
-            content = [{"type": "input_text", "text": "Сравни фото пользователя с референсами Веси. Это один и тот же ОБРАЗ? Ответь строго JSON: {\"is_me\":true|false,\"confidence\":0..1,\"reply\":\"коротко, в стиле Веси\"}"}]
+            content: List[dict] = [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "Сравни фото пользователя с референсами Веси. Это один и тот же ОБРАЗ?\n"
+                        "Ответь строго JSON: {\"is_me\":true|false,\"confidence\":0..1,\"reply\":\"коротко, в стиле Веси\"}"
+                    ),
+                }
+            ]
+
             for i, b in enumerate(ref_bytes, 1):
                 content.append({"type": "input_text", "text": f"Референс #{i} (Веся):"})
-                content.append({"type": "input_image", "image_base64": _b64(b)})
+                # FIX: правильный параметр image
+                content.append({"type": "input_image", "image": _b64(b)})
+
             content.append({"type": "input_text", "text": "Фото пользователя:"})
-            content.append({"type": "input_image", "image_base64": _b64(image_bytes)})
+            # FIX: правильный параметр image
+            content.append({"type": "input_image", "image": _b64(image_bytes)})
 
             resp = client.responses.create(model=VISION_MODEL, input=[{"role": "user", "content": content}])
             out = _extract_text(resp)
@@ -346,7 +359,9 @@ def describe_or_compare_photo(user_text: str, image_bytes: bytes) -> DialogDecis
                 reply = "Узнаю. (как образ — да.)" if is_me else "Не-а. (как образ — не совпадает.)"
             else:
                 reply = reply + (" (как образ — да.)" if is_me else " (как образ — не совпадает.)")
+
             return DialogDecision(intent="chat", reply=reply)
+
         except Exception as e:
             _dbg(f"vision compare EXC: {type(e).__name__}: {e}")
             return DialogDecision(intent="chat", reply="вижу фото, но мозги споткнулись. кинь ещё раз?")
@@ -356,12 +371,16 @@ def describe_or_compare_photo(user_text: str, image_bytes: bytes) -> DialogDecis
         resp = client.responses.create(
             model=VISION_MODEL,
             input=[
-                {"role": "system", "content": "Ты — Веся. Опиши фото коротко и остроумно (1–3 строки), без занудства. Не заканчивай вопросом."},
+                {
+                    "role": "system",
+                    "content": "Ты — Веся. Опиши фото коротко и остроумно (1–3 строки), без занудства. Не заканчивай вопросом.",
+                },
                 {
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": f"Сообщение пользователя: {user_text or '(без текста)'}"},
-                        {"type": "input_image", "image_base64": _b64(image_bytes)},
+                        # FIX: правильный параметр image
+                        {"type": "input_image", "image": _b64(image_bytes)},
                     ],
                 },
             ],
@@ -415,7 +434,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         if last_path and Path(last_path).exists():
             try:
                 b = Path(last_path).read_bytes()
-                saved = add_persona_photo_bytes(chat_id, user_id, b, ext=Path(last_path).suffix.lstrip(".") or "jpg", note="remember_text")
+                saved = add_persona_photo_bytes(
+                    chat_id,
+                    user_id,
+                    b,
+                    ext=Path(last_path).suffix.lstrip(".") or "jpg",
+                    note="remember_text",
+                )
                 dd = DialogDecision(intent="chat", reply=f"принято. закрепила у себя в досье как образ: {saved}")
                 add_assistant(chat_id, user_id, dd.reply)
                 return dd
@@ -424,8 +449,11 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
                 dd = DialogDecision(intent="chat", reply="хотела запомнить, но уронила фото. кинь ещё раз.")
                 add_assistant(chat_id, user_id, dd.reply)
                 return dd
-        # no photo -> normal reply
-        dd = DialogDecision(intent="chat", reply="Ок. Что именно запомнить: одну фразу текстом или фото? (если фото — просто пришли и повтори «Запомни»).")
+
+        dd = DialogDecision(
+            intent="chat",
+            reply="Ок. Что именно запомнить: одну фразу текстом или фото? (если фото — просто пришли и повтори «Запомни»).",
+        )
         add_assistant(chat_id, user_id, dd.reply)
         return dd
 
