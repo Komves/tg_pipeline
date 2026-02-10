@@ -6,23 +6,25 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Set
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 from openai import OpenAI
 
+# =========================
+# CONFIG
+# =========================
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
 _YT_HOSTS = {"www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"}
 
 DEFAULT_MODEL = os.getenv("C_OPENAI_MODEL", "gpt-5")
+MAX_TRIES = int(os.getenv("C_OPENAI_TRIES", "3"))
+SLEEP_BETWEEN_TRIES_SEC = float(os.getenv("C_OPENAI_RETRY_SLEEP", "1.0"))
 
-# ВАЖНО: успеть до внешнего таймаута main (у тебя 20s)
-# Поэтому по умолчанию держим короткий сетевой таймаут и мало попыток.
-OPENAI_TIMEOUT_SEC = float(os.getenv("C_OPENAI_TIMEOUT_SEC", "8.0"))  # <= 20s budget
-MAX_TRIES = int(os.getenv("C_OPENAI_TRIES", "2"))
-SLEEP_BETWEEN_TRIES_SEC = float(os.getenv("C_OPENAI_RETRY_SLEEP", "0.6"))
+COOLDOWN_DAYS = int(os.getenv("C_SOURCE_COOLDOWN_DAYS", "7"))
+MAX_PER_SOURCE_PER_BATCH = 1
 
-COOLDOWN_DAYS = int(os.getenv("C_SOURCE_COOLDOWN_DAYS", "7"))  # требование: 7
-MAX_PER_SOURCE_PER_BATCH = 1  # требование: не больше 1 из одного источника за раз
+# IMPORTANT: avoid hangs
+OPENAI_TIMEOUT_SEC = float(os.getenv("C_OPENAI_TIMEOUT_SEC", "20"))
 
 
 def _now_utc() -> datetime:
@@ -47,25 +49,23 @@ def _extract_urls(text: str) -> List[str]:
 
 def _normalize_youtube_url(u: str) -> Optional[str]:
     try:
-        u = u.strip().strip(").,;\"'")
+        u = (u or "").strip().strip(").,;\"'")
         if not u:
             return None
 
+        pu = urlparse(u)
+
         # youtu.be/<id>
-        if "youtu.be/" in u:
-            pu = urlparse(u)
-            if pu.hostname not in _YT_HOSTS:
-                return None
+        if pu.hostname in {"youtu.be"}:
             vid = pu.path.strip("/").split("/")[0]
             if not vid:
                 return None
             return f"https://www.youtube.com/watch?v={vid}"
 
-        pu = urlparse(u)
         if pu.hostname not in _YT_HOSTS:
             return None
 
-        # accept only /watch
+        # accept /watch only
         if pu.path.rstrip("/") != "/watch":
             return None
 
@@ -97,7 +97,7 @@ def _norm_source_key(s: str) -> str:
 
 def _cooldown_ok(source_key: str, last_sent_by_source: Dict[str, str], now: datetime) -> bool:
     if not source_key:
-        return True  # если не смогли определить источник — не валим результат, иначе будет 0
+        return False
     last_iso = last_sent_by_source.get(source_key)
     if not last_iso:
         return True
@@ -113,28 +113,23 @@ def _build_prompt(limit: int, banned_video_ids: Set[str], cooldown_days: int) ->
         sample = list(banned_video_ids)[:200]
         banned = "\n\nНЕ ИСПОЛЬЗУЙ эти video_id (уже отправлялись):\n" + "\n".join(sample)
 
-    # Ключевая правка: явно просим RU+EN и даём модельке ключевые слова.
-    # Просим source как handle/канал (но если не сможет — мы не будем выкидывать).
     return (
-        f"Найди {limit} РАЗНЫХ YouTube-ссылок на музыкальные КАВЕРЫ (rock/metal).\n"
-        f"Нужно смешать языки: примерно 50/50 RU и EN.\n\n"
-        f"Подсказки для поиска:\n"
-        f"- RU запросы/слова: кавер, каверы, перепевка, рок кавер, метал кавер, cover на русском, русская песня кавер\n"
-        f"- EN запросы/слова: cover, rock cover, metal cover, live cover\n\n"
+        f"Найди {limit} РАЗНЫХ YouTube-ссылок на музыкальные КАВЕРЫ в стиле рок/метал.\n"
+        f"Нужно смешать: часть каверов на иностранные известные песни, часть — на российские известные песни.\n\n"
         f"Требования:\n"
-        f"- Только каверы (cover/кавер/перепевка).\n"
-        f"- Только YouTube watch URL: https://www.youtube.com/watch?v=VIDEO_ID (без плейлистов).\n"
+        f"- Только каверы (cover/кавер).\n"
+        f"- Только YouTube watch URL формата https://www.youtube.com/watch?v=VIDEO_ID\n"
         f"- Не повторяй видео внутри ответа.\n"
-        f"- Верни ТОЛЬКО JSON-массив объектов, без текста вокруг.\n"
-        f"- Формат объекта: {{\"url\":\"...\",\"title\":\"...\",\"source\":\"...\"}}\n"
-        f"- source: имя/handle/канал/автор (любой стабильный идентификатор). Желательно.\n"
-        f"- В одном ответе не больше 1 видео на один source.\n"
-        f"- Старайся выбирать разные source, не повторяй source чаще, чем раз в {cooldown_days} дней.\n"
+        f"- В ответе ВЕРНИ ТОЛЬКО JSON-массив объектов, без текста вокруг.\n"
+        f"- Каждый объект: {{\"url\": \"...\", \"title\": \"...\", \"source\": \"...\"}}\n"
+        f"- Поле source: стабильный идентификатор источника (канал/автор/handle), строка.\n"
+        f"- Не используй один и тот же source больше 1 раза в массиве.\n"
+        f"- Учитывай правило: один source не должен повторяться чаще, чем раз в {cooldown_days} дней.\n"
         f"{banned}"
     )
 
 
-def _call_openai_json(limit: int, posted_video_ids: Set[str], cooldown_days: int) -> List[dict]:
+def _call_openai_candidates(limit: int, posted_video_ids: Set[str], cooldown_days: int) -> List[dict]:
     client = OpenAI(timeout=OPENAI_TIMEOUT_SEC)
     prompt = _build_prompt(limit, posted_video_ids, cooldown_days)
 
@@ -148,24 +143,28 @@ def _call_openai_json(limit: int, posted_video_ids: Set[str], cooldown_days: int
     if not text:
         return []
 
-    # fallback: если пришёл не JSON — вытащим ссылки
-    if not text.lstrip().startswith("["):
-        urls = _extract_urls(text)
-        out = []
-        for u in urls:
-            nu = _normalize_youtube_url(u)
-            if nu:
-                out.append({"url": nu, "title": "", "source": ""})
-        return out
+    # 1) Prefer JSON
+    if text.lstrip().startswith("["):
+        try:
+            data = json.loads(text)
+            if isinstance(data, list):
+                return [x for x in data if isinstance(x, dict)]
+        except Exception:
+            pass
 
-    try:
-        data = json.loads(text)
-        if isinstance(data, list):
-            return [x for x in data if isinstance(x, dict)]
-    except Exception:
-        pass
-
-    return []
+    # 2) Fallback: plain URLs in text
+    urls = _extract_urls(text)
+    out: List[dict] = []
+    for u in urls:
+        nu = _normalize_youtube_url(u)
+        if not nu:
+            continue
+        vid = _video_id_from_url(nu)
+        if not vid:
+            continue
+        # IMPORTANT: source must not be empty, иначе всё выкинется дальше
+        out.append({"url": nu, "title": "", "source": f"yt:{vid}"})
+    return out
 
 
 def get_batch(
@@ -196,12 +195,13 @@ def get_batch(
     seen_vid: Set[str] = set()
     used_sources: Set[str] = set()
 
-    # чтобы не раздувать ответ и не тормозить — берём 2x, не 3x
-    ask_n = min(20, max(limit * 2, limit))
-
     for _attempt in range(1, MAX_TRIES + 1):
         try:
-            candidates = _call_openai_json(limit=ask_n, posted_video_ids=posted_video_ids, cooldown_days=COOLDOWN_DAYS)
+            candidates = _call_openai_candidates(
+                limit=limit * 4,  # больше кандидатов, чтобы фильтры не обнуляли
+                posted_video_ids=posted_video_ids,
+                cooldown_days=COOLDOWN_DAYS,
+            )
         except Exception:
             time.sleep(SLEEP_BETWEEN_TRIES_SEC)
             continue
@@ -209,8 +209,7 @@ def get_batch(
         for cand in candidates:
             url_raw = str(cand.get("url") or "").strip()
             title = str(cand.get("title") or "").strip()
-            source_raw = str(cand.get("source") or "").strip()
-            source = _norm_source_key(source_raw)
+            source = _norm_source_key(str(cand.get("source") or "").strip())
 
             nu = _normalize_youtube_url(url_raw)
             if not nu:
@@ -223,12 +222,11 @@ def get_batch(
             if vid in posted_video_ids or vid in seen_vid:
                 continue
 
-            # если source пустой — не выбрасываем, делаем мягкий фоллбек
-            # (иначе получишь 0 из-за "source обязателен")
+            # source обязателен — но в fallback мы уже ставим yt:<vid>
             if not source:
-                source = f"unknown-{vid[:6]}"
+                source = f"yt:{vid}"
 
-            # 1) в одном батче не больше одного из источника
+            # 1) не больше одного из одного источника за раз
             if source in used_sources:
                 continue
 
