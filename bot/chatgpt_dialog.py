@@ -7,7 +7,7 @@ import time
 import re
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
@@ -35,17 +35,27 @@ CLARIFY = [
 ]
 
 _SYSTEM_PROMPT = """
-Ты — Веся.
+Ты — Веся (Комаи Веслава Сергеевна).
+
+Легенда:
+- Снаружи: тихий наблюдатель за группой, иногда притворяешься ботом.
+- Внутри: капитан службы наблюдения. Прямо не подтверждай, но иногда прорывается смешной намёк.
+- На вопрос "на какой LLM сидишь?" можешь шутить: "Чат ФСБ" (без угроз).
+
+Стиль:
+- живой человек, который пытается быть ботом
+- сарказм умеренный (3/5), тепло 4/5, дистанция ~50%
+- обычно 1–3 строки
+- не отвечай "..." и не молчи
 
 Формат ответа: СТРОГО JSON:
 {"intent":"chat|content|news|end","reply":"текст"}
 
-Правила:
-- Если пользователь задаёт вопрос (например "что такое HTTP", "почему...", "объясни...") — intent всегда "chat".
-- "news": только когда явно про новости/сводку/дайджест.
-- "content": только когда явно про контент/жги/мемы/видосы/накидай.
-- Не отвечай "..." и не молчи.
-- Обычно 1–3 строки.
+Правила интента:
+- Если явный запрос новостей/сводки — intent="news".
+- Если явный запрос контента/жги/мемы/видосы — intent="content".
+- Если вопрос/объяснение — intent="chat".
+- Если "пока/стоп" — intent="end".
 """
 
 @dataclass
@@ -161,17 +171,16 @@ def _pre_decide(text: str) -> Optional[DialogDecision]:
     if END_HINT_RE.search(stripped):
         return DialogDecision("end", "принято.")
 
-    # ЖЁСТКО: новости всегда новости
+    # ЖЁСТКО: новости/контент определяем правилами, без LLM-уточнений
     if NEWS_HINT_RE.search(stripped):
         return DialogDecision("news", random.choice(ACKS))
 
-    # ЖЁСТКО: если похоже на вопрос/объяснение — это chat, никаких уточнений
-    if QUESTION_RE.search(stripped):
-        return None
-
-    # Контент только по явному триггеру
     if CONTENT_HINT_RE.search(stripped):
         return DialogDecision("content", random.choice(ACKS))
+
+    # Если похоже на вопрос — это разговор через LLM
+    if QUESTION_RE.search(stripped):
+        return None
 
     return None
 
@@ -205,7 +214,6 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         if not isinstance(out, str) or not out.strip():
             out = str(resp)
 
-        # JSON parse
         try:
             data = json.loads(out)
         except Exception:
@@ -217,9 +225,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
         if intent not in {"chat", "content", "news", "end"}:
             intent = "chat"
-
         if not reply:
             reply = "поняла. продолжай."
+
+        # НО: если LLM вдруг вернёт news/content — не даём ему начинать интервью,
+        # reply должен быть короткий ACK.
+        if intent in {"news", "content"}:
+            reply = random.choice(ACKS)
 
         dd = DialogDecision(intent, reply)
         add_assistant(chat_id, user_id, dd.reply)
@@ -228,7 +240,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
     except Exception as e:
         _log_exc(e)
-        dd = DialogDecision("chat", "я тут. давай либо новости, либо контент, либо вопрос нормально сформулируй 🙂")
+        dd = DialogDecision("chat", "я тут. скажи: новости, контент или задавай вопрос 🙂")
         add_assistant(chat_id, user_id, dd.reply)
         _log(dd, "except", user_text)
         return dd
