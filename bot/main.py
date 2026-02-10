@@ -1,18 +1,16 @@
-from __future__ import annotations
-
+```python
 import os
 import json
 import asyncio
 import hashlib
-import random
 from datetime import datetime, timezone, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, Router, F
+from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, FSInputFile, PhotoSize
+from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ChatAction
 
@@ -20,13 +18,10 @@ import ingest_runner
 import nsfw_runner
 import ranker
 import c_youtube_fetcher
-
 import news_digest
 
 import memory
 import persona
-
-# ChatGPT-driven dialog router (single source of truth)
 import chatgpt_dialog
 
 try:
@@ -53,7 +48,6 @@ FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 STATE_PATH = DATA_DIR / "daily_state.json"
 
-# Category C: posted (global, never repeat) + source cooldown
 C_POSTED_TSV = DATA_DIR / "c_posted_master.tsv"
 
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
@@ -65,15 +59,14 @@ HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
 MSK = ZoneInfo("Europe/Moscow")
 AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
-# News
 NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
 NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 
-# Dialog config (typing simulation)
 DIALOG_TYPING_MAX_SEC = float(os.getenv("V_DIALOG_TYPING_MAX_SEC", "4.0"))
-DIALOG_TYPING_CPS = float(os.getenv("V_DIALOG_TYPING_CPS", "18.0"))  # chars/sec
+DIALOG_TYPING_CPS = float(os.getenv("V_DIALOG_TYPING_CPS", "18.0"))
 
-# News sources: prefer bot/news_sources.txt, fallback to <repo_root>/tg_pipeline/news_sources.txt
+C_FETCH_TIMEOUT_SEC = float(os.getenv("C_FETCH_TIMEOUT_SEC", "20.0"))
+
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
 NEWS_SOURCES_PRIMARY = _THIS_DIR / "news_sources.txt"
@@ -105,11 +98,6 @@ def _chat_user_id() -> int:
         return int(cid)
     except Exception:
         return 0
-
-
-def _is_admin(uid: int) -> bool:
-    s = (ADMIN_USER_IDS or "").replace(",", " ").split()
-    return str(uid) in {x.strip() for x in s if x.strip()}
 
 
 def _load_state() -> dict:
@@ -176,7 +164,6 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
         f.write(f"{ts}\t{user_id}\t{item_id}\t{feed}\n")
 
 
-# ===== Category C posted (global, never repeat) =====
 def _ensure_c_posted_header() -> None:
     if not C_POSTED_TSV.exists():
         C_POSTED_TSV.write_text("ts_utc\tvideo_id\turl\ttitle\tsource\n", encoding="utf-8")
@@ -377,7 +364,6 @@ def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
 
     uid = _chat_user_id()
     out: List[Dict[str, Any]] = []
-
     try:
         if hasattr(meme_ranker, "rank_memes"):
             cand = meme_ranker.rank_memes(uid, max(0, n))
@@ -409,7 +395,6 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
 
     uid = _chat_user_id()
     out: List[Dict[str, Any]] = []
-
     try:
         if hasattr(b_video_ranker, "rank_b_videos"):
             try:
@@ -439,7 +424,6 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
 
 
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
-    # C: YouTube link message
     if (it.get("feed") or "").strip() == "c_youtube":
         title = (it.get("title") or "").strip()
         url = (it.get("url") or "").strip()
@@ -479,7 +463,6 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
 
         return True
 
-    # A/B: files
     abs_path = it["abs_path"]
     p = Path(abs_path)
     if not p.exists():
@@ -607,7 +590,6 @@ async def run_all(hours: int, *, reason: str) -> None:
 
         log(f"ranked a_memes={len(a_memes)} a_videos={len(a_videos)} b_videos={len(b_videos)}")
 
-        # Category C: 6 for 24h, 2 for 12h
         c_limit = 0
         if hours >= 24:
             c_limit = 6
@@ -615,17 +597,25 @@ async def run_all(hours: int, *, reason: str) -> None:
             c_limit = 2
 
         c_items: List[Dict[str, Any]] = []
-        try:
-            posted_c = _load_c_posted_video_ids()
-            last_by_source = _load_c_last_sent_by_source()
-            c_items = c_youtube_fetcher.get_batch(
-                limit=c_limit,
-                posted_video_ids=posted_c,
-                last_sent_by_source=last_by_source,
-            )
-        except Exception as e:
-            log(f"C fetch error: {e}")
-            c_items = []
+        if c_limit > 0:
+            try:
+                posted_c = _load_c_posted_video_ids()
+                last_by_source = _load_c_last_sent_by_source()
+
+                def _get_c():
+                    return c_youtube_fetcher.get_batch(
+                        limit=c_limit,
+                        posted_video_ids=posted_c,
+                        last_sent_by_source=last_by_source,
+                    )
+
+                c_items = await asyncio.wait_for(asyncio.to_thread(_get_c), timeout=C_FETCH_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                log(f"C fetch timeout: {C_FETCH_TIMEOUT_SEC}s -> skip")
+                c_items = []
+            except Exception as e:
+                log(f"C fetch error: {e}")
+                c_items = []
 
         log(f"ranked c_youtube={len(c_items)} (limit={c_limit})")
 
@@ -657,7 +647,6 @@ async def run_news(*, hours: int, limit: int, reason: str) -> None:
                 hours=hours,
                 limit=limit,
             )
-
             html_text = news_digest.build_html_message(items, hours=hours)
             await bot.send_message(
                 chat_id=chat_id,
@@ -665,10 +654,8 @@ async def run_news(*, hours: int, limit: int, reason: str) -> None:
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
-
             if items:
                 news_digest.mark_digest_as_seen(items)
-
             log(f"NEWS done items={len(items)} sources={NEWS_SOURCES_FILE}")
         except Exception as e:
             log(f"NEWS error: {e}")
@@ -688,93 +675,7 @@ async def cmd_news(msg: Message):
     asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="manual_news"))
 
 
-# =========================
-# PHOTO: Vesya remember/recognize (REAL by hash)
-# =========================
-
-@router.message(F.photo)
-async def vesya_photo_handler(msg: Message):
-    """
-    Работает так:
-    - Фото + подпись 'запомни' -> добавляет эталон (только админ) и подтверждает.
-      Этот триггер обрабатывается ВСЕГДА, чтобы не было "молчания".
-    - Любое фото, совпавшее с эталоном -> отвечает SELF_RECOGNITION.
-    - Иначе молчит (чтобы не спамить).
-    """
-    u = msg.from_user
-    user_id = u.id if u else 0
-
-    caption = (msg.caption or "").strip()
-    cap_low = caption.lower().strip()
-
-    ph: PhotoSize = msg.photo[-1]
-    file = await msg.bot.get_file(ph.file_id)
-    buf = await msg.bot.download_file(file.file_path)
-    photo_bytes = buf.read()
-
-    # (A) Запоминание — всегда отрабатываем, иначе получится "словоблудие" текстовым хендлером
-    if cap_low in {"запомни", "vesya_add", "add"}:
-        if not _is_admin(user_id):
-            await msg.answer("запоминать эталоны могу только от админа. добавь твой user_id в ADMIN_USER_IDS.")
-            return
-        h = chatgpt_dialog.add_persona_photo_bytes(photo_bytes)
-        await msg.answer(f"принято. запомнила. (hash={h[:10]}…)")
-        return
-
-    # (B) Узнавание
-    if chatgpt_dialog.is_persona_photo_bytes(photo_bytes):
-        await msg.answer(random.choice(chatgpt_dialog.SELF_RECOGNITION))
-        return
-
-    return
-
-
-@router.message()
-async def vesya_remember_reply_handler(msg: Message):
-    """
-    Удобный режим:
-    - отправляешь фото без подписи
-    - отвечаешь на него реплаем: 'запомни'
-    -> бот запоминает эталон (только админ)
-    """
-    text = (msg.text or "").strip()
-    if not text or text.startswith("/"):
-        return
-
-    low = text.lower().strip()
-    if low not in {"запомни", "vesya_add", "add"}:
-        return
-
-    u = msg.from_user
-    user_id = u.id if u else 0
-
-    if not _is_admin(user_id):
-        await msg.answer("запоминать эталоны могу только от админа. добавь твой user_id в ADMIN_USER_IDS.")
-        return
-
-    rep = msg.reply_to_message
-    if not rep or not rep.photo:
-        await msg.answer("сделай reply на сообщение с фото и напиши 'запомни'.")
-        return
-
-    ph: PhotoSize = rep.photo[-1]
-    file = await msg.bot.get_file(ph.file_id)
-    buf = await msg.bot.download_file(file.file_path)
-    photo_bytes = buf.read()
-
-    h = chatgpt_dialog.add_persona_photo_bytes(photo_bytes)
-    await msg.answer(f"принято. запомнила. (hash={h[:10]}…)")
-    return
-
-
-# =========================
-# DIALOG (ChatGPT brain)
-# =========================
-
 async def _simulate_typing(bot: Bot, chat_id: int, text: str) -> None:
-    """
-    Telegram typing indicator. Limited so it doesn't stall too long.
-    """
     t = (text or "").strip()
     if not t:
         return
@@ -788,6 +689,12 @@ async def _simulate_typing(bot: Bot, chat_id: int, text: str) -> None:
 
 @router.message()
 async def vesya_handler(msg: Message):
+    # DEBUG: доказательство что хендлер вообще жив
+    try:
+        log(f"RX chat_id={msg.chat.id} uid={(msg.from_user.id if msg.from_user else 0)} text={(msg.text or '')[:120]!r}")
+    except Exception:
+        pass
+
     text = (msg.text or "").strip()
     if not text:
         return
@@ -798,7 +705,6 @@ async def vesya_handler(msg: Message):
     user_id = u.id if u else 0
     chat_id_int = msg.chat.id if msg.chat else 0
 
-    # 1) Determine if we should route this message to dialog brain:
     addressed = persona.is_addressed(text)
     active = chatgpt_dialog.is_active(chat_id_int, user_id)
 
@@ -808,7 +714,6 @@ async def vesya_handler(msg: Message):
     if addressed:
         chatgpt_dialog.activate(chat_id_int, user_id)
 
-    # 2) Memory (fail-safe, never crash aiogram)
     try:
         profiles = memory.load_profiles()
         prof = memory.ensure_user_profile(
@@ -834,12 +739,12 @@ async def vesya_handler(msg: Message):
     except Exception:
         pass
 
-    # 3) Ask ChatGPT brain for intent + reply
     decision = chatgpt_dialog.decide(chat_id_int, user_id, text)
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
 
-    # 4) Send reply with typing simulation (only if reply non-empty)
+    log(f"[dialog] intent={intent} reply={(reply[:120] if reply else '')!r} text={(text[:120])!r}")
+
     if reply:
         await _simulate_typing(msg.bot, chat_id_int, reply)
         try:
@@ -847,7 +752,6 @@ async def vesya_handler(msg: Message):
         except Exception as e:
             log(f"dialog reply send error: {e}")
 
-    # 5) Execute intents
     if intent == "end":
         chatgpt_dialog.end(chat_id_int, user_id)
         return
@@ -859,8 +763,6 @@ async def vesya_handler(msg: Message):
     if intent == "content":
         asyncio.create_task(run_all(12, reason="dialog_content"))
         return
-
-    # intent == "chat" -> nothing else
 
 
 @router.callback_query()
@@ -924,12 +826,13 @@ async def main_async():
     log(f"limits: A_MEMES={A_MEMES_LIMIT} A_VIDEOS={A_VIDEOS_LIMIT} B_VIDEOS={B_VIDEOS_LIMIT} | C:24h=6 C:12h=2")
     log(f"news: hours={NEWS_HOURS} limit={NEWS_LIMIT} sources={NEWS_SOURCES_FILE}")
     log("buttons: A (3) + C (2), B none")
-    log(f"dialog ttl: {os.getenv('V_DIALOG_TTL_SEC','90')}s | typing max: {DIALOG_TYPING_MAX_SEC}s")
+    log(f"dialog ttl: {os.getenv('V_DIALOG_TTL_SEC','300')}s | typing max: {DIALOG_TYPING_MAX_SEC}s")
+    log(f"C fetch timeout: {C_FETCH_TIMEOUT_SEC}s")
     log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
-    dp.include_router(router)
+    dp.include_router(router)  # CRITICAL
 
     await asyncio.gather(
         dp.start_polling(bot),
@@ -943,3 +846,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
