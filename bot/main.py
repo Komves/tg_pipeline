@@ -19,12 +19,11 @@ import nsfw_runner
 import ranker
 import c_youtube_fetcher
 
-import news_digest  # NEW
+import news_digest
 
 import memory
 import persona
 
-# NEW: ChatGPT-driven dialog router (single source of truth)
 import chatgpt_dialog
 
 try:
@@ -51,7 +50,6 @@ FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 STATE_PATH = DATA_DIR / "daily_state.json"
 
-# Category C: posted (global, never repeat) + source cooldown
 C_POSTED_TSV = DATA_DIR / "c_posted_master.tsv"
 
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
@@ -63,16 +61,15 @@ HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
 MSK = ZoneInfo("Europe/Moscow")
 AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
-# News
 NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
 NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 
-# Dialog config (typing simulation)
 DIALOG_TYPING_MAX_SEC = float(os.getenv("V_DIALOG_TYPING_MAX_SEC", "4.0"))
-DIALOG_TYPING_CPS = float(os.getenv("V_DIALOG_TYPING_CPS", "18.0"))  # chars/sec
+DIALOG_TYPING_CPS = float(os.getenv("V_DIALOG_TYPING_CPS", "18.0"))
 
-# УСТОЙЧИВО: сначала ищем рядом с main.py (bot/news_sources.txt),
-# если нет — fallback на <repo_root>/tg_pipeline/news_sources.txt (как было в старых путях).
+# Category C safety: make sure C can't block A/B
+C_FETCH_TIMEOUT_SEC = float(os.getenv("C_FETCH_TIMEOUT_SEC", "20"))
+
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
 NEWS_SOURCES_PRIMARY = _THIS_DIR / "news_sources.txt"
@@ -170,7 +167,6 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
         f.write(f"{ts}\t{user_id}\t{item_id}\t{feed}\n")
 
 
-# ===== Category C posted (global, never repeat) =====
 def _ensure_c_posted_header() -> None:
     if not C_POSTED_TSV.exists():
         C_POSTED_TSV.write_text("ts_utc\tvideo_id\turl\ttitle\tsource\n", encoding="utf-8")
@@ -433,7 +429,6 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
 
 
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
-    # C: YouTube link message
     if (it.get("feed") or "").strip() == "c_youtube":
         title = (it.get("title") or "").strip()
         url = (it.get("url") or "").strip()
@@ -473,7 +468,6 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
 
         return True
 
-    # A/B: files
     abs_path = it["abs_path"]
     p = Path(abs_path)
     if not p.exists():
@@ -577,6 +571,46 @@ async def send_batch(bot: Bot, items: List[Dict[str, Any]]) -> int:
     return sent_total
 
 
+def _compute_c_limit(hours: int) -> int:
+    if hours >= 24:
+        return 6
+    if hours >= 12:
+        return 2
+    return 0
+
+
+async def _fetch_c_items_safe(hours: int) -> List[Dict[str, Any]]:
+    """
+    Fetch Category C in a way that cannot block the run:
+    - runs in a thread (since get_batch is sync)
+    - times out
+    - on any failure returns []
+    """
+    c_limit = _compute_c_limit(hours)
+    if c_limit <= 0:
+        return []
+
+    posted_c = _load_c_posted_video_ids()
+    last_by_source = _load_c_last_sent_by_source()
+
+    def _call() -> List[Dict[str, Any]]:
+        return c_youtube_fetcher.get_batch(
+            limit=c_limit,
+            posted_video_ids=posted_c,
+            last_sent_by_source=last_by_source,
+        )
+
+    try:
+        items = await asyncio.wait_for(asyncio.to_thread(_call), timeout=C_FETCH_TIMEOUT_SEC)
+        return items or []
+    except asyncio.TimeoutError:
+        log(f"C fetch timeout after {C_FETCH_TIMEOUT_SEC}s -> skip")
+        return []
+    except Exception as e:
+        log(f"C fetch error: {e}")
+        return []
+
+
 async def run_all(hours: int, *, reason: str) -> None:
     async with _run_lock:
         log(f"RUN start reason={reason} hours={hours}")
@@ -601,27 +635,8 @@ async def run_all(hours: int, *, reason: str) -> None:
 
         log(f"ranked a_memes={len(a_memes)} a_videos={len(a_videos)} b_videos={len(b_videos)}")
 
-        # Category C: 6 for 24h, 2 for 12h
-        c_limit = 0
-        if hours >= 24:
-            c_limit = 6
-        elif hours >= 12:
-            c_limit = 2
-
-        c_items: List[Dict[str, Any]] = []
-        try:
-            posted_c = _load_c_posted_video_ids()
-            last_by_source = _load_c_last_sent_by_source()
-            c_items = c_youtube_fetcher.get_batch(
-                limit=c_limit,
-                posted_video_ids=posted_c,
-                last_sent_by_source=last_by_source,
-            )
-        except Exception as e:
-            log(f"C fetch error: {e}")
-            c_items = []
-
-        log(f"ranked c_youtube={len(c_items)} (limit={c_limit})")
+        c_items: List[Dict[str, Any]] = await _fetch_c_items_safe(hours)
+        log(f"ranked c_youtube={len(c_items)} (timeout={C_FETCH_TIMEOUT_SEC}s)")
 
         items = _dedupe_keep_order(a_memes + a_videos + b_videos + c_items)
 
@@ -682,18 +697,10 @@ async def cmd_news(msg: Message):
     asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="manual_news"))
 
 
-# =========================
-# DIALOG (ChatGPT brain)
-# =========================
-
 async def _simulate_typing(bot: Bot, chat_id: int, text: str) -> None:
-    """
-    Telegram typing indicator. Limited so it doesn't stall too long.
-    """
     t = (text or "").strip()
     if not t:
         return
-    # rough estimate: chars / cps, clamped
     est = min(max(len(t) / max(DIALOG_TYPING_CPS, 1.0), 0.6), DIALOG_TYPING_MAX_SEC)
     try:
         await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
@@ -714,9 +721,6 @@ async def vesya_handler(msg: Message):
     user_id = u.id if u else 0
     chat_id_int = msg.chat.id if msg.chat else 0
 
-    # 1) Determine if we should route this message to dialog brain:
-    #    - If user explicitly addressed Vesya (persona regex), start/activate session
-    #    - Or if a dialog session is active (TTL) - continue even without name
     addressed = persona.is_addressed(text)
     active = chatgpt_dialog.is_active(chat_id_int, user_id)
 
@@ -726,7 +730,6 @@ async def vesya_handler(msg: Message):
     if addressed:
         chatgpt_dialog.activate(chat_id_int, user_id)
 
-    # 2) Memory (fail-safe, never crash aiogram)
     try:
         profiles = memory.load_profiles()
         prof = memory.ensure_user_profile(
@@ -752,12 +755,10 @@ async def vesya_handler(msg: Message):
     except Exception:
         pass
 
-    # 3) Ask ChatGPT brain for intent + reply
     decision = chatgpt_dialog.decide(chat_id_int, user_id, text)
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
 
-    # 4) Send reply with typing simulation (only if reply non-empty)
     if reply:
         await _simulate_typing(msg.bot, chat_id_int, reply)
         try:
@@ -765,7 +766,6 @@ async def vesya_handler(msg: Message):
         except Exception as e:
             log(f"dialog reply send error: {e}")
 
-    # 5) Execute intents
     if intent == "end":
         chatgpt_dialog.end(chat_id_int, user_id)
         return
@@ -775,11 +775,12 @@ async def vesya_handler(msg: Message):
         return
 
     if intent == "content":
-        # общий прогон A+B+C как /get12
+        try:
+            await msg.answer("приняла. ща накидаю.")
+        except Exception:
+            pass
         asyncio.create_task(run_all(12, reason="dialog_content"))
         return
-
-    # intent == "chat" -> nothing else
 
 
 @router.callback_query()
@@ -844,6 +845,7 @@ async def main_async():
     log(f"news: hours={NEWS_HOURS} limit={NEWS_LIMIT} sources={NEWS_SOURCES_FILE}")
     log("buttons: A (3) + C (2), B none")
     log(f"dialog ttl: {os.getenv('V_DIALOG_TTL_SEC','90')}s | typing max: {DIALOG_TYPING_MAX_SEC}s")
+    log(f"C fetch timeout: {C_FETCH_TIMEOUT_SEC}s")
     log("scheduler loop starting")
 
     bot = Bot(token=BOT_TOKEN)
