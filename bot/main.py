@@ -21,12 +21,12 @@ import nsfw_runner
 import ranker
 import c_youtube_fetcher
 
-import news_digest  # NEW
+import news_digest
 
 import memory
 import persona
 
-# NEW: ChatGPT-driven dialog router (single source of truth)
+# ChatGPT-driven dialog router (single source of truth)
 import chatgpt_dialog
 
 try:
@@ -73,8 +73,7 @@ NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 DIALOG_TYPING_MAX_SEC = float(os.getenv("V_DIALOG_TYPING_MAX_SEC", "4.0"))
 DIALOG_TYPING_CPS = float(os.getenv("V_DIALOG_TYPING_CPS", "18.0"))  # chars/sec
 
-# УСТОЙЧИВО: сначала ищем рядом с main.py (bot/news_sources.txt),
-# если нет — fallback на <repo_root>/tg_pipeline/news_sources.txt (как было в старых путях).
+# News sources: prefer bot/news_sources.txt, fallback to <repo_root>/tg_pipeline/news_sources.txt
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
 NEWS_SOURCES_PRIMARY = _THIS_DIR / "news_sources.txt"
@@ -696,48 +695,76 @@ async def cmd_news(msg: Message):
 @router.message(F.photo)
 async def vesya_photo_handler(msg: Message):
     """
-    Админ может добавить эталон фото Веси: фото + подпись 'запомни'
-    Узнавание: если фото совпало по hash с эталоном -> ответ SELF_RECOGNITION
+    Работает так:
+    - Фото + подпись 'запомни' -> добавляет эталон (только админ) и подтверждает.
+      Этот триггер обрабатывается ВСЕГДА, чтобы не было "молчания".
+    - Любое фото, совпавшее с эталоном -> отвечает SELF_RECOGNITION.
+    - Иначе молчит (чтобы не спамить).
     """
     u = msg.from_user
     user_id = u.id if u else 0
-    chat_id_int = msg.chat.id if msg.chat else 0
 
     caption = (msg.caption or "").strip()
     cap_low = caption.lower().strip()
 
-    # Разрешаем:
-    # - админ всегда
-    # - или если адресовано Весе по подписи
-    # - или активная сессия диалога
-    addressed = persona.is_addressed(caption) if caption else False
-    active = chatgpt_dialog.is_active(chat_id_int, user_id)
-    if not _is_admin(user_id) and not addressed and not active:
-        return
-
-    # берём самое большое фото
     ph: PhotoSize = msg.photo[-1]
     file = await msg.bot.get_file(ph.file_id)
     buf = await msg.bot.download_file(file.file_path)
     photo_bytes = buf.read()
 
-    # 1) добавить эталон (админ)
-    if _is_admin(user_id) and cap_low in {"запомни", "vesya_add", "add"}:
+    # (A) Запоминание — всегда отрабатываем, иначе получится "словоблудие" текстовым хендлером
+    if cap_low in {"запомни", "vesya_add", "add"}:
+        if not _is_admin(user_id):
+            await msg.answer("запоминать эталоны могу только от админа. добавь твой user_id в ADMIN_USER_IDS.")
+            return
         h = chatgpt_dialog.add_persona_photo_bytes(photo_bytes)
         await msg.answer(f"принято. запомнила. (hash={h[:10]}…)")
         return
 
-    # 2) узнавание
+    # (B) Узнавание
     if chatgpt_dialog.is_persona_photo_bytes(photo_bytes):
         await msg.answer(random.choice(chatgpt_dialog.SELF_RECOGNITION))
         return
 
-    # 3) если спросили "это ты?" но не совпало
-    if "это ты" in cap_low or "ты?" in cap_low:
-        await msg.answer("похоже, ты пытаешься меня спалить. но это не мой кадр 🙂")
+    return
+
+
+@router.message()
+async def vesya_remember_reply_handler(msg: Message):
+    """
+    Удобный режим:
+    - отправляешь фото без подписи
+    - отвечаешь на него реплаем: 'запомни'
+    -> бот запоминает эталон (только админ)
+    """
+    text = (msg.text or "").strip()
+    if not text or text.startswith("/"):
         return
 
-    await msg.answer("вижу. картинка сочная. но это не я 🙂")
+    low = text.lower().strip()
+    if low not in {"запомни", "vesya_add", "add"}:
+        return
+
+    u = msg.from_user
+    user_id = u.id if u else 0
+
+    if not _is_admin(user_id):
+        await msg.answer("запоминать эталоны могу только от админа. добавь твой user_id в ADMIN_USER_IDS.")
+        return
+
+    rep = msg.reply_to_message
+    if not rep or not rep.photo:
+        await msg.answer("сделай reply на сообщение с фото и напиши 'запомни'.")
+        return
+
+    ph: PhotoSize = rep.photo[-1]
+    file = await msg.bot.get_file(ph.file_id)
+    buf = await msg.bot.download_file(file.file_path)
+    photo_bytes = buf.read()
+
+    h = chatgpt_dialog.add_persona_photo_bytes(photo_bytes)
+    await msg.answer(f"принято. запомнила. (hash={h[:10]}…)")
+    return
 
 
 # =========================
@@ -751,7 +778,6 @@ async def _simulate_typing(bot: Bot, chat_id: int, text: str) -> None:
     t = (text or "").strip()
     if not t:
         return
-    # rough estimate: chars / cps, clamped
     est = min(max(len(t) / max(DIALOG_TYPING_CPS, 1.0), 0.6), DIALOG_TYPING_MAX_SEC)
     try:
         await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
