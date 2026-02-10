@@ -75,6 +75,63 @@ NEWS_SOURCES_FILE = NEWS_SOURCES_PRIMARY if NEWS_SOURCES_PRIMARY.exists() else N
 _run_lock = asyncio.Lock()
 router = Router()
 
+# =========================
+# PHOTO HANDLER (ВСТАВЛЕНО)
+# =========================
+from aiogram import F
+from pathlib import Path
+from datetime import datetime, timezone
+
+@router.message(F.photo)
+async def vesya_photo_handler(msg: Message):
+    u = msg.from_user
+    user_id = u.id if u else 0
+    chat_id_int = msg.chat.id if msg.chat else 0
+
+    caption = (msg.caption or "").strip()
+
+    addressed = persona.is_addressed(caption) if caption else False
+    active = chatgpt_dialog.is_active(chat_id_int, user_id)
+    wants = caption and ("запомни" in caption.lower() or "это ты" in caption.lower())
+
+    if not addressed and not active and not wants:
+        return
+
+    if addressed:
+        chatgpt_dialog.activate(chat_id_int, user_id)
+
+    # получить файл
+    ph = msg.photo[-1]
+    file = await msg.bot.get_file(ph.file_id)
+    data = await msg.bot.download_file(file.file_path)
+    b = data.read() if hasattr(data, "read") else bytes(data)
+
+    # сохранить временно
+    inbox = Path("/data/vesya_inbox")
+    inbox.mkdir(parents=True, exist_ok=True)
+
+    name = f"{chat_id_int}_{user_id}_{int(datetime.now(timezone.utc).timestamp())}.jpg"
+    path = inbox / name
+    path.write_bytes(b)
+
+    chatgpt_dialog.note_last_user_photo(chat_id_int, user_id, str(path))
+
+    # если "запомни"
+    if caption and "запомни" in caption.lower():
+        saved = chatgpt_dialog.add_persona_photo_bytes(chat_id_int, user_id, b)
+        await msg.answer(f"запомнила. теперь это часть моего досье: {saved}")
+        return
+
+    # если "это ты?"
+    if caption and "это ты" in caption.lower():
+        decision = chatgpt_dialog.describe_or_compare_photo(caption, b)
+        if decision.reply:
+            await msg.answer(decision.reply)
+        return
+
+    await msg.answer("вижу фото. если это я — напиши «это ты?» или «запомни».")
+
+
 
 def log(msg: str) -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
