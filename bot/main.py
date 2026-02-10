@@ -820,6 +820,90 @@ async def vesya_handler(msg: Message):
         asyncio.create_task(run_all(12, reason="dialog_content"))
         return
 
+from aiogram.types import PhotoSize
+
+@router.message()
+async def vesya_photo_handler(msg: Message):
+    """
+    Photo handler:
+    - If user sent a photo + caption contains 'Запомни' -> save as persona immediately.
+    - Else remember as last photo for 5 min so 'Запомни' next message works.
+    - If Vesya addressed or dialog active -> ask vision brain to react to the image.
+    """
+    # only photos
+    if not msg.photo:
+        return
+
+    u = msg.from_user
+    user_id = u.id if u else 0
+    chat_id_int = msg.chat.id if msg.chat else 0
+
+    # caption/text associated with photo
+    caption = (msg.caption or msg.text or "").strip()
+
+    # route only if addressed OR active dialog OR caption contains "Запомни"
+    addressed = persona.is_addressed(caption) if caption else False
+    active = chatgpt_dialog.is_active(chat_id_int, user_id)
+    wants_remember = bool(re.search(r"\b(запомни|сохрани)\b", caption, re.IGNORECASE))
+
+    if not addressed and not active and not wants_remember:
+        # allow silent last-photo note only when "Запомни" is intended
+        # otherwise ignore random photos
+        return
+
+    if addressed:
+        chatgpt_dialog.activate(chat_id_int, user_id)
+
+    # pick best quality photo
+    best: PhotoSize = msg.photo[-1]
+
+    # download to disk (avoid huge RAM)
+    inbox_dir = Path(os.getenv("DATA_DIR", "/data")) / "vesya_inbox"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    local_path = inbox_dir / f"u_{chat_id_int}_{user_id}_{best.file_unique_id}.jpg"
+
+    try:
+        f = await msg.bot.get_file(best.file_id)
+        await msg.bot.download_file(f.file_path, destination=str(local_path))
+    except Exception as e:
+        log(f"photo download error: {e}")
+        return
+
+    # 1) Remember request in caption: save immediately as persona
+    if wants_remember:
+        try:
+            data = local_path.read_bytes()
+            # strip "Веся" name and keep short note
+            note = re.sub(r"\b(запомни|сохрани)\b", "", caption, flags=re.IGNORECASE).strip()
+            note = re.sub(r"\s+", " ", note)[:200]
+            saved_name = chatgpt_dialog.add_persona_photo_bytes(chat_id_int, user_id, data, ext="jpg", note=note)
+            reply = f"принято. закрепила у себя в досье как образ: {saved_name}"
+            await _simulate_typing(msg.bot, chat_id_int, reply)
+            await msg.answer(reply)
+            return
+        except Exception as e:
+            log(f"photo remember error: {e}")
+            await msg.answer("хотела запомнить, но уронила фото. кинь ещё раз.")
+            return
+
+    # 2) Otherwise note last user photo for 5 minutes
+    try:
+        chatgpt_dialog.note_last_user_photo(chat_id_int, user_id, str(local_path))
+    except Exception as e:
+        log(f"note_last_user_photo error: {e}")
+
+    # 3) If dialog should react: send to vision brain
+    if addressed or active:
+        try:
+            data = local_path.read_bytes()
+            decision = chatgpt_dialog.describe_or_compare_photo(caption, data)
+            reply = (decision.reply or "").strip()
+            if reply:
+                await _simulate_typing(msg.bot, chat_id_int, reply)
+                await msg.answer(reply)
+        except Exception as e:
+            log(f"vision reaction error: {e}")
+
 
 @router.callback_query()
 async def on_feedback(cb: CallbackQuery):
