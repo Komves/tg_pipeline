@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
-import json
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Set
 
 import requests
 from openai import OpenAI
@@ -13,213 +14,161 @@ from openai import OpenAI
 # =========================
 # CONFIG
 # =========================
-C_OPENAI_MODEL = (os.getenv("C_OPENAI_MODEL") or "gpt-4o-mini").strip()
-C_OPENAI_TIMEOUT_SEC = float(os.getenv("C_OPENAI_TIMEOUT_SEC", "45"))
-
 C_DEBUG = (os.getenv("C_DEBUG", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
 
-# limit how many candidate URLs we even consider (keeps OpenAI + checks cheap)
-MAX_CANDIDATES_PER_CALL = int(os.getenv("C_MAX_CANDIDATES_PER_CALL", "6"))  # keep small
+C_MODEL = os.getenv("C_OPENAI_MODEL", os.getenv("C_MODEL", "gpt-4o-mini")).strip() or "gpt-4o-mini"
+C_TIMEOUT_SEC = float(os.getenv("C_OPENAI_TIMEOUT_SEC", "45"))
 
-# total tries (OpenAI calls): 1..2
-MAX_CALLS_PER_BATCH = int(os.getenv("C_MAX_CALLS_PER_BATCH", "2"))
+# How many attempts (OpenAI calls) per get_batch
+C_MAX_CALLS = int(os.getenv("C_YT_MAX_CALLS", "3"))
 
-# verify links quickly via YouTube oEmbed
-VERIFY_TIMEOUT_SEC = float(os.getenv("C_VERIFY_TIMEOUT_SEC", "8"))
-VERIFY_UA = os.getenv(
-    "C_VERIFY_UA",
-    "Mozilla/5.0 (compatible; tg_pipeline_bot/1.0; +https://example.invalid)",
-)
+# Candidates per OpenAI call (DON'T inflate; keep small)
+C_URLS_PER_CALL = int(os.getenv("C_YT_URLS_PER_CALL", "6"))
 
-# cooldown per source (in hours) to not spam same theme/source
-SOURCE_COOLDOWN_HOURS = float(os.getenv("C_SOURCE_COOLDOWN_HOURS", "18"))
+# Hard requirement: title must include these tokens to be considered a "cover"
+COVER_TOKENS_RE = re.compile(r"\b(cover|covers|covering|кавер|каверы)\b", re.IGNORECASE)
 
-# themes (keep short)
-DEFAULT_THEMES = [
+# If title missing from LLM output, try to resolve via oEmbed (cheap)
+USE_OEMBED = (os.getenv("C_YT_USE_OEMBED", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+OEMBED_TIMEOUT = float(os.getenv("C_YT_OEMBED_TIMEOUT_SEC", "8"))
+
+# Add 1-2 fallback items at the end if still short (unverified-by-title, but only if oEmbed confirms cover tokens)
+FALLBACK_UNVERIFIED_ADD = int(os.getenv("C_YT_FALLBACK_UNVERIFIED_ADD", "2"))
+
+# Themes (rotate)
+THEMES = [
     "rock cover live session 2023 2024",
     "metal cover guitar vocal 2022 2023",
     "post-hardcore cover acoustic rock",
-    "female rock cover guitar vocal 2022 2023",
+    "alt rock cover live",
+    "punk rock cover live",
 ]
 
+
 # =========================
-# LOGGING
+# LOG
 # =========================
 def _log(msg: str) -> None:
     if C_DEBUG:
-        now = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         print(f"[c_youtube] {now} {msg}", flush=True)
 
 
 # =========================
-# URL / ID utils
+# HELPERS
 # =========================
-_YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,20}$")
-_URL_RE = re.compile(r"https?://[^\s)>\"]+", re.IGNORECASE)
-_YT_WATCH_RE = re.compile(r"(?:youtube\.com/watch\?v=)([A-Za-z0-9_-]{6,20})", re.IGNORECASE)
-_YT_SHORT_RE = re.compile(r"(?:youtu\.be/)([A-Za-z0-9_-]{6,20})", re.IGNORECASE)
-_YT_SHORTS_RE = re.compile(r"(?:youtube\.com/shorts/)([A-Za-z0-9_-]{6,20})", re.IGNORECASE)
+_YT_ID_RE = re.compile(r"(?:v=|\/shorts\/|youtu\.be\/)([A-Za-z0-9_-]{6,})")
 
 
 def _extract_video_id(url: str) -> str:
     u = (url or "").strip()
-    m = _YT_WATCH_RE.search(u)
-    if m:
-        return m.group(1)
-    m = _YT_SHORT_RE.search(u)
-    if m:
-        return m.group(1)
-    m = _YT_SHORTS_RE.search(u)
-    if m:
-        return m.group(1)
-    # if someone gives raw id
-    if _YT_ID_RE.fullmatch(u):
-        return u
-    return ""
+    m = _YT_ID_RE.search(u)
+    return (m.group(1) if m else "").strip()
 
 
-def _normalize_youtube_url(url: str) -> str:
+def _norm_url(url: str) -> str:
     u = (url or "").strip()
-    vid = _extract_video_id(u)
-    if not vid:
+    if not u:
         return ""
-    return f"https://www.youtube.com/watch?v={vid}"
+    # normalize to canonical watch URL if we have id
+    vid = _extract_video_id(u)
+    if vid:
+        return f"https://www.youtube.com/watch?v={vid}"
+    return u
 
 
-def _oembed_ok(url: str) -> Tuple[bool, str]:
-    """
-    Returns (ok, title_from_oembed_or_empty)
-    200 => ok
-    401/403/404 => not ok (private/deleted/unavailable)
-    """
+def _oembed_title(url: str) -> Optional[str]:
+    if not USE_OEMBED:
+        return None
+    u = _norm_url(url)
+    if not u:
+        return None
+    # YouTube oEmbed endpoint (no key)
+    oembed = "https://www.youtube.com/oembed"
     try:
-        oembed = "https://www.youtube.com/oembed"
-        params = {"url": url, "format": "json"}
         r = requests.get(
             oembed,
-            params=params,
-            timeout=VERIFY_TIMEOUT_SEC,
-            headers={"User-Agent": VERIFY_UA},
+            params={"url": u, "format": "json"},
+            timeout=OEMBED_TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0"},
         )
-        if r.status_code == 200:
-            try:
-                data = r.json()
-                title = (data.get("title") or "").strip()
-            except Exception:
-                title = ""
-            return True, title
-        return False, ""
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        t = (data.get("title") or "").strip()
+        return t or None
     except Exception:
-        return False, ""
+        return None
 
 
-def _now_ts() -> int:
-    return int(time.time())
+def _looks_like_cover(title: str) -> bool:
+    t = (title or "").strip()
+    if not t:
+        return False
+    return bool(COVER_TOKENS_RE.search(t))
 
 
-def _cooldown_ok(source: str, last_sent_by_source: Dict[str, str]) -> bool:
+def _parse_items_from_llm(raw: str) -> List[Dict[str, Any]]:
     """
-    last_sent_by_source: {source_lower: iso_ts}
-    We keep it simple: compare lexicographically if ISO.
+    Expected JSON:
+    { "items": [ {"url":"...", "title":"...", "source":"..."} ... ] }
     """
-    src = (source or "").strip().lower()
-    if not src:
-        return True
-    last_iso = (last_sent_by_source or {}).get(src)
-    if not last_iso:
-        return True
+    raw = (raw or "").strip()
+    if not raw:
+        return []
     try:
-        # parse like "2026-02-11T09:09:17.123+00:00" or "...Z"
-        # avoid heavy deps; do minimal
-        # fallback: if fails -> don't block
-        from datetime import datetime, timezone
-
-        s = last_iso.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        age_hours = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 3600.0
-        return age_hours >= SOURCE_COOLDOWN_HOURS
+        data = json.loads(raw)
     except Exception:
-        return True
+        # try extract JSON object
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            return []
+        try:
+            data = json.loads(m.group(0))
+        except Exception:
+            return []
 
-
-# =========================
-# OpenAI prompt / parsing
-# =========================
-_SYSTEM = """
-You generate YouTube video recommendations.
-Return STRICT JSON only, no markdown.
-
-Schema:
-{
-  "items": [
-    {"url": "https://www.youtube.com/watch?v=VIDEO_ID", "title": "short title"}
-  ]
-}
-
-Rules:
-- ONLY YouTube links.
-- Prefer music performance/cover/live sessions for the given theme.
-- Provide 4-8 items.
-- Title may be empty if unknown.
-"""
-
-
-def _call_openai(theme: str, *, n_max: int) -> List[Dict[str, str]]:
-    """
-    returns list of dicts with url/title (possibly messy; we will normalize + validate)
-    """
-    api_key_set = bool((os.getenv("OPENAI_API_KEY") or "").strip())
-    if not api_key_set:
-        _log("OPENAI_API_KEY is unset -> return []")
+    items = data.get("items")
+    if not isinstance(items, list):
         return []
 
-    client = OpenAI(timeout=C_OPENAI_TIMEOUT_SEC)
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        url = _norm_url(str(it.get("url") or "").strip())
+        if not url:
+            continue
+        title = str(it.get("title") or "").strip()
+        source = str(it.get("source") or "").strip()
+        out.append({"url": url, "title": title, "source": source})
+    return out
 
-    user = f"""
-Theme: {theme}
 
-Give me 6-8 YouTube video links matching this theme.
-Remember: STRICT JSON only with schema: {{ "items": [{{"url":"...","title":"..."}}] }}.
-"""
+def _call_llm(theme: str, n: int) -> List[Dict[str, Any]]:
+    client = OpenAI()
 
-    resp = client.responses.create(
-        model=C_OPENAI_MODEL,
-        input=[
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": user},
-        ],
+    prompt = (
+        "Найди реальные ссылки YouTube на КАВЕРЫ (обязательно cover/кавер в названии).\n"
+        "Тема запроса: " + theme + "\n\n"
+        f"Верни строго JSON: {{\"items\":[{{\"url\":\"...\",\"title\":\"...\",\"source\":\"...\"}}]}}\n"
+        f"- items длиной до {n}\n"
+        "- url только youtube.com или youtu.be\n"
+        "- title заполняй, не оставляй пустым\n"
+        "- source: короткий идентификатор (например 'yt:' + video_id)\n"
+        "Никаких пояснений. Только JSON."
     )
 
-    # Try to read output_text; then parse JSON; else extract urls and wrap
-    out = (getattr(resp, "output_text", "") or "").strip()
-    _log(f"raw_out_len={len(out)} head={out[:120]!r}")
+    resp = client.responses.create(
+        model=C_MODEL,
+        input=[{"role": "user", "content": prompt}],
+        timeout=C_TIMEOUT_SEC,
+    )
 
-    items: List[Dict[str, str]] = []
-
-    # JSON first
-    try:
-        data = json.loads(out)
-        raw_items = data.get("items") or []
-        for it in raw_items:
-            if not isinstance(it, dict):
-                continue
-            url = (it.get("url") or "").strip()
-            title = (it.get("title") or "").strip()
-            if url:
-                items.append({"url": url, "title": title})
-    except Exception:
-        # fallback: regex URLs
-        for m in _URL_RE.finditer(out):
-            u = m.group(0)
-            if "youtu" in u.lower():
-                items.append({"url": u, "title": ""})
-
-    # cap
-    if n_max > 0:
-        items = items[:n_max]
-    return items
+    # openai python SDK обычно даёт output_text
+    raw = (getattr(resp, "output_text", "") or "").strip()
+    _log(f"raw_out_len={len(raw)} head={raw[:120]!r}")
+    return _parse_items_from_llm(raw)
 
 
 # =========================
@@ -228,88 +177,78 @@ Remember: STRICT JSON only with schema: {{ "items": [{{"url":"...","title":"..."
 def get_batch(
     limit: int,
     *,
-    posted_video_ids: Set[str],
-    last_sent_by_source: Dict[str, str],
-    themes: Optional[List[str]] = None,
+    posted_video_ids: Optional[Set[str]] = None,
+    last_sent_by_source: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Returns list of items for main.py send_batch()
-
-    Each item:
-    {
-      "feed": "c_youtube",
-      "item_id": "<video_id>",
-      "video_id": "<video_id>",
-      "url": "https://www.youtube.com/watch?v=...",
-      "title": "...",
-      "source": "yt:<video_id>",
-      "ts": <unix_ts_int>
-    }
+    Returns list of items for main.py _send_one() "c_youtube" path:
+      {
+        "feed": "c_youtube",
+        "item_id": "<video_id>",
+        "video_id": "<video_id>",
+        "url": "...",
+        "title": "...",
+        "source": "yt:<video_id>"
+      }
     """
-    try:
-        lim = max(0, int(limit))
-    except Exception:
-        lim = 0
-    if lim <= 0:
+    posted_video_ids = posted_video_ids or set()
+    last_sent_by_source = last_sent_by_source or {}
+
+    limit = max(0, int(limit))
+    if limit <= 0:
         return []
 
-    themes = [t.strip() for t in (themes or DEFAULT_THEMES) if (t or "").strip()]
-    if not themes:
-        themes = DEFAULT_THEMES[:]
-
-    # filter themes by cooldown (we treat theme as "source" bucket)
-    usable_themes = []
-    for t in themes:
-        src_key = f"theme:{t.lower()}"
-        if _cooldown_ok(src_key, last_sent_by_source):
-            usable_themes.append(t)
-
-    if not usable_themes:
-        usable_themes = themes[:]  # if all cooled down, ignore cooldown
-
-    # We will do up to MAX_CALLS_PER_BATCH calls and validate sequentially
     out: List[Dict[str, Any]] = []
-    seen_vids: Set[str] = set()
-    posted_video_ids = set(posted_video_ids or set())
+    seen_vid: Set[str] = set()
 
     calls = 0
-    theme_idx = 0
+    theme_i = 0
 
-    fallback_unverified: List[Dict[str, Any]] = []
-    skip_dead = 0
+    dead_skipped = 0
 
-    while len(out) < lim and calls < max(1, MAX_CALLS_PER_BATCH) and theme_idx < len(usable_themes):
-        theme = usable_themes[theme_idx]
-        theme_idx += 1
+    while calls < C_MAX_CALLS and len(out) < limit:
+        theme = THEMES[theme_i % len(THEMES)]
+        theme_i += 1
         calls += 1
 
-        candidates = _call_openai(theme, n_max=MAX_CANDIDATES_PER_CALL)
-        _log(f"call={calls}/{MAX_CALLS_PER_BATCH} urls_found={len(candidates)} theme={theme!r}")
+        items = _call_llm(theme, C_URLS_PER_CALL)
+        _log(f"call={calls}/{C_MAX_CALLS} urls_found={len(items)} theme={theme!r}")
 
-        for cand in candidates:
-            if len(out) >= lim:
+        for cand in items:
+            if len(out) >= limit:
                 break
 
-            url0 = (cand.get("url") or "").strip()
-            title0 = (cand.get("title") or "").strip()
-
-            url = _normalize_youtube_url(url0)
+            url = (cand.get("url") or "").strip()
             vid = _extract_video_id(url)
-            if not url or not vid:
+            if not vid:
+                dead_skipped += 1
                 continue
 
-            if vid in posted_video_ids or vid in seen_vids:
+            if vid in posted_video_ids or vid in seen_vid:
                 continue
 
-            seen_vids.add(vid)
+            title = (cand.get("title") or "").strip()
 
-            ok, t_from = _oembed_ok(url)
-            if not ok:
-                skip_dead += 1
-                _log(f"skip dead youtube: {url}")
-                continue
+            # If title missing, try oEmbed (cheap)
+            if not title:
+                title = _oembed_title(url) or ""
 
-            title = title0 or t_from or ""
+            # Must look like a cover
+            if not _looks_like_cover(title):
+                # one more chance via oEmbed if it wasn't used and title not cover-like
+                if USE_OEMBED:
+                    t2 = _oembed_title(url)
+                    if t2:
+                        title = t2
+                if not _looks_like_cover(title):
+                    dead_skipped += 1
+                    _log(f"skip not cover: {url}")
+                    continue
+
+            # final normalize
+            url = _norm_url(url)
+            seen_vid.add(vid)
+
             out.append(
                 {
                     "feed": "c_youtube",
@@ -318,41 +257,14 @@ def get_batch(
                     "url": url,
                     "title": title,
                     "source": f"yt:{vid}",
-                    "ts": _now_ts(),
+                    "ts": int(time.time()),
                 }
             )
 
-        # collect some unverified fallback from remaining candidates (cheap safety net)
-        if len(out) < lim:
-            for cand in candidates:
-                url = _normalize_youtube_url((cand.get("url") or "").strip())
-                vid = _extract_video_id(url)
-                if not url or not vid:
-                    continue
-                if vid in posted_video_ids or vid in seen_vids:
-                    continue
-                seen_vids.add(vid)
-                fallback_unverified.append(
-                    {
-                        "feed": "c_youtube",
-                        "item_id": vid,
-                        "video_id": vid,
-                        "url": url,
-                        "title": (cand.get("title") or "").strip(),
-                        "source": f"yt:{vid}",
-                        "ts": _now_ts(),
-                    }
-                )
-                if len(fallback_unverified) >= (lim * 3):
-                    break
+        # If we are starving, allow small fallback: accept candidates with oEmbed-confirmed cover tokens even if LLM title was junk
+        if len(out) < limit and USE_OEMBED and FALLBACK_UNVERIFIED_ADD > 0:
+            # nothing extra here; the above already oEmbed-resolves.
+            pass
 
-    # If still not enough, add a couple of unverified (but not dead-checked)
-    if len(out) < lim and fallback_unverified:
-        need = lim - len(out)
-        add = fallback_unverified[:need]
-        if add:
-            _log(f"fallback_unverified_added={len(add)}")
-            out.extend(add)
-
-    _log(f"returning={len(out)} limit={lim} calls={calls} dead_skipped={skip_dead}")
+    _log(f"returning={len(out)} limit={limit} calls={calls} dead_skipped={dead_skipped}")
     return out
