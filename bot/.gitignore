@@ -1,4 +1,3 @@
-@"
 __pycache__/
 *.pyc
 *.pyo
@@ -7,4 +6,4 @@ __pycache__/
 .env
 .venv/
 venv/
-"@ | Set-Content -Encoding UTF8 .gitignore
+
