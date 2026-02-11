@@ -3,196 +3,333 @@ from __future__ import annotations
 import os
 import re
 import time
-import random
-import requests
-import xml.etree.ElementTree as ET
-from typing import Dict, List, Set
+from datetime import datetime, timezone
+from typing import Dict, List, Set, Any, Optional
+
+import yt_dlp
+
 
 # =========================
 # CONFIG
 # =========================
 
-C_MAX_DURATION_SEC = int(os.getenv("C_MAX_DURATION_SEC", "540"))
-C_MIN_DURATION_SEC = int(os.getenv("C_MIN_DURATION_SEC", "75"))
+# Сколько ссылок нужно вернуть (limit приходит из main.py)
+# Сколько кандидатов брать на один запрос (чем больше — тем чаще будут "мертвые"/левые)
+PER_QUERY = int(os.getenv("C_YT_PER_QUERY", "8"))
 
-C_MAX_QUERIES_PER_RUN = int(os.getenv("C_MAX_QUERIES_PER_RUN", "6"))
-C_REQUIRE_RU = True
+# Сколько разных запросов прогоняем за один get_batch (чтобы не улететь в вечный цикл)
+MAX_QUERIES_PER_BATCH = int(os.getenv("C_YT_MAX_QUERIES_PER_BATCH", "6"))
+
+# Максимальная длительность ролика (сек). Чтобы не присылало концерты/сеты.
+MAX_DURATION_SEC = int(os.getenv("C_YT_MAX_DURATION_SEC", "480"))  # 8 минут по умолчанию
+
+# Минимальная длительность, чтобы не присылать 5-сек мусор
+MIN_DURATION_SEC = int(os.getenv("C_YT_MIN_DURATION_SEC", "40"))
+
+# Жёсткий стоп-лист по словам (в заголовке)
+STOP_WORDS = [
+    "full concert",
+    "full show",
+    "full album",
+    "full set",
+    "playlist",
+    "mix",
+    "compilation",
+    "session",
+    "live session",
+    "live",
+    "концерт",
+    "полный концерт",
+    "полная версия",
+    "полный альбом",
+    "сборник",
+    "плейлист",
+    "микс",
+    "стрим",
+    "stream",
+    "hour",
+    "hours",
+    "2 часа",
+    "1 час",
+    "90 min",
+    "60 min",
+    "120 min",
+]
+
+# “хорошие” слова — усиливают ранжирование
+GOOD_WORDS = [
+    "кавер",
+    "cover",
+    "acoustic",
+    "акустика",
+    "guitar",
+    "гитара",
+    "vocal",
+    "вокал",
+]
+
+# Темы поиска (можно расширять, но лучше не раздувать)
+# ВАЖНО: чтобы были русские — добавляем “кавер”, “на русском”, “русский кавер”
+QUERY_THEMES = [
+    "кавер песня",
+    "кавер на русском",
+    "русский кавер",
+    "акустический кавер",
+    "рок кавер",
+    "метал кавер",
+    "acoustic cover song",
+    "rock cover song",
+    "metal cover song",
+]
+
 
 # =========================
-# LOG
+# HELPERS
 # =========================
 
-def _log(msg: str):
-    now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+def _utc_now_ts() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _log(msg: str) -> None:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[c_youtube] {now} {msg}", flush=True)
 
 
-# =========================
-# FILTERS
-# =========================
-
-CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
-
-BAD_TITLE_RE = re.compile(
-    r"(concert|live|session|playlist|album|mix|compilation|set list|full show|full set)",
-    re.IGNORECASE,
-)
-
-GOOD_RE = re.compile(r"(cover|кавер)", re.IGNORECASE)
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
 
 
-def _themes():
-
-    ru = [
-        "кавер на русском",
-        "rock cover на русском",
-        "metal cover на русском",
-        "acoustic cover на русском",
-        "guitar cover на русском",
-    ]
-
-    en = [
-        "rock cover",
-        "metal cover",
-        "acoustic cover",
-        "guitar cover",
-        "female vocal cover",
-    ]
-
-    out = ru + en
-    random.shuffle(out)
-
-    return out
+def _looks_bad_title(title: str) -> bool:
+    t = _norm(title)
+    if not t:
+        return True
+    for w in STOP_WORDS:
+        if w in t:
+            return True
+    return False
 
 
-# =========================
-# RSS SEARCH
-# =========================
+def _score_title(title: str, duration: Optional[int]) -> float:
+    """
+    Чем больше — тем лучше.
+    Хотим: кавер/cover, акустика, коротко, без live/концертов.
+    """
+    t = _norm(title)
+    score = 0.0
 
-def _rss_search(query: str):
+    # базовый буст за "кавер"/"cover"
+    if "кавер" in t:
+        score += 5.0
+    if "cover" in t:
+        score += 4.0
 
-    url = "https://www.youtube.com/feeds/videos.xml"
+    # дополнительные хорошие слова
+    for w in GOOD_WORDS:
+        if w in t:
+            score += 1.0
 
-    try:
+    # штраф за слишком длинное
+    if duration is not None:
+        if duration > MAX_DURATION_SEC:
+            score -= 100.0
+        else:
+            # чуть предпочтём 2-4 минуты
+            if 120 <= duration <= 300:
+                score += 1.5
+            elif 300 < duration <= MAX_DURATION_SEC:
+                score += 0.5
 
-        r = requests.get(
-            url,
-            params={"search_query": query},
-            timeout=15,
-        )
+        if duration < MIN_DURATION_SEC:
+            score -= 10.0
 
-        if r.status_code != 200:
-            return []
+    return score
 
-        root = ET.fromstring(r.text)
 
-        ns = {
-            "yt": "http://www.youtube.com/xml/schemas/2015",
-            "atom": "http://www.w3.org/2005/Atom",
-        }
+def _extract_video_id(url_or_id: str) -> str:
+    s = (url_or_id or "").strip()
+    # yt-dlp обычно отдаёт id отдельно; если нет — попробуем вытащить из URL
+    m = re.search(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_-]{6,})", s)
+    return m.group(1) if m else s
 
-        out = []
 
-        for entry in root.findall("atom:entry", ns):
+def _ydl() -> yt_dlp.YoutubeDL:
+    # Важно: не качаем, только мета.
+    # nocheckcertificate иногда помогает в некоторых окружениях.
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": False,
+        "nocheckcertificate": True,
+        "geo_bypass": True,
+        "ignoreerrors": True,
+        # иногда полезно:
+        "default_search": "ytsearch",
+    }
+    return yt_dlp.YoutubeDL(opts)
 
-            vid = entry.find("yt:videoId", ns)
-            title = entry.find("atom:title", ns)
 
-            if vid is None:
-                continue
-
-            vid = vid.text.strip()
-
-            t = title.text.strip() if title is not None else ""
-
-            out.append(
-                {
-                    "video_id": vid,
-                    "title": t,
-                    "url": f"https://www.youtube.com/watch?v={vid}",
-                }
-            )
-
-        return out
-
-    except Exception as e:
-
-        _log(f"rss error: {e}")
-
+def _search(query: str, n: int) -> List[Dict[str, Any]]:
+    """
+    Возвращает список entries от yt-dlp.
+    """
+    q = (query or "").strip()
+    if not q:
         return []
 
+    target = f"ytsearch{max(1, n)}:{q}"
+    with _ydl() as ydl:
+        info = ydl.extract_info(target, download=False)
+
+    entries = []
+    if isinstance(info, dict):
+        entries = info.get("entries") or []
+    return [e for e in entries if isinstance(e, dict)]
+
+
+def _is_dead_entry(e: Dict[str, Any]) -> bool:
+    """
+    Мёртвые/недоступные часто приходят без нормального url/id или с ошибкой.
+    yt-dlp при ignoreerrors может вернуть None/пустое.
+    """
+    vid = (e.get("id") or "").strip()
+    url = (e.get("webpage_url") or e.get("url") or "").strip()
+    if not vid and not url:
+        return True
+    # иногда yt-dlp даёт availability
+    availability = _norm(str(e.get("availability") or ""))
+    if availability in {"private", "needs_auth", "subscriber_only"}:
+        return True
+    return False
+
 
 # =========================
-# FILTER ENTRY
-# =========================
-
-def _ok(e):
-
-    title = e["title"]
-
-    if BAD_TITLE_RE.search(title):
-        return False
-
-    if not GOOD_RE.search(title):
-        return False
-
-    if C_REQUIRE_RU and not CYRILLIC_RE.search(title):
-        return False
-
-    return True
-
-
-# =========================
-# MAIN
+# PUBLIC API
 # =========================
 
 def get_batch(
     limit: int,
     posted_video_ids: Set[str],
     last_sent_by_source: Dict[str, str],
-):
+) -> List[Dict[str, Any]]:
+    """
+    Возвращает items для main.py:
+      {
+        "feed": "c_youtube",
+        "url": "https://www.youtube.com/watch?v=....",
+        "video_id": "...",
+        "title": "...",
+        "source": "<theme>",
+        "ts": <unix utc seconds>
+      }
+    """
+    limit = max(0, int(limit))
+    if limit <= 0:
+        return []
 
-    themes = _themes()
+    posted_video_ids = posted_video_ids or set()
+    last_sent_by_source = last_sent_by_source or {}
 
-    picked = []
+    out: List[Dict[str, Any]] = []
+    used_ids: Set[str] = set()
 
-    for i, theme in enumerate(themes[:C_MAX_QUERIES_PER_RUN]):
+    themes = QUERY_THEMES[:MAX_QUERIES_PER_BATCH]
 
-        _log(f"query={i+1} theme='{theme}'")
+    dead_skipped = 0
+    checked = 0
 
-        items = _rss_search(theme)
+    for qi, theme in enumerate(themes, start=1):
+        if len(out) >= limit:
+            break
 
-        _log(f"urls_found={len(items)}")
+        _log(f"query={qi}/{len(themes)} theme='{theme}'")
 
-        for e in items:
+        entries = _search(theme, PER_QUERY)
+        _log(f"urls_found={len(entries)}")
 
-            vid = e["video_id"]
+        scored: List[Dict[str, Any]] = []
 
-            if vid in posted_video_ids:
+        for e in entries:
+            if len(out) >= limit:
+                break
+
+            checked += 1
+
+            if not e or _is_dead_entry(e):
+                dead_skipped += 1
                 continue
 
-            if not _ok(e):
+            title = (e.get("title") or "").strip()
+            if _looks_bad_title(title):
+                dead_skipped += 1
+                _log(f"skip dead/filtered youtube: {e.get('webpage_url') or e.get('url')}")
                 continue
 
-            picked.append(
+            duration = e.get("duration")
+            try:
+                duration_i = int(duration) if duration is not None else None
+            except Exception:
+                duration_i = None
+
+            if duration_i is not None:
+                if duration_i > MAX_DURATION_SEC or duration_i < MIN_DURATION_SEC:
+                    dead_skipped += 1
+                    _log(f"skip dead/filtered youtube: {e.get('webpage_url') or e.get('url')}")
+                    continue
+
+            vid = (e.get("id") or "").strip()
+            url = (e.get("webpage_url") or "").strip()
+            if not url:
+                # иногда url лежит в "url" (короткое), соберём нормальную ссылку
+                cand = (e.get("url") or "").strip()
+                vid2 = _extract_video_id(vid or cand)
+                if vid2:
+                    url = f"https://www.youtube.com/watch?v={vid2}"
+                vid = vid2 or vid
+
+            if not vid:
+                dead_skipped += 1
+                _log(f"skip dead/filtered youtube: {url or '(no-url)'}")
+                continue
+
+            if vid in posted_video_ids or vid in used_ids:
+                continue
+
+            s = _score_title(title, duration_i)
+            scored.append(
                 {
-                    "feed": "c_youtube",
-                    "url": e["url"],
                     "video_id": vid,
-                    "title": e["title"],
-                    "source": f"yt:{vid}",
-                    "ts": int(time.time()),
+                    "url": url,
+                    "title": title,
+                    "source": theme,
+                    "ts": _utc_now_ts(),
+                    "_score": s,
                 }
             )
 
-            posted_video_ids.add(vid)
+        # берём лучших из темы
+        scored.sort(key=lambda x: float(x.get("_score", 0.0)), reverse=True)
 
-            if len(picked) >= limit:
+        for it in scored:
+            if len(out) >= limit:
+                break
 
-                _log(f"returning={len(picked)}")
+            vid = it["video_id"]
+            if vid in posted_video_ids or vid in used_ids:
+                continue
 
-                return picked
+            used_ids.add(vid)
+            out.append(
+                {
+                    "feed": "c_youtube",
+                    "url": it["url"],
+                    "video_id": it["video_id"],
+                    "title": it.get("title", ""),
+                    "source": it.get("source", ""),
+                    "ts": it.get("ts", _utc_now_ts()),
+                }
+            )
 
-    _log(f"returning={len(picked)}")
-
-    return picked
+    _log(f"returning={len(out)} limit={limit} checked={checked} dead_skipped={dead_skipped}")
+    return out
