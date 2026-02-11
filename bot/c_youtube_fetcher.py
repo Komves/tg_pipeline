@@ -8,19 +8,20 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Dict, List, Set, Tuple
 
 from openai import OpenAI
 
 MODEL = os.getenv("C_OPENAI_MODEL", "gpt-4o-mini")
 
-# Сколько ссылок просим у OpenAI за один запрос (НЕ много)
-CANDIDATES_PER_CALL = int(os.getenv("C_YT_CANDIDATES_PER_CALL", "10"))
-# Сколько раз максимум дергаем OpenAI, если не набрали limit живых
+# мало кандидатов, чтобы не грузить OpenAI
+CANDIDATES_PER_CALL = int(os.getenv("C_YT_CANDIDATES_PER_CALL", "6"))
 MAX_CALLS = int(os.getenv("C_YT_MAX_CALLS", "3"))
 
-# Таймауты сетевых проверок (сек)
+# проверки
 OEMBED_TIMEOUT_SEC = float(os.getenv("C_YT_OEMBED_TIMEOUT_SEC", "6.0"))
+# если не набрали живых — добиваем непроверенными (чтобы НЕ было returning=0)
+ALLOW_UNVERIFIED_FALLBACK = (os.getenv("C_YT_ALLOW_UNVERIFIED_FALLBACK", "1").strip().lower() in {"1", "true", "yes", "on"})
 
 URL_RE = re.compile(r"https?://(?:www\.)?youtube\.com/watch\?v=[A-Za-z0-9_\-]{11}")
 VID_RE = re.compile(r"v=([A-Za-z0-9_\-]{11})")
@@ -49,10 +50,8 @@ def _extract_video_id(url: str) -> str:
 
 def _oembed_check(url: str) -> Tuple[bool, str]:
     """
-    Надёжная проверка "живости":
-    YouTube oEmbed отдаёт 200 только если видео доступно публично.
-    На удалённые/приватные/недоступные обычно 401/404.
-    Возвращает (ok, title)
+    Проверка "живости" через YouTube oEmbed.
+    Возвращает (ok, title). Если oEmbed недоступен в среде — всё будет false.
     """
     url = _norm_url(url)
     if not url:
@@ -69,9 +68,9 @@ def _oembed_check(url: str) -> Tuple[bool, str]:
         )
         with urllib.request.urlopen(req, timeout=OEMBED_TIMEOUT_SEC) as r:
             code = int(getattr(r, "status", 0) or 0)
+            raw = r.read()
             if code != 200:
                 return False, ""
-            raw = r.read()
             data = json.loads(raw.decode("utf-8", errors="ignore") or "{}")
             title = (data.get("title") or "").strip()
             return True, title
@@ -88,7 +87,15 @@ def _openai_pick_urls(prompt: str) -> List[str]:
     )
     text = (resp.output_text or "").strip()
     urls = URL_RE.findall(text)
-    return [_norm_url(u) for u in urls]
+    # нормализуем и чистим
+    out: List[str] = []
+    seen = set()
+    for u in urls:
+        nu = _norm_url(u)
+        if nu and nu not in seen:
+            seen.add(nu)
+            out.append(nu)
+    return out
 
 
 def get_batch(
@@ -110,25 +117,23 @@ def get_batch(
       }
 
     Логика:
-    - просим немного кандидатов у OpenAI
-    - каждый кандидат проверяем через oEmbed (реально живой/нет)
-    - если кандидат мёртвый -> берём следующий
-    - делаем до MAX_CALLS попыток, пока не набрали limit
+    - Просим немного кандидатов у OpenAI (через web_search)
+    - Пробуем отфильтровать реально живые через oEmbed
+    - Если живых не хватает и включён fallback — добиваем непроверенными
+      (иначе ты будешь постоянно получать ranked c_youtube=0)
     """
-
     limit = max(0, int(limit))
     if limit <= 0:
         return []
 
     out: List[Dict[str, str]] = []
     seen_vid: Set[str] = set()
+    unverified_pool: List[Tuple[str, str]] = []  # (vid, url)
 
-    # разные темы по попыткам, чтобы не упираться в одно и то же
     themes = [
         "rock cover live session 2023 2024",
         "metal cover guitar vocal 2022 2023",
         "post-hardcore cover acoustic rock",
-        "drum cover rock metal live",
     ]
 
     for call_idx in range(MAX_CALLS):
@@ -156,6 +161,9 @@ def get_batch(
             if vid in posted_video_ids:
                 continue
 
+            # сохраняем кандидата в пул "на всякий"
+            unverified_pool.append((vid, url))
+
             ok, title = _oembed_check(url)
             if not ok:
                 log(f"skip dead youtube: {url}")
@@ -177,7 +185,33 @@ def get_batch(
                 log(f"returning={len(out)}")
                 return out
 
-        time.sleep(0.4)
+        time.sleep(0.3)
+
+    # === fallback: добиваем непроверенными, чтобы НЕ было 0 ===
+    if ALLOW_UNVERIFIED_FALLBACK and len(out) < limit:
+        need = limit - len(out)
+        added = 0
+        for vid, url in unverified_pool:
+            if added >= need:
+                break
+            # не повторяем то, что уже добавили живыми
+            if any(x.get("video_id") == vid for x in out):
+                continue
+            out.append(
+                {
+                    "feed": "c_youtube",
+                    "item_id": vid,
+                    "video_id": vid,
+                    "url": url,
+                    "title": "",  # неизвестно
+                    "source": f"yt:{vid}",
+                    "ts": int(time.time()),
+                }
+            )
+            added += 1
+
+        if added:
+            log(f"fallback_unverified_added={added}")
 
     log(f"returning={len(out)}")
     return out
