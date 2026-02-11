@@ -1,23 +1,29 @@
 # c_youtube_fetcher.py
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple, Optional
 
 from openai import OpenAI
 
 MODEL = os.getenv("C_OPENAI_MODEL", "gpt-4o-mini")
 
-# Сколько ссылок просим у OpenAI за один запрос
-CANDIDATES_PER_CALL = int(os.getenv("C_YT_CANDIDATES_PER_CALL", "12"))
+# Сколько ссылок просим у OpenAI за один запрос (НЕ много)
+CANDIDATES_PER_CALL = int(os.getenv("C_YT_CANDIDATES_PER_CALL", "10"))
 # Сколько раз максимум дергаем OpenAI, если не набрали limit живых
 MAX_CALLS = int(os.getenv("C_YT_MAX_CALLS", "3"))
 
+# Таймауты сетевых проверок (сек)
+OEMBED_TIMEOUT_SEC = float(os.getenv("C_YT_OEMBED_TIMEOUT_SEC", "6.0"))
+
 URL_RE = re.compile(r"https?://(?:www\.)?youtube\.com/watch\?v=[A-Za-z0-9_\-]{11}")
+VID_RE = re.compile(r"v=([A-Za-z0-9_\-]{11})")
 
 
 def log(msg: str) -> None:
@@ -25,31 +31,52 @@ def log(msg: str) -> None:
     print(f"[c_youtube] {now} {msg}", flush=True)
 
 
+def _norm_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if u.startswith("http://"):
+        u = "https://" + u[len("http://") :]
+    if u.startswith("https://youtube.com/"):
+        u = "https://www." + u[len("https://") :]
+    return u
+
+
 def _extract_video_id(url: str) -> str:
-    m = re.search(r"v=([A-Za-z0-9_\-]{11})", url)
+    m = VID_RE.search(url or "")
     return m.group(1) if m else ""
 
 
-def _is_alive(url: str) -> bool:
-    # HEAD иногда режут, поэтому fallback на GET с Range (очень легкий)
-    try:
-        req = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=6) as r:
-            return int(getattr(r, "status", 0) or 0) == 200
-    except Exception:
-        pass
+def _oembed_check(url: str) -> Tuple[bool, str]:
+    """
+    Надёжная проверка "живости":
+    YouTube oEmbed отдаёт 200 только если видео доступно публично.
+    На удалённые/приватные/недоступные обычно 401/404.
+    Возвращает (ok, title)
+    """
+    url = _norm_url(url)
+    if not url:
+        return False, ""
+
+    q = urllib.parse.urlencode({"url": url, "format": "json"})
+    oembed = f"https://www.youtube.com/oembed?{q}"
 
     try:
         req = urllib.request.Request(
-            url,
+            oembed,
             method="GET",
-            headers={"Range": "bytes=0-1024", "User-Agent": "Mozilla/5.0"},
+            headers={"User-Agent": "Mozilla/5.0"},
         )
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=OEMBED_TIMEOUT_SEC) as r:
             code = int(getattr(r, "status", 0) or 0)
-            return code in (200, 206)
+            if code != 200:
+                return False, ""
+            raw = r.read()
+            data = json.loads(raw.decode("utf-8", errors="ignore") or "{}")
+            title = (data.get("title") or "").strip()
+            return True, title
     except Exception:
-        return False
+        return False, ""
 
 
 def _openai_pick_urls(prompt: str) -> List[str]:
@@ -61,15 +88,7 @@ def _openai_pick_urls(prompt: str) -> List[str]:
     )
     text = (resp.output_text or "").strip()
     urls = URL_RE.findall(text)
-    # нормализуем на https://www.youtube.com/...
-    out = []
-    for u in urls:
-        if u.startswith("http://"):
-            u = "https://" + u[len("http://") :]
-        if u.startswith("https://youtube.com/"):
-            u = "https://www." + u[len("https://") :]
-        out.append(u)
-    return out
+    return [_norm_url(u) for u in urls]
 
 
 def get_batch(
@@ -79,9 +98,22 @@ def get_batch(
     last_sent_by_source: Dict[str, str],
 ) -> List[Dict[str, str]]:
     """
-    Возвращает список items для feed c_youtube:
-      {"feed":"c_youtube","item_id":vid,"video_id":vid,"url":url,"title":"","source":"yt:{vid}"}
-    Дёшево: максимум MAX_CALLS обращений к OpenAI, по CANDIDATES_PER_CALL ссылок в каждом.
+    Возвращает items для main.py:
+      {
+        "feed": "c_youtube",
+        "item_id": vid,
+        "video_id": vid,
+        "url": url,
+        "title": title,
+        "source": f"yt:{vid}",
+        "ts": int(time.time())
+      }
+
+    Логика:
+    - просим немного кандидатов у OpenAI
+    - каждый кандидат проверяем через oEmbed (реально живой/нет)
+    - если кандидат мёртвый -> берём следующий
+    - делаем до MAX_CALLS попыток, пока не набрали limit
     """
 
     limit = max(0, int(limit))
@@ -91,7 +123,7 @@ def get_batch(
     out: List[Dict[str, str]] = []
     seen_vid: Set[str] = set()
 
-    # меняем “темы” по попыткам — чтобы не упираться в одни и те же мёртвые результаты
+    # разные темы по попыткам, чтобы не упираться в одно и то же
     themes = [
         "rock cover live session 2023 2024",
         "metal cover guitar vocal 2022 2023",
@@ -124,7 +156,8 @@ def get_batch(
             if vid in posted_video_ids:
                 continue
 
-            if not _is_alive(url):
+            ok, title = _oembed_check(url)
+            if not ok:
                 log(f"skip dead youtube: {url}")
                 continue
 
@@ -134,7 +167,7 @@ def get_batch(
                     "item_id": vid,
                     "video_id": vid,
                     "url": url,
-                    "title": "",
+                    "title": title,
                     "source": f"yt:{vid}",
                     "ts": int(time.time()),
                 }
@@ -144,8 +177,7 @@ def get_batch(
                 log(f"returning={len(out)}")
                 return out
 
-        # короткая пауза между попытками (и чтоб web_search не вернул тот же срез)
-        time.sleep(0.7)
+        time.sleep(0.4)
 
     log(f"returning={len(out)}")
     return out
