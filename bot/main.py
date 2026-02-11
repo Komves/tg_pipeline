@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import json
 import asyncio
@@ -7,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -17,10 +19,12 @@ import ingest_runner
 import nsfw_runner
 import ranker
 import c_youtube_fetcher
+
 import news_digest
 
 import memory
 import persona
+
 import chatgpt_dialog
 
 try:
@@ -47,6 +51,7 @@ FEEDBACK_TSV = DATA_DIR / "feedback.tsv"
 SENT_INDEX_JSON = DATA_DIR / "sent_index.json"
 STATE_PATH = DATA_DIR / "daily_state.json"
 
+# Category C: posted (global, never repeat) + source cooldown
 C_POSTED_TSV = DATA_DIR / "c_posted_master.tsv"
 
 A_MEMES_LIMIT = int(os.getenv("A_MEMES_LIMIT", "30"))
@@ -58,14 +63,15 @@ HEARTBEAT_SEC = int(os.getenv("HEARTBEAT_SEC", "300"))
 MSK = ZoneInfo("Europe/Moscow")
 AUTO_DEADLINE_MSK = dtime(6, 0, 0)
 
+# News
 NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
 NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 
+# Dialog config (typing simulation)
 DIALOG_TYPING_MAX_SEC = float(os.getenv("V_DIALOG_TYPING_MAX_SEC", "4.0"))
-DIALOG_TYPING_CPS = float(os.getenv("V_DIALOG_TYPING_CPS", "18.0"))
+DIALOG_TYPING_CPS = float(os.getenv("V_DIALOG_TYPING_CPS", "18.0"))  # chars/sec
 
-C_FETCH_TIMEOUT_SEC = float(os.getenv("C_FETCH_TIMEOUT_SEC", "20.0"))
-
+# News sources path (stable)
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
 NEWS_SOURCES_PRIMARY = _THIS_DIR / "news_sources.txt"
@@ -74,63 +80,6 @@ NEWS_SOURCES_FILE = NEWS_SOURCES_PRIMARY if NEWS_SOURCES_PRIMARY.exists() else N
 
 _run_lock = asyncio.Lock()
 router = Router()
-
-# =========================
-# PHOTO HANDLER (ВСТАВЛЕНО)
-# =========================
-from aiogram import F
-from pathlib import Path
-from datetime import datetime, timezone
-
-@router.message(F.photo)
-async def vesya_photo_handler(msg: Message):
-    u = msg.from_user
-    user_id = u.id if u else 0
-    chat_id_int = msg.chat.id if msg.chat else 0
-
-    caption = (msg.caption or "").strip()
-
-    addressed = persona.is_addressed(caption) if caption else False
-    active = chatgpt_dialog.is_active(chat_id_int, user_id)
-    wants = caption and ("запомни" in caption.lower() or "это ты" in caption.lower())
-
-    if not addressed and not active and not wants:
-        return
-
-    if addressed:
-        chatgpt_dialog.activate(chat_id_int, user_id)
-
-    # получить файл
-    ph = msg.photo[-1]
-    file = await msg.bot.get_file(ph.file_id)
-    data = await msg.bot.download_file(file.file_path)
-    b = data.read() if hasattr(data, "read") else bytes(data)
-
-    # сохранить временно
-    inbox = Path("/data/vesya_inbox")
-    inbox.mkdir(parents=True, exist_ok=True)
-
-    name = f"{chat_id_int}_{user_id}_{int(datetime.now(timezone.utc).timestamp())}.jpg"
-    path = inbox / name
-    path.write_bytes(b)
-
-    chatgpt_dialog.note_last_user_photo(chat_id_int, user_id, str(path))
-
-    # если "запомни"
-    if caption and "запомни" in caption.lower():
-        saved = chatgpt_dialog.add_persona_photo_bytes(chat_id_int, user_id, b)
-        await msg.answer(f"запомнила. теперь это часть моего досье: {saved}")
-        return
-
-    # если "это ты?"
-    if caption and "это ты" in caption.lower():
-        decision = chatgpt_dialog.describe_or_compare_photo(caption, b)
-        if decision.reply:
-            await msg.answer(decision.reply)
-        return
-
-    await msg.answer("вижу фото. если это я — напиши «это ты?» или «запомни».")
-
 
 
 def log(msg: str) -> None:
@@ -220,6 +169,7 @@ def _mark_posted(user_id: int, item_id: str, feed: str) -> None:
         f.write(f"{ts}\t{user_id}\t{item_id}\t{feed}\n")
 
 
+# ===== Category C posted (global, never repeat) =====
 def _ensure_c_posted_header() -> None:
     if not C_POSTED_TSV.exists():
         C_POSTED_TSV.write_text("ts_utc\tvideo_id\turl\ttitle\tsource\n", encoding="utf-8")
@@ -420,6 +370,7 @@ def _rank_a_memes(n: int) -> List[Dict[str, Any]]:
 
     uid = _chat_user_id()
     out: List[Dict[str, Any]] = []
+
     try:
         if hasattr(meme_ranker, "rank_memes"):
             cand = meme_ranker.rank_memes(uid, max(0, n))
@@ -451,6 +402,7 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
 
     uid = _chat_user_id()
     out: List[Dict[str, Any]] = []
+
     try:
         if hasattr(b_video_ranker, "rank_b_videos"):
             try:
@@ -480,6 +432,7 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
 
 
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
+    # C: YouTube link message
     if (it.get("feed") or "").strip() == "c_youtube":
         title = (it.get("title") or "").strip()
         url = (it.get("url") or "").strip()
@@ -519,6 +472,7 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
 
         return True
 
+    # A/B: files
     abs_path = it["abs_path"]
     p = Path(abs_path)
     if not p.exists():
@@ -646,6 +600,7 @@ async def run_all(hours: int, *, reason: str) -> None:
 
         log(f"ranked a_memes={len(a_memes)} a_videos={len(a_videos)} b_videos={len(b_videos)}")
 
+        # Category C: 6 for 24h, 2 for 12h
         c_limit = 0
         if hours >= 24:
             c_limit = 6
@@ -653,25 +608,17 @@ async def run_all(hours: int, *, reason: str) -> None:
             c_limit = 2
 
         c_items: List[Dict[str, Any]] = []
-        if c_limit > 0:
-            try:
-                posted_c = _load_c_posted_video_ids()
-                last_by_source = _load_c_last_sent_by_source()
-
-                def _get_c():
-                    return c_youtube_fetcher.get_batch(
-                        limit=c_limit,
-                        posted_video_ids=posted_c,
-                        last_sent_by_source=last_by_source,
-                    )
-
-                c_items = await asyncio.wait_for(asyncio.to_thread(_get_c), timeout=C_FETCH_TIMEOUT_SEC)
-            except asyncio.TimeoutError:
-                log(f"C fetch timeout: {C_FETCH_TIMEOUT_SEC}s -> skip")
-                c_items = []
-            except Exception as e:
-                log(f"C fetch error: {e}")
-                c_items = []
+        try:
+            posted_c = _load_c_posted_video_ids()
+            last_by_source = _load_c_last_sent_by_source()
+            c_items = c_youtube_fetcher.get_batch(
+                limit=c_limit,
+                posted_video_ids=posted_c,
+                last_sent_by_source=last_by_source,
+            )
+        except Exception as e:
+            log(f"C fetch error: {e}")
+            c_items = []
 
         log(f"ranked c_youtube={len(c_items)} (limit={c_limit})")
 
@@ -703,6 +650,7 @@ async def run_news(*, hours: int, limit: int, reason: str) -> None:
                 hours=hours,
                 limit=limit,
             )
+
             html_text = news_digest.build_html_message(items, hours=hours)
             await bot.send_message(
                 chat_id=chat_id,
@@ -710,8 +658,10 @@ async def run_news(*, hours: int, limit: int, reason: str) -> None:
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
+
             if items:
                 news_digest.mark_digest_as_seen(items)
+
             log(f"NEWS done items={len(items)} sources={NEWS_SOURCES_FILE}")
         except Exception as e:
             log(f"NEWS error: {e}")
@@ -731,6 +681,10 @@ async def cmd_news(msg: Message):
     asyncio.create_task(run_news(hours=NEWS_HOURS, limit=NEWS_LIMIT, reason="manual_news"))
 
 
+# =========================
+# DIALOG (ChatGPT brain)
+# =========================
+
 async def _simulate_typing(bot: Bot, chat_id: int, text: str) -> None:
     t = (text or "").strip()
     if not t:
@@ -743,14 +697,73 @@ async def _simulate_typing(bot: Bot, chat_id: int, text: str) -> None:
     await asyncio.sleep(est)
 
 
+@router.message(F.photo)
+async def vesya_photo_handler(msg: Message):
+    """
+    1) Скачиваем фото в /data/vesya_inbox
+    2) Помечаем как "последнее фото пользователя" на TTL (chatgpt_dialog.note_last_user_photo)
+    3) Активируем диалог-сессию, чтобы следующий текст без "Веся" тоже прошёл
+    """
+    try:
+        u = msg.from_user
+        user_id = u.id if u else 0
+        chat_id_int = msg.chat.id if msg.chat else 0
+
+        # скачиваем самое большое
+        ph = msg.photo[-1]
+        file = await msg.bot.get_file(ph.file_id)
+
+        inbox_dir = Path(os.getenv("DATA_DIR", "/data")) / "vesya_inbox"
+        inbox_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = int(datetime.now(timezone.utc).timestamp())
+        path = inbox_dir / f"user_{chat_id_int}_{user_id}_{ts}.jpg"
+        await msg.bot.download_file(file.file_path, destination=path)
+
+        # пометили "последнее фото" на TTL
+        try:
+            chatgpt_dialog.note_last_user_photo(chat_id_int, user_id, str(path))
+        except Exception as e:
+            log(f"note_last_user_photo error: {e}")
+
+        # активируем диалог (важно!)
+        try:
+            chatgpt_dialog.activate(chat_id_int, user_id)
+        except Exception:
+            pass
+
+        # память (не валим бота)
+        try:
+            profiles = memory.load_profiles()
+            prof = memory.ensure_user_profile(
+                profiles,
+                user_id=user_id,
+                display_name=(u.full_name if u else ""),
+                username=(u.username if u else ""),
+            )
+            memory.bump_intent(prof, "dialog")
+            memory.save_profiles(profiles)
+
+            memory.append_event(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "kind": "photo",
+                    "uid": user_id,
+                    "text": "",
+                    "intent": "dialog",
+                    "path": str(path),
+                }
+            )
+            memory.prune_memory()
+        except Exception:
+            pass
+
+    except Exception as e:
+        log(f"photo handler error: {e}")
+
+
 @router.message()
 async def vesya_handler(msg: Message):
-    # DEBUG: доказательство что хендлер вообще жив
-    try:
-        log(f"RX chat_id={msg.chat.id} uid={(msg.from_user.id if msg.from_user else 0)} text={(msg.text or '')[:120]!r}")
-    except Exception:
-        pass
-
     text = (msg.text or "").strip()
     if not text:
         return
@@ -761,6 +774,8 @@ async def vesya_handler(msg: Message):
     user_id = u.id if u else 0
     chat_id_int = msg.chat.id if msg.chat else 0
 
+    # 1) Route to dialog if:
+    #    - addressed by name OR active session
     addressed = persona.is_addressed(text)
     active = chatgpt_dialog.is_active(chat_id_int, user_id)
 
@@ -770,6 +785,7 @@ async def vesya_handler(msg: Message):
     if addressed:
         chatgpt_dialog.activate(chat_id_int, user_id)
 
+    # 2) Memory (fail-safe)
     try:
         profiles = memory.load_profiles()
         prof = memory.ensure_user_profile(
@@ -795,12 +811,24 @@ async def vesya_handler(msg: Message):
     except Exception:
         pass
 
-    decision = chatgpt_dialog.decide(chat_id_int, user_id, text)
+    # 3) Если недавно было фото — используем его в диалоге
+    decision = None
+    try:
+        last_photo = chatgpt_dialog.pop_last_user_photo(chat_id_int, user_id)
+        if last_photo and Path(last_photo).exists():
+            img = Path(last_photo).read_bytes()
+            decision = chatgpt_dialog.describe_or_compare_photo(text, img)
+    except Exception as e:
+        log(f"photo compare error: {e}")
+        decision = None
+
+    if decision is None:
+        decision = chatgpt_dialog.decide(chat_id_int, user_id, text)
+
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
 
-    log(f"[dialog] intent={intent} reply={(reply[:120] if reply else '')!r} text={(text[:120])!r}")
-
+    # 4) Send reply with typing simulation
     if reply:
         await _simulate_typing(msg.bot, chat_id_int, reply)
         try:
@@ -808,6 +836,7 @@ async def vesya_handler(msg: Message):
         except Exception as e:
             log(f"dialog reply send error: {e}")
 
+    # 5) Execute intents
     if intent == "end":
         chatgpt_dialog.end(chat_id_int, user_id)
         return
@@ -820,89 +849,7 @@ async def vesya_handler(msg: Message):
         asyncio.create_task(run_all(12, reason="dialog_content"))
         return
 
-from aiogram.types import PhotoSize
-
-@router.message()
-async def vesya_photo_handler(msg: Message):
-    """
-    Photo handler:
-    - If user sent a photo + caption contains 'Запомни' -> save as persona immediately.
-    - Else remember as last photo for 5 min so 'Запомни' next message works.
-    - If Vesya addressed or dialog active -> ask vision brain to react to the image.
-    """
-    # only photos
-    if not msg.photo:
-        return
-
-    u = msg.from_user
-    user_id = u.id if u else 0
-    chat_id_int = msg.chat.id if msg.chat else 0
-
-    # caption/text associated with photo
-    caption = (msg.caption or msg.text or "").strip()
-
-    # route only if addressed OR active dialog OR caption contains "Запомни"
-    addressed = persona.is_addressed(caption) if caption else False
-    active = chatgpt_dialog.is_active(chat_id_int, user_id)
-    wants_remember = bool(re.search(r"\b(запомни|сохрани)\b", caption, re.IGNORECASE))
-
-    if not addressed and not active and not wants_remember:
-        # allow silent last-photo note only when "Запомни" is intended
-        # otherwise ignore random photos
-        return
-
-    if addressed:
-        chatgpt_dialog.activate(chat_id_int, user_id)
-
-    # pick best quality photo
-    best: PhotoSize = msg.photo[-1]
-
-    # download to disk (avoid huge RAM)
-    inbox_dir = Path(os.getenv("DATA_DIR", "/data")) / "vesya_inbox"
-    inbox_dir.mkdir(parents=True, exist_ok=True)
-    local_path = inbox_dir / f"u_{chat_id_int}_{user_id}_{best.file_unique_id}.jpg"
-
-    try:
-        f = await msg.bot.get_file(best.file_id)
-        await msg.bot.download_file(f.file_path, destination=str(local_path))
-    except Exception as e:
-        log(f"photo download error: {e}")
-        return
-
-    # 1) Remember request in caption: save immediately as persona
-    if wants_remember:
-        try:
-            data = local_path.read_bytes()
-            # strip "Веся" name and keep short note
-            note = re.sub(r"\b(запомни|сохрани)\b", "", caption, flags=re.IGNORECASE).strip()
-            note = re.sub(r"\s+", " ", note)[:200]
-            saved_name = chatgpt_dialog.add_persona_photo_bytes(chat_id_int, user_id, data, ext="jpg", note=note)
-            reply = f"принято. закрепила у себя в досье как образ: {saved_name}"
-            await _simulate_typing(msg.bot, chat_id_int, reply)
-            await msg.answer(reply)
-            return
-        except Exception as e:
-            log(f"photo remember error: {e}")
-            await msg.answer("хотела запомнить, но уронила фото. кинь ещё раз.")
-            return
-
-    # 2) Otherwise note last user photo for 5 minutes
-    try:
-        chatgpt_dialog.note_last_user_photo(chat_id_int, user_id, str(local_path))
-    except Exception as e:
-        log(f"note_last_user_photo error: {e}")
-
-    # 3) If dialog should react: send to vision brain
-    if addressed or active:
-        try:
-            data = local_path.read_bytes()
-            decision = chatgpt_dialog.describe_or_compare_photo(caption, data)
-            reply = (decision.reply or "").strip()
-            if reply:
-                await _simulate_typing(msg.bot, chat_id_int, reply)
-                await msg.answer(reply)
-        except Exception as e:
-            log(f"vision reaction error: {e}")
+    # chat -> nothing
 
 
 @router.callback_query()
@@ -971,8 +918,6 @@ async def main_async():
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
-
-    # CRITICAL — регистрируем router с диалогом
     dp.include_router(router)
 
     await asyncio.gather(
@@ -985,6 +930,5 @@ def main():
     asyncio.run(main_async())
 
 
-# CRITICAL ENTRYPOINT — БЕЗ ЭТОГО БОТ НЕ СТАРТУЕТ
 if __name__ == "__main__":
     main()
