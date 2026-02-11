@@ -4,6 +4,7 @@ import os
 import json
 import asyncio
 import hashlib
+import requests
 from datetime import datetime, timezone, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -85,6 +86,69 @@ router = Router()
 def log(msg: str) -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[main] {now} {msg}", flush=True)
+
+
+# ===== YouTube alive check (cheap) =====
+_YT_CHECK_CACHE: Dict[str, bool] = {}
+
+
+def _yt_is_alive(url: str) -> bool:
+    url = (url or "").strip()
+    if not url:
+        return False
+    if url in _YT_CHECK_CACHE:
+        return _YT_CHECK_CACHE[url]
+
+    # oEmbed is the fastest "exists/available" probe
+    oembed = "https://www.youtube.com/oembed"
+    try:
+        r = requests.get(oembed, params={"url": url, "format": "json"}, timeout=4)
+        ok = (r.status_code == 200)
+    except Exception:
+        # если сеть глючит — лучше не блокировать отправку
+        ok = True
+
+    _YT_CHECK_CACHE[url] = ok
+    return ok
+
+
+def _normalize_c_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for it in (items or []):
+        if not isinstance(it, dict):
+            continue
+
+        url = (it.get("url") or "").strip()
+        src = (it.get("source") or it.get("src") or "").strip()
+
+        vid = (it.get("video_id") or it.get("item_id") or "").strip()
+        if not vid and src.startswith("yt:"):
+            vid = src.split(":", 1)[1].strip()
+
+        if not vid and url:
+            try:
+                from urllib.parse import urlparse, parse_qs
+
+                q = parse_qs(urlparse(url).query)
+                vid = (q.get("v") or [""])[0].strip()
+            except Exception:
+                vid = ""
+
+        if not url or not vid:
+            continue
+
+        out.append(
+            {
+                "feed": "c_youtube",
+                "item_id": vid,
+                "video_id": vid,
+                "url": url,
+                "title": (it.get("title") or "").strip(),
+                "source": src,
+                "src": src,  # для sent_index
+            }
+        )
+    return out
 
 
 def _resolve_chat_id() -> str:
@@ -432,13 +496,20 @@ def _rank_b_videos(n: int) -> List[Dict[str, Any]]:
 
 
 async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons: bool) -> bool:
+    feed = (it.get("feed") or "").strip()
+
     # C: YouTube link message
-    if (it.get("feed") or "").strip() == "c_youtube":
+    if feed == "c_youtube":
         title = (it.get("title") or "").strip()
         url = (it.get("url") or "").strip()
         video_id = (it.get("video_id") or it.get("item_id") or "").strip()
 
         if not url or not video_id:
+            return False
+
+        # фильтр "мертвых" / недоступных видео
+        if not _yt_is_alive(url):
+            log(f"skip dead youtube: {url}")
             return False
 
         sid = None
@@ -472,8 +543,12 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
 
         return True
 
-    # A/B: files
-    abs_path = it["abs_path"]
+    # A/B: files (НЕ ПАДАЕМ если ключа нет)
+    abs_path = (it.get("abs_path") or "").strip()
+    if not abs_path:
+        log(f"send skip no abs_path feed={feed} keys={list(it.keys())[:10]}")
+        return False
+
     p = Path(abs_path)
     if not p.exists():
         log(f"send skip missing file: {abs_path}")
@@ -485,7 +560,7 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
     reply_markup = None
     sid = None
     if with_buttons:
-        sid = _sid(it["feed"], it["item_id"])
+        sid = _sid(it.get("feed", ""), it.get("item_id", ""))
         reply_markup = _kb_for_sid_a(sid)
 
     file = FSInputFile(str(p))
@@ -505,9 +580,9 @@ async def _send_one(bot: Bot, chat_id: str, it: Dict[str, Any], *, with_buttons:
         sent_index = _load_sent_index()
         sent_index[sid] = {
             "sid": sid,
-            "feed": it["feed"],
-            "item_id": it["item_id"],
-            "abs_path": it["abs_path"],
+            "feed": it.get("feed", ""),
+            "item_id": it.get("item_id", ""),
+            "abs_path": abs_path,
             "src": it.get("src", ""),
         }
         _save_sent_index(sent_index)
@@ -619,6 +694,8 @@ async def run_all(hours: int, *, reason: str) -> None:
         except Exception as e:
             log(f"C fetch error: {e}")
             c_items = []
+
+        c_items = _normalize_c_items(c_items)
 
         log(f"ranked c_youtube={len(c_items)} (limit={c_limit})")
 
