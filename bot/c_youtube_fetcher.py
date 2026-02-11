@@ -1,125 +1,91 @@
-from __future__ import annotations
-
-import json
 import os
-import random
 import re
+import json
 import time
-from typing import Dict, List, Set
+from typing import List, Dict, Any
 
 from openai import OpenAI
 
-
 MODEL = os.getenv("C_OPENAI_MODEL", "gpt-4o-mini")
-
-MAX_RESULTS = 12
+DEBUG = True
 
 client = OpenAI()
 
 
-YOUTUBE_URL_RE = re.compile(
-    r"(https://www\.youtube\.com/watch\?v=[A-Za-z0-9_\-]{11})"
+def _dbg(msg):
+    if DEBUG:
+        print(f"[c_youtube] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}")
+
+
+YOUTUBE_RE = re.compile(
+    r"https://www\.youtube\.com/watch\?v=([a-zA-Z0-9_-]{6,})"
 )
 
 
 def _extract_video_id(url: str) -> str:
-    return url.split("v=")[-1][:11]
+    m = YOUTUBE_RE.search(url or "")
+    return m.group(1) if m else ""
 
 
-def _is_valid_video_id(vid: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z0-9_\-]{11}", vid))
-
-
-def _dedupe(urls: List[str]) -> List[str]:
-    seen = set()
-    out = []
-
-    for u in urls:
-        vid = _extract_video_id(u)
-
-        if not _is_valid_video_id(vid):
-            continue
-
-        if vid in seen:
-            continue
-
-        seen.add(vid)
-        out.append(u)
-
-    return out
-
-
-def _fetch_raw(limit: int) -> List[str]:
-
-    prompt = f"""
-Дай список {limit*2} актуальных YouTube видео.
-
-Правила:
-— только существующие видео
-— только youtube.com/watch?v=
-— без Shorts
-— без плейлистов
-— только прямые ссылки
-
-Формат: JSON массив строк.
-"""
+def _search_youtube_raw() -> str:
 
     resp = client.responses.create(
         model=MODEL,
-        input=prompt,
-        temperature=0.7,
+        input="Find 8 fresh viral YouTube videos and return ONLY JSON array with urls",
+        tools=[{"type": "web_search"}],
     )
 
-    text = resp.output_text
+    text = getattr(resp, "output_text", "") or ""
+    _dbg(f"raw_len={len(text)}")
+    return text
 
-    try:
-        data = json.loads(text)
-    except:
-        return []
 
-    urls = []
+def _extract_urls(raw: str) -> List[str]:
 
-    for u in data:
-        if isinstance(u, str):
-            m = YOUTUBE_URL_RE.search(u)
-            if m:
-                urls.append(m.group(1))
+    urls = YOUTUBE_RE.findall(raw)
 
-    return urls
+    return list(dict.fromkeys(
+        f"https://www.youtube.com/watch?v={vid}" for vid in urls
+    ))
 
 
 def get_batch(
     limit: int,
-    posted_video_ids: Set[str],
-    last_sent_by_source: Dict[str, float],
-):
+    posted_video_ids: set,
+    last_sent_by_source: dict
+) -> List[Dict[str, Any]]:
 
-    raw = _fetch_raw(limit)
+    raw = _search_youtube_raw()
 
-    raw = _dedupe(raw)
+    urls = _extract_urls(raw)
+
+    _dbg(f"urls_found={len(urls)}")
 
     out = []
 
-    now = time.time()
+    now = int(time.time())
 
-    for url in raw:
+    for url in urls:
 
         vid = _extract_video_id(url)
+
+        if not vid:
+            continue
 
         if vid in posted_video_ids:
             continue
 
-        out.append(
-            {
-                "url": url,
-                "video_id": vid,
-                "source": f"yt:{vid}",
-                "title": "",
-                "ts": now,
-            }
-        )
+        out.append({
+            "url": url,
+            "video_id": vid,
+            "source": f"yt:{vid}",
+            "title": "",
+            "ts": now,
+        })
 
         if len(out) >= limit:
             break
+
+    _dbg(f"returning={len(out)}")
 
     return out
