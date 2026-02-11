@@ -1,4 +1,4 @@
-# redeploy: clean fetcher, no leading indent
+# clean youtube fetcher: metadata only, no format selection
 from __future__ import annotations
 
 import os
@@ -11,6 +11,7 @@ import yt_dlp
 
 
 COOKIES_PATH = os.getenv("YT_COOKIES_PATH", "/data/cookies.txt").strip()
+
 MAX_QUERIES = int(os.getenv("YT_MAX_QUERIES", "6"))
 SEARCH_PER_QUERY = int(os.getenv("YT_SEARCH_PER_QUERY", "6"))
 MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "4"))
@@ -18,11 +19,12 @@ MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "4"))
 MAX_DURATION_SEC = int(os.getenv("YT_MAX_DURATION_SEC", str(12 * 60)))
 MIN_DURATION_SEC = int(os.getenv("YT_MIN_DURATION_SEC", "80"))
 
+
 BAD_TITLE_RE = re.compile(
     r"(?i)\b("
     r"concert|концерт|full|playlist|album|mix|compilation|"
     r"live|session|stream|hour|час|"
-    r"karaoke|lyrics|"
+    r"karaoke|lyrics"
     r")\b"
 )
 
@@ -65,6 +67,17 @@ def _ydl_opts(flat: bool) -> dict:
         "noplaylist": True,
         "socket_timeout": 20,
         "retries": 1,
+
+        # КРИТИЧНО: только метаданные
+        "simulate": True,
+        "ignore_no_formats_error": True,
+
+        # помогает обходить format errors
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"]
+            }
+        },
     }
 
     if flat:
