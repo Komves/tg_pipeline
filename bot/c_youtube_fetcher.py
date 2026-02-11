@@ -1,197 +1,319 @@
+ from __future__ import annotations
+
+import os
+import re
 import time
+from typing import Dict, Any, List, Optional, Set
+
 from yt_dlp import YoutubeDL
 
-# максимум 10 минут
-MAX_DURATION = 600
 
-# cookies должны лежать на персистент диске Render
-COOKIE_FILE = "/data/cookies.txt"
+# ------------------------
+# Config
+# ------------------------
+DEBUG = (os.getenv("O_DEBUG", "0").strip() == "1")
 
-# сколько кандидатов максимум проверяем глубоко (чтоб не жрало ресурсы)
-MAX_DEEP_CHECKS_PER_QUERY = 6
+# Сколько ссылок нужно вернуть (приходит из main.py)
+# limit передаётся в get_batch()
 
-# сколько роликов просим у поиска на запрос (плоско)
-SEARCH_LIMIT_PER_QUERY = 12
+# Сколько попыток поиска/проверки делаем, если первые результаты "мусор/мертвые"
+MAX_SEARCH_CALLS = int(os.getenv("C_YT_MAX_SEARCH_CALLS", "6"))        # было много — держим умеренно
+SEARCH_RESULTS_PER_CALL = int(os.getenv("C_YT_SEARCH_RESULTS", "8"))   # не раздуваем
+MIN_INTERVAL_SEC = float(os.getenv("C_YT_MIN_INTERVAL_SEC", "0.8"))
 
-# задержка между запросами
-SLEEP_BETWEEN_QUERIES_SEC = 0.6
+# Фильтр по длительности (сек)
+MIN_DURATION_SEC = int(os.getenv("C_YT_MIN_DURATION_SEC", "90"))      # минимум 1:30
+MAX_DURATION_SEC = int(os.getenv("C_YT_MAX_DURATION_SEC", "900"))     # максимум 15:00 (чтобы не концерты)
 
-SEARCH_QUERIES = [
-    # EN
-    "rock cover song",
-    "metal cover song",
-    "acoustic cover song",
-    # RU
-    "кавер песня",
-    "рок кавер песня",
-    "метал кавер песня",
-    "акустический кавер песня",
-    # дополнительные вариации
-    "кавер на русском",
-    "рок кавер на русском",
-    "метал кавер на русском",
-]
+# Cookies: по умолчанию ищем на persistent disk
+# ВАЖНО: положи cookies.txt именно в /data/cookies.txt на Render
+COOKIES_FILE = (os.getenv("YT_COOKIES_FILE") or "/data/cookies.txt").strip()
 
-BAD_WORDS = [
-    "concert", "full concert", "live stream", "stream", "playlist", "full album",
-    "mix", "compilation", "сборник", "концерт", "альбом", "плейлист", "стрим"
-]
+# Если куки нет, всё равно попробуем, но YouTube может резать
+USE_COOKIES = os.path.exists(COOKIES_FILE)
+
+_last_call_ts = 0.0
 
 
 def _log(msg: str) -> None:
-    now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-    print(f"[c_youtube] {now} {msg}", flush=True)
+    if DEBUG:
+        now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+        print(f"[c_youtube] {now} {msg}", flush=True)
 
 
-def _is_bad_title(title: str) -> bool:
+def _sleep_rate_limit() -> None:
+    global _last_call_ts
+    now = time.time()
+    dt = now - _last_call_ts
+    if dt < MIN_INTERVAL_SEC:
+        time.sleep(MIN_INTERVAL_SEC - dt)
+    _last_call_ts = time.time()
+
+
+def _clean(s: str) -> str:
+    return (s or "").strip()
+
+
+def _is_youtube_url(url: str) -> bool:
+    u = (url or "").lower()
+    return ("youtube.com/watch" in u) or ("youtu.be/" in u)
+
+
+def _extract_video_id(url: str) -> str:
+    if not url:
+        return ""
+    # youtu.be/<id>
+    m = re.search(r"youtu\.be/([A-Za-z0-9_\-]{6,})", url)
+    if m:
+        return m.group(1)
+    # youtube.com/watch?v=<id>
+    m = re.search(r"[?&]v=([A-Za-z0-9_\-]{6,})", url)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _bad_title(title: str) -> bool:
     t = (title or "").lower()
-    for w in BAD_WORDS:
+
+    # режем концерты/плейлисты/сборники/альбомы/миксы
+    bad_words = [
+        "concert", "концерт", "live session", "лайв", "живой концерт",
+        "full concert", "полный концерт", "полностью", "full show",
+        "playlist", "плейлист", "mix", "микс",
+        "album", "альбом", "сборник",
+        "compilation", "сборка",
+        "час", "1 час", "2 час", "3 час", "hours", "hour",
+        "full", "полная версия", "полное выступление",
+    ]
+
+    for w in bad_words:
         if w in t:
             return True
+
     return False
 
 
-def _flat_search(query: str, limit: int):
+def _looks_like_cover(title: str) -> bool:
+    t = (title or "").lower()
+    # хотим каверы: cover / кавер / tribute / guitar cover etc
+    good = ["cover", "кавер", "tribute", "guitar cover", "metal cover", "rock cover", "acoustic cover"]
+    return any(g in t for g in good)
+
+
+def _yt_opts() -> Dict[str, Any]:
     """
-    Плоский поиск: достаем только ids/titles, без форматов.
-    Это резко снижает шанс упасть на 'requested format not available'.
+    Настройки yt-dlp:
+    - android client сильно снижает блокировки
+    - cookiesfile если есть
     """
-    ydl_opts = {
+    opts: Dict[str, Any] = {
         "quiet": True,
-        "cookiefile": COOKIE_FILE,
-        "skip_download": True,
-        "extract_flat": "in_playlist",
-        "noplaylist": True,
+        "no_warnings": True,
         "nocheckcertificate": True,
-        # важное: меньше триггеров на защиту
+        "noplaylist": True,
+        "extract_flat": False,   # нам нужен duration/title
+        "skip_download": True,
+        "retries": 1,
+        "socket_timeout": 20,
+        "http_chunk_size": 0,
+
+        # КЛЮЧЕВОЕ: клиент android
         "extractor_args": {"youtube": {"player_client": ["android"]}},
     }
 
-    try:
-        with YoutubeDL(ydl_opts) as ydl:
-            data = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-            entries = (data or {}).get("entries") or []
-            out = []
-            for e in entries:
-                if not e:
-                    continue
-                vid = e.get("id") or e.get("url")
-                title = e.get("title") or ""
-                if not vid:
-                    continue
-                if _is_bad_title(title):
-                    continue
-                out.append({"id": vid, "title": title})
-            return out
-    except Exception as e:
-        _log(f"flat search error: {e}")
-        return []
+    if USE_COOKIES:
+        opts["cookiefile"] = COOKIES_FILE
+
+    return opts
 
 
-def _deep_get_info(video_id: str):
+def _search_yt(query: str, max_results: int) -> List[Dict[str, Any]]:
     """
-    Глубокая проверка: получаем duration.
-    Здесь и появляются ошибки форматов/защиты — поэтому ловим всё и пропускаем.
+    Возвращает entries от ytsearch.
     """
-    url = f"https://www.youtube.com/watch?v={video_id}"
+    q = f"ytsearch{max_results}:{query}"
+    _sleep_rate_limit()
+    with YoutubeDL(_yt_opts()) as ydl:
+        info = ydl.extract_info(q, download=False)
+    entries = info.get("entries") or []
+    out = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        out.append(e)
+    return out
 
-    ydl_opts = {
-        "quiet": True,
-        "cookiefile": COOKIE_FILE,
-        "skip_download": True,
-        "noplaylist": True,
-        "nocheckcertificate": True,
 
-        # КРИТИЧНО: не требуем конкретный формат
-        "format": "best",
-
-        # КРИТИЧНО: не падать, если у ролика нет форматов (или YouTube не отдал)
-        "ignore_no_formats_error": True,
-        "ignoreerrors": True,
-
-        # часто помогает обходить часть "challenge solving failed"
-        "extractor_args": {"youtube": {"player_client": ["android"]}},
-    }
-
-    try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return info
-    except Exception as e:
-        _log(f"deep info error for {url}: {e}")
+def _validate_video(url: str) -> Optional[Dict[str, Any]]:
+    """
+    Проверяем что видео реально парсится и это не "только картинки".
+    """
+    if not url:
         return None
 
+    _sleep_rate_limit()
+    try:
+        with YoutubeDL(_yt_opts()) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        _log(f"validate fail url={url} err={e}")
+        return None
 
-def get_batch(limit=2, posted_video_ids=None, last_sent_by_source=None):
-    posted_video_ids = posted_video_ids or set()
-    out = []
-    used = set()
+    if not isinstance(info, dict):
+        return None
 
-    for qi, query in enumerate(SEARCH_QUERIES, start=1):
-        _log(f"query={qi}/{len(SEARCH_QUERIES)} theme='{query}'")
+    # Бывает, что YouTube отдаёт только thumbnails — тогда duration отсутствует
+    title = _clean(info.get("title") or "")
+    duration = info.get("duration")
+    if duration is None:
+        _log(f"validate got no duration (likely blocked) url={url} title={title[:60]}")
+        return None
 
-        flat = _flat_search(query, SEARCH_LIMIT_PER_QUERY)
-        _log(f"urls_found={len(flat)}")
+    try:
+        dur = int(duration)
+    except Exception:
+        return None
 
-        deep_checked = 0
+    # фильтры
+    if dur < MIN_DURATION_SEC or dur > MAX_DURATION_SEC:
+        return None
 
-        for cand in flat:
-            vid = (cand.get("id") or "").strip()
-            title = (cand.get("title") or "").strip()
+    if not title or _bad_title(title):
+        return None
 
-            if not vid:
-                continue
-            if vid in posted_video_ids or vid in used:
-                continue
-            if _is_bad_title(title):
-                continue
+    # лёгкая подсказка: хотим каверность
+    # не делаем это жёстким, но предпочтём такие
+    info["_is_coverish"] = _looks_like_cover(title)
 
-            used.add(vid)
+    return info
 
-            # ограничиваем "глубокие" проверки, чтобы не грузить и не упираться в защиту
-            if deep_checked >= MAX_DEEP_CHECKS_PER_QUERY:
+
+def get_batch(
+    limit: int,
+    posted_video_ids: Set[str],
+    last_sent_by_source: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """
+    Возвращает список айтемов формата:
+      {
+        "feed": "c_youtube",
+        "url": "...",
+        "video_id": "...",
+        "source": "yt:<video_id>",
+        "title": "...",
+        "ts": <unix_ts>
+      }
+
+    ВАЖНО: тут НЕТ OpenAI. Только yt-dlp поиск + фильтры.
+    """
+
+    limit = int(limit or 0)
+    if limit <= 0:
+        return []
+
+    used_ids: Set[str] = set(posted_video_ids or set())
+
+    # Темы: добавили русское слово "кавер" + "на русском"
+    # Плюс минус-слова чтобы не вытаскивало концерты/плейлисты.
+    themes = [
+        "rock cover song",
+        "acoustic cover",
+        "metal cover",
+        "kaver na russkom",
+        "кавер на русском",
+        "русский кавер",
+        "рок кавер",
+        "metal cover na russkom",
+    ]
+
+    negatives = "-concert -концерт -live -playlist -плейлист -album -альбом -mix -микс -full -час"
+
+    out: List[Dict[str, Any]] = []
+    checked = 0
+    dead_skipped = 0
+    calls = 0
+
+    # Сильно не раздуваем: ищем, валидируем, пока не соберём limit
+    for idx, theme in enumerate(themes, start=1):
+        if len(out) >= limit:
+            break
+        if calls >= MAX_SEARCH_CALLS:
+            break
+
+        query = f"{theme} {negatives}".strip()
+        calls += 1
+
+        try:
+            entries = _search_yt(query, SEARCH_RESULTS_PER_CALL)
+        except Exception as e:
+            _log(f"search error theme={theme!r} err={e}")
+            continue
+
+        _log(f"query={idx}/{len(themes)} theme={theme!r} urls_found={len(entries)}")
+
+        for e in entries:
+            if len(out) >= limit:
                 break
 
-            info = _deep_get_info(vid)
-            deep_checked += 1
+            # URL
+            url = _clean(e.get("webpage_url") or e.get("url") or "")
+            if not url:
+                # иногда entries только с id
+                vid = _clean(e.get("id") or "")
+                if vid:
+                    url = f"https://www.youtube.com/watch?v={vid}"
 
-            if not info:
-                _log(f"skip dead/filtered youtube: https://www.youtube.com/watch?v={vid}")
+            if not _is_youtube_url(url):
                 continue
 
-            duration = info.get("duration")
-            real_title = (info.get("title") or title).strip()
-
-            if not duration:
-                _log(f"skip no-duration youtube: https://www.youtube.com/watch?v={vid}")
+            vid = _extract_video_id(url)
+            if not vid:
                 continue
 
-            if duration > MAX_DURATION:
-                _log(f"skip too-long ({duration}s) youtube: https://www.youtube.com/watch?v={vid}")
+            if vid in used_ids:
                 continue
 
-            if _is_bad_title(real_title):
-                _log(f"skip bad-title youtube: https://www.youtube.com/watch?v={vid}")
+            checked += 1
+
+            info = _validate_video(url)
+            if info is None:
+                dead_skipped += 1
+                _log(f"skip dead/filtered youtube: {url}")
                 continue
 
-            out.append({
+            title = _clean(info.get("title") or "")
+            dur = int(info.get("duration") or 0)
+
+            # мягко приоритетим каверные тайтлы
+            is_coverish = bool(info.get("_is_coverish"))
+            item = {
                 "feed": "c_youtube",
-                "url": f"https://www.youtube.com/watch?v={vid}",
+                "url": url,
                 "video_id": vid,
-                "title": real_title,
                 "source": f"yt:{vid}",
+                "title": title,
+                "duration_sec": dur,
                 "ts": int(time.time()),
-            })
+                "_prio": 1 if is_coverish else 0,
+            }
 
-            if len(out) >= limit:
-                _log(f"returning={len(out)} limit={limit} checked={deep_checked}")
-                return out
+            out.append(item)
+            used_ids.add(vid)
 
-        _log(f"after query checked={deep_checked} collected={len(out)}")
-        time.sleep(SLEEP_BETWEEN_QUERIES_SEC)
-
+        # если уже что-то набрали — не надо выжигать все темы
         if len(out) >= limit:
             break
 
-    _log(f"returning={len(out)} limit={limit}")
+    # сортировка: сначала более “coverish”
+    out.sort(key=lambda x: (x.get("_prio", 0), x.get("ts", 0)), reverse=True)
+
+    # финально режем
+    out = out[:limit]
+
+    # убрать служебное
+    for it in out:
+        it.pop("_prio", None)
+
+    _log(f"returning={len(out)} limit={limit} calls={calls} checked={checked} dead_skipped={dead_skipped} cookies={USE_COOKIES}")
     return out
