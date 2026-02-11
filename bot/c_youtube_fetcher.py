@@ -2,53 +2,42 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import requests
-
+from openai import OpenAI
 
 # =========================
 # CONFIG
 # =========================
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+MODEL = (os.getenv("C_OPENAI_MODEL") or "gpt-4o-mini").strip()
 
-DEAD_CACHE_JSON = DATA_DIR / "yt_dead_cache.json"
-DEAD_TTL_SEC = int(os.getenv("C_YT_DEAD_TTL_SEC", "86400"))  # 24h default
+# сколько OpenAI вызовов максимум за один get_batch
+MAX_CALLS = int(os.getenv("C_YT_MAX_CALLS", "2"))          # было 3 — жрёт
+CANDIDATES_PER_CALL = int(os.getenv("C_YT_CAND_PER_CALL", "6"))  # было 10–12 — жрёт
+MAX_URLS_TO_CHECK = int(os.getenv("C_YT_MAX_CHECK", "16")) # верхняя граница на валидацию
 
-HTTP_TIMEOUT = float(os.getenv("C_YT_TIMEOUT_SEC", "12"))
-MAX_URLS_PER_QUERY = int(os.getenv("C_YT_MAX_URLS_PER_QUERY", "18"))  # кандидатов из HTML
-MAX_QUERIES_PER_CALL = int(os.getenv("C_YT_MAX_QUERIES_PER_CALL", "3"))  # сколько тем пробовать за один get_batch
+# RU/EN поведение
+RU_ONLY = (os.getenv("C_YT_RU_ONLY", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+RU_WEIGHT = float(os.getenv("C_YT_RU_WEIGHT", "0.75"))  # доля RU-тем в миксе (если не RU_ONLY)
+
+# Жёсткая фильтрация против концертов/стримов/плейлистов
+STRICT_ANTI_LIVE = (os.getenv("C_YT_STRICT_ANTI_LIVE", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+# oEmbed проверка (быстро показывает: видео живое/удалено/приватное)
+OEMBED_TIMEOUT = float(os.getenv("C_YT_OEMBED_TIMEOUT", "6"))
+HTTP_TIMEOUT = float(os.getenv("C_YT_HTTP_TIMEOUT", "8"))
 
 DEBUG = (os.getenv("C_YT_DEBUG", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
 
-UA = os.getenv(
-    "C_YT_UA",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-)
-
-# Темы. Можно править через env, но дефолт максимально “каверный”.
-DEFAULT_THEMES = [
-    "rock cover live session 2023 2024",
-    "metal cover guitar vocal 2022 2023",
-    "post-hardcore cover acoustic rock",
-    "female vocal rock cover live 2023 2024",
-    "guitar cover live session",
-]
-
-THEMES_ENV = (os.getenv("C_YT_THEMES") or "").strip()
-THEMES = [t.strip() for t in THEMES_ENV.split("|") if t.strip()] if THEMES_ENV else DEFAULT_THEMES
-
-# Фильтр по заголовку (чтобы “не кавер” меньше пролезал)
-TITLE_MUST_HAVE = re.compile(r"\b(cover|кавер|live session|live|session)\b", re.IGNORECASE)
-
-
-def _dbg(msg: str) -> None:
+# =========================
+# LOG
+# =========================
+def _log(msg: str) -> None:
     if not DEBUG:
         return
     now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
@@ -56,120 +45,223 @@ def _dbg(msg: str) -> None:
 
 
 # =========================
-# DEAD CACHE
+# HELPERS: youtube id / url
 # =========================
-def _load_dead_cache() -> Dict[str, float]:
-    if not DEAD_CACHE_JSON.exists():
-        return {}
-    try:
-        d = json.loads(DEAD_CACHE_JSON.read_text(encoding="utf-8"))
-        if isinstance(d, dict):
-            out: Dict[str, float] = {}
-            for k, v in d.items():
-                try:
-                    out[str(k)] = float(v)
-                except Exception:
-                    pass
-            return out
-    except Exception:
-        pass
-    return {}
+_YT_ID_RE = re.compile(r"(?:v=|\/shorts\/|youtu\.be\/)([A-Za-z0-9_\-]{6,})")
+
+def _extract_video_id(url: str) -> str:
+    u = (url or "").strip()
+    m = _YT_ID_RE.search(u)
+    if not m:
+        return ""
+    return (m.group(1) or "").strip()
+
+def _norm_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    # убираем мусор в конце
+    u = u.split("&pp=")[0]
+    u = u.split("&si=")[0]
+    u = u.split("?si=")[0]
+    u = u.strip()
+    return u
+
+def _is_playlist_or_channel(url: str) -> bool:
+    u = (url or "").lower()
+    if "list=" in u:
+        return True
+    if "/playlist" in u or "/channel/" in u or "/@" in u and "/video" not in u:
+        return True
+    return False
 
 
-def _save_dead_cache(d: Dict[str, float]) -> None:
-    try:
-        DEAD_CACHE_JSON.write_text(json.dumps(d), encoding="utf-8")
-    except Exception:
-        pass
+# =========================
+# CONTENT FILTERS
+# =========================
+_BAD_WORDS_RU = [
+    "концерт", "стрим", "трансляц", "прямой эфир", "полный", "полная версия", "полностью",
+    "сборник", "подборка", "плейлист", "альбом", "микс", "час", "часа", "2 часа", "3 часа",
+    "live", "лайв", "live session", "full concert", "full show", "full set",
+]
+_BAD_WORDS_EN = [
+    "concert", "full concert", "live", "livestream", "stream", "full show", "full set",
+    "playlist", "album", "mix", "compilation", "2 hours", "3 hours", "hour",
+    "session", "setlist",
+]
 
-
-def _is_dead_cached(dead: Dict[str, float], vid: str) -> bool:
-    ts = dead.get(vid)
-    if not ts:
+def _looks_like_long_or_live(title: str) -> bool:
+    t = (title or "").lower()
+    if not t:
         return False
-    return (time.time() - ts) <= DEAD_TTL_SEC
+    for w in _BAD_WORDS_RU:
+        if w in t:
+            return True
+    for w in _BAD_WORDS_EN:
+        if w in t:
+            return True
+    # грубо: "1:58:00" и т.п.
+    if re.search(r"\b\d{1,2}:\d{2}:\d{2}\b", t):
+        return True
+    return False
 
-
-def _mark_dead(dead: Dict[str, float], vid: str) -> None:
-    dead[vid] = time.time()
+def _passes_url_filters(url: str) -> bool:
+    u = (url or "").strip()
+    if not u:
+        return False
+    lu = u.lower()
+    if "youtube.com" not in lu and "youtu.be" not in lu:
+        return False
+    if _is_playlist_or_channel(u):
+        return False
+    if STRICT_ANTI_LIVE and ("live" in lu or "stream" in lu):
+        # это может быть и короткий live, но ты просил резать жёстко
+        return False
+    vid = _extract_video_id(u)
+    return bool(vid)
 
 
 # =========================
-# SCRAPE + VERIFY
+# OEMBED VALIDATION (fast "dead link" check + title)
 # =========================
-_VID_RE = re.compile(r"watch\?v=([A-Za-z0-9_-]{11})")
-
-
-def _search_video_ids(query: str) -> List[str]:
-    """
-    Достаём видео-id из HTML страницы результатов.
-    """
-    q = (query or "").strip()
-    if not q:
-        return []
-
-    url = "https://www.youtube.com/results"
-    params = {"search_query": q}
-
+def _oembed(url: str) -> Optional[dict]:
+    # YouTube oEmbed: 200 => ok, 404 => deleted/private/unavailable
+    api = "https://www.youtube.com/oembed"
     try:
-        r = requests.get(
-            url,
-            params=params,
-            timeout=HTTP_TIMEOUT,
-            headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9,ru;q=0.8"},
-        )
-    except Exception as e:
-        _dbg(f"search request error: {type(e).__name__}: {e}")
-        return []
+        r = requests.get(api, params={"url": url, "format": "json"}, timeout=OEMBED_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
 
-    if r.status_code != 200:
-        _dbg(f"search http={r.status_code}")
-        return []
+def _validate_and_enrich(url: str) -> Tuple[bool, str]:
+    """
+    returns (ok, title)
+    """
+    u = _norm_url(url)
+    if not _passes_url_filters(u):
+        return (False, "")
+    data = _oembed(u)
+    if not data:
+        return (False, "")
+    title = (data.get("title") or "").strip()
+    if _looks_like_long_or_live(title):
+        return (False, title)
+    return (True, title)
 
-    html = r.text or ""
-    ids = _VID_RE.findall(html)
 
-    # dedupe keep order
+# =========================
+# THEMES (RU + EN)
+# =========================
+def _themes_ru() -> List[str]:
+    # цель: короткие каверы, не концерты
+    return [
+        "кавер на русском рок 2023 2024 -концерт -стрим -плейлист -альбом -микс",
+        "русский кавер rock cover на русском 2023 2024 -концерт -стрим -плейлист -альбом",
+        "метал кавер на русском 2022 2023 -концерт -стрим -плейлист -альбом",
+        "рок кавер девушка вокал на русском -концерт -стрим -плейлист",
+        "кавер песня на русском 2022 2023 -live -concert -full -playlist -album",
+    ]
+
+def _themes_en() -> List[str]:
+    return [
+        "rock cover live session 2023 2024 -full -concert -playlist -album -mix",
+        "metal cover guitar vocal 2022 2023 -full -concert -playlist -album -mix",
+        "acoustic rock cover 2023 2024 -full -concert -playlist -album",
+    ]
+
+def _pick_theme() -> str:
+    ru = _themes_ru()
+    en = _themes_en()
+    if RU_ONLY:
+        return random.choice(ru)
+    # микс: чаще RU
+    if random.random() < RU_WEIGHT:
+        return random.choice(ru)
+    return random.choice(en)
+
+
+# =========================
+# OPENAI SEARCH
+# =========================
+def _openai_find_urls(theme: str, k: int) -> List[str]:
+    """
+    Просим модель вернуть ТОЛЬКО JSON с urls (без болтовни).
+    """
+    client = OpenAI()
+
+    sys = (
+        "You are a search assistant. Return ONLY valid JSON. No markdown, no explanations."
+    )
+
+    # просим отдавать только обычные watch/shorts ссылки, без плейлистов
+    user = {
+        "task": "find_youtube_urls",
+        "query": theme,
+        "requirements": [
+            "Return only YouTube video URLs (watch?v=... or youtu.be/... or /shorts/...)",
+            "Do NOT return playlists or channels",
+            "Prefer music covers (кавер/cover). Avoid concerts, live streams, full shows, playlists, mixes.",
+            "Return short normal videos (single song), not multi-hour sets.",
+        ],
+        "count": int(k),
+        "output_format": {"items": [{"url": "https://www.youtube.com/watch?v=..."}]},
+    }
+
+    resp = client.responses.create(
+        model=MODEL,
+        input=[
+            {"role": "system", "content": sys},
+            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+        ],
+    )
+
+    text = (getattr(resp, "output_text", "") or "").strip()
+    _log(f"raw_out_len={len(text)} head={text[:120].replace(chr(10),' ')}")
+
+    # парсим JSON максимально терпимо
+    data = None
+    try:
+        data = json.loads(text)
+    except Exception:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+            except Exception:
+                data = None
+
+    urls: List[str] = []
+
+    if isinstance(data, dict):
+        items = data.get("items")
+        if isinstance(items, list):
+            for it in items:
+                if isinstance(it, dict):
+                    u = _norm_url(it.get("url") or "")
+                    if u:
+                        urls.append(u)
+
+    # fallback: вытащим ссылки регексом, если модель накосячила
+    if not urls:
+        for u in re.findall(r"https?://[^\s\"'<>]+", text):
+            u = _norm_url(u)
+            if u:
+                urls.append(u)
+
+    # чистим + дедуп
     out: List[str] = []
-    seen: Set[str] = set()
-    for vid in ids:
-        if vid in seen:
+    seen = set()
+    for u in urls:
+        if u in seen:
             continue
-        seen.add(vid)
-        out.append(vid)
-        if len(out) >= MAX_URLS_PER_QUERY:
+        seen.add(u)
+        out.append(u)
+        if len(out) >= k:
             break
 
     return out
-
-
-def _oembed_title(vid: str) -> Optional[str]:
-    """
-    Валидация + получение title.
-    Если oEmbed не отдаёт — считаем “мертвым/закрытым/недоступным”.
-    """
-    watch = f"https://www.youtube.com/watch?v={vid}"
-    oembed = "https://www.youtube.com/oembed"
-    try:
-        r = requests.get(
-            oembed,
-            params={"url": watch, "format": "json"},
-            timeout=HTTP_TIMEOUT,
-            headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9,ru;q=0.8"},
-        )
-    except Exception:
-        return None
-
-    if r.status_code != 200:
-        return None
-
-    try:
-        data = r.json()
-    except Exception:
-        return None
-
-    title = (data.get("title") or "").strip()
-    return title or None
 
 
 # =========================
@@ -177,95 +269,80 @@ def _oembed_title(vid: str) -> Optional[str]:
 # =========================
 def get_batch(
     limit: int,
-    *,
     posted_video_ids: Set[str],
     last_sent_by_source: Dict[str, str],
-) -> List[Dict[str, Any]]:
+) -> List[Dict[str, object]]:
     """
-    Возвращает items ДЛЯ main.py:
-    {
-      "feed": "c_youtube",
-      "url": "...",
-      "video_id": "...",
-      "title": "...",
-      "source": "q:<slug>",
-      "ts": int
-    }
+    Returns list of items with fields:
+      feed='c_youtube', url, title, video_id, item_id, source, ts
     """
     limit = max(0, int(limit))
     if limit <= 0:
         return []
 
-    posted_video_ids = set(posted_video_ids or set())
-    last_sent_by_source = dict(last_sent_by_source or {})
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        _log("OPENAI_API_KEY missing -> returning 0")
+        return []
 
-    dead = _load_dead_cache()
-    now_ts = int(time.time())
+    out: List[Dict[str, object]] = []
+    seen_vids: Set[str] = set(posted_video_ids or set())
 
-    out: List[Dict[str, Any]] = []
-    dead_skipped = 0
+    calls = 0
     checked = 0
+    dead_skipped = 0
 
-    # сколько тем попробуем за один вызов
-    themes = THEMES[: max(1, MAX_QUERIES_PER_CALL)]
+    # небольшой “запас” кандидатов: но не бесим OpenAI
+    while len(out) < limit and calls < MAX_CALLS and checked < MAX_URLS_TO_CHECK:
+        calls += 1
+        theme = _pick_theme()
+        _log(f"call={calls}/{MAX_CALLS} theme='{theme}'")
 
-    for idx, theme in enumerate(themes, start=1):
-        if len(out) >= limit:
-            break
+        urls = _openai_find_urls(theme, CANDIDATES_PER_CALL)
+        _log(f"urls_found={len(urls)}")
 
-        theme = (theme or "").strip()
-        if not theme:
-            continue
-
-        _dbg(f"call={idx}/{len(themes)} theme={theme!r}")
-
-        vids = _search_video_ids(theme)
-        _dbg(f"urls_found={len(vids)}")
-
-        # slug для source (чтобы можно было “cooldown по теме” сделать при желании)
-        slug = re.sub(r"[^a-z0-9]+", "_", theme.lower()).strip("_")
-        source = f"q:{slug}" if slug else "q:default"
-
-        for vid in vids:
-            if len(out) >= limit:
+        for url in urls:
+            if checked >= MAX_URLS_TO_CHECK:
                 break
 
-            if not vid or len(vid) != 11:
+            url = _norm_url(url)
+            vid = _extract_video_id(url)
+            if not vid:
                 continue
-
-            if vid in posted_video_ids:
-                continue
-
-            if _is_dead_cached(dead, vid):
-                dead_skipped += 1
+            if vid in seen_vids:
                 continue
 
             checked += 1
-            title = _oembed_title(vid)
-            if not title:
-                _mark_dead(dead, vid)
+
+            ok, title = _validate_and_enrich(url)
+            if not ok:
                 dead_skipped += 1
-                _dbg(f"skip dead youtube: https://www.youtube.com/watch?v={vid}")
+                _log(f"skip dead youtube: {url}")
                 continue
 
-            # грубый фильтр “это кавер/лайв”
-            if not TITLE_MUST_HAVE.search(title):
-                # НЕ помечаем dead, просто нерелевантно
+            # финальная доп. фильтрация по title (на всякий)
+            if _looks_like_long_or_live(title):
+                dead_skipped += 1
+                _log(f"skip long/live title: {url} title='{title[:80]}'")
                 continue
 
-            out.append(
-                {
-                    "feed": "c_youtube",
-                    "url": f"https://www.youtube.com/watch?v={vid}",
-                    "video_id": vid,
-                    "title": title,
-                    "source": source,
-                    "ts": now_ts,
-                }
-            )
+            # source — коротко и стабильно
+            source = f"yt:{vid}"
 
-        # сохраняем кэш после каждой темы (чтобы при падениях не терять)
-        _save_dead_cache(dead)
+            item = {
+                "feed": "c_youtube",
+                "item_id": vid,
+                "video_id": vid,
+                "url": url,
+                "title": title,
+                "source": source,
+                "ts": int(time.time()),
+            }
 
-    _dbg(f"returning={len(out)} limit={limit} checked={checked} dead_skipped={dead_skipped}")
-    return out[:limit]
+            out.append(item)
+            seen_vids.add(vid)
+
+            if len(out) >= limit:
+                break
+
+    _log(f"returning={len(out)} limit={limit} calls={calls} checked={checked} dead_skipped={dead_skipped}")
+    return out
