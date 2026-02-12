@@ -436,13 +436,15 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     main.py will execute pipelines based on intent.
     """
     user_text = (user_text or "").strip()
+    intent = "chat"
+    reply = ""
     add_user(chat_id, user_id, user_text)
     touch(chat_id, user_id)    
     tl = user_text.lower()
     if ("веся" in tl or "веслава" in tl) and ("новост" in tl or "дайджест" in tl):
         reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
-    add_assistant(chat_id, user_id, reply)
-    return DialogDecision(intent="news", reply=reply)
+        add_assistant(chat_id, user_id, reply)
+        return DialogDecision(intent="news", reply=reply)
 
     # 0) Fast routing using persona rules (restores character + stable behavior)
     try:
