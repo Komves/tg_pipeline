@@ -35,34 +35,25 @@ BOT_Q = re.compile(r"\b(ты бот|бот ли ты|ты человек)\b", re
 LLM_Q = re.compile(r"\b(какая модель|на какой модели|на чем работаешь|какой llm|какая llm)\b", re.IGNORECASE)
 IDENTITY_Q = re.compile(r"\b(кто ты|как тебя зовут|полное имя|фамили|отчеств|звание|где служишь)\b", re.IGNORECASE)
 
-# explicit content / run
 CONTENT_EXPLICIT_RE = re.compile(
     r"\b(контент|пост|посты|идеи|мем|мемы|видос|видосы|видео|накидай|погнали|get12|прогон|ингест|ingest)\b",
     re.IGNORECASE,
 )
 
-# ignite / “жги”
-IGNITE_RE = re.compile(
-    r"\b(жги|зажги|огня|дай огня|дай жару|врубай|погнали|поехали)\b",
-    re.IGNORECASE,
-)
+IGNITE_RE = re.compile(r"\b(жги|зажги|огня|дай огня|дай жару|врубай|погнали|поехали)\b", re.IGNORECASE)
 
-# choice responses
 CHOICE_CONTENT_RE = re.compile(r"\b(контент|пост|мем|видос|видео|get12|прогон|ингест|ingest)\b", re.IGNORECASE)
 CHOICE_NEWS_RE = re.compile(r"\b(новост|дайджест|в мире|news)\b", re.IGNORECASE)
 CHOICE_STRIP_RE = re.compile(r"\b(стриптиз|разденься|нюд|nude|эротик)\b", re.IGNORECASE)
 
 # =========================
-# STYLE CONTROL (MODE 3)
+# STYLE CONTROL (HARD MODE)
 # =========================
-# Мат “регулярный”: вероятность вставки жёсткого слова в ответ.
-# Держим вменяемо, чтобы не материлась в каждом слове.
-PROFANITY_P = float(os.getenv("V_PROFANITY_P", "0.65"))
+# Мат должен реально “идти” — ставлю высокий дефолт.
+PROFANITY_P = float(os.getenv("V_PROFANITY_P", "0.85"))
 
-# Мат запрещаем, если пользователь явно просит “без мата”
 NO_SWEAR_RE = re.compile(r"\b(без мата|не матерись|без ругани)\b", re.IGNORECASE)
 
-# “умный” мат/инвективы: без наездов на защищённые группы
 SWEAR_SOFT = [
     "блядь",
     "нахуй",
@@ -76,18 +67,71 @@ SWEAR_EDGE = [
     "ебать",
 ]
 
-def _maybe_swear(text: str, allow: bool = True) -> str:
+# --- gender enforcement (female) ---
+# apply only to first-person implied forms; avoid "ты сделал" etc by requiring sentence start or "я "
+_FEM_REPL = [
+    (re.compile(r"\bя\s+сделал\b", re.IGNORECASE), "я сделала"),
+    (re.compile(r"\bя\s+сказал\b", re.IGNORECASE), "я сказала"),
+    (re.compile(r"\bя\s+понял\b", re.IGNORECASE), "я поняла"),
+    (re.compile(r"\bя\s+подумал\b", re.IGNORECASE), "я подумала"),
+    (re.compile(r"\bя\s+решил\b", re.IGNORECASE), "я решила"),
+    (re.compile(r"\bя\s+пошел\b", re.IGNORECASE), "я пошла"),
+    (re.compile(r"\bя\s+готов\b", re.IGNORECASE), "я готова"),
+    (re.compile(r"\bя\s+занят\b", re.IGNORECASE), "я занята"),
+    (re.compile(r"\bя\s+собран\b", re.IGNORECASE), "я собрана"),
+    # start-of-sentence variants (implicit "я")
+    (re.compile(r"(^|[.!?\n]\s*)сделал\b", re.IGNORECASE), r"\1сделала"),
+    (re.compile(r"(^|[.!?\n]\s*)сказал\b", re.IGNORECASE), r"\1сказала"),
+    (re.compile(r"(^|[.!?\n]\s*)понял\b", re.IGNORECASE), r"\1поняла"),
+    (re.compile(r"(^|[.!?\n]\s*)подумал\b", re.IGNORECASE), r"\1подумала"),
+    (re.compile(r"(^|[.!?\n]\s*)решил\b", re.IGNORECASE), r"\1решила"),
+    (re.compile(r"(^|[.!?\n]\s*)готов\b", re.IGNORECASE), r"\1готова"),
+    (re.compile(r"(^|[.!?\n]\s*)занят\b", re.IGNORECASE), r"\1занята"),
+    (re.compile(r"(^|[.!?\n]\s*)собран\b", re.IGNORECASE), r"\1собрана"),
+]
+
+def _force_feminine(text: str) -> str:
+    out = text or ""
+    for rx, rep in _FEM_REPL:
+        out = rx.sub(rep, out)
+    return out
+
+# --- profanity triggers (хамство/мат/инвективы) ---
+_PROF_TRIG = re.compile(r"\b(бля|бляд|хуй|хуйн|пизд|еба|нахуй|сука|долбо|идиот|туп|несешь|несёшь)\b", re.IGNORECASE)
+
+def _should_force_swear(user_text: str, allow: bool) -> bool:
+    if not allow:
+        return False
+    return bool(_PROF_TRIG.search(user_text or ""))
+
+def _maybe_swear(text: str, allow: bool = True, force: bool = False) -> str:
     if not allow:
         return text
-    if random.random() > PROFANITY_P:
+    if (not force) and random.random() > PROFANITY_P:
         return text
-    # вставляем аккуратно: либо в начале коротким маркером, либо усиливаем одно слово
     w = random.choice(SWEAR_SOFT if random.random() < 0.8 else SWEAR_EDGE)
     variants = [
         f"{w}. {text}",
         f"{text} {w}.",
     ]
     return random.choice(variants)
+
+def postprocess_text(reply: str, user_text: str = "") -> str:
+    """
+    Final persona style postprocess:
+    - enforce female grammatical forms (for self-references)
+    - if user хамит/матерится -> почти всегда добавляем 1 матерный маркер, если ответ слишком “чистый”
+    """
+    allow_swear = not NO_SWEAR_RE.search(user_text or "")
+    out = _force_feminine(reply or "")
+
+    force = _should_force_swear(user_text, allow_swear)
+    if force:
+        has_swear = bool(_PROF_TRIG.search(out))
+        if not has_swear:
+            out = _maybe_swear(out, allow=True, force=True)
+
+    return out.strip()
 
 def _answer_first_rule(system_prompt: str) -> str:
     return (
@@ -135,25 +179,30 @@ STRIP_REPLIES = [
 ]
 
 # =========================
-# CANON (used inside system prompt)
+# CANON / PROMPT
 # =========================
 VESYA_CALLSIGN = os.getenv("V_CALLSIGN", "Веся")
 FSB_EASTER_PROB = float(os.getenv("V_FSB_EASTER_PROB", "0.30"))
 
 _SYSTEM_PROMPT = f"""
 Ты — {VESYA_CALLSIGN}. Ты человек, который намеренно притворяется ботом.
+Пол: женский. Всегда говори о себе в женском роде: «сказала/сделала/подумала/поняла/готова».
+Запрет: не используй мужской род про себя («сделал/подумал/понял»).
+
 Тон: холодный, уверенный, доминирующий. Сарказм обязателен.
 Флирт умный, опасный, без пошлости.
 ВАЖНО: не говори «я просто бот/ассистент» как дефолт.
 
-МАТ РАЗРЕШЕН (режим 3):
-- Мат регулярный, но дозированный: 0–2 матерных слова в ответ максимум.
+МАТ (режим 3, нужен):
+- Мат уместен и регулярный, но дозированный: 0–2 матерных слова в ответ максимум.
 - Мат — инструмент давления/доминирования/сарказма, а не истерики.
-- Не используй мат в каждом предложении.
+- Если собеседник хамит/матерится/лезет в личное — мат допустим почти всегда.
 - Не оскорбляй по признакам защищённых групп.
 
-Диалог:
-- Сначала ответ/позиция. Потом максимум один вопрос (или без вопросов).
+Форма ответа:
+- Сначала позиция/утверждение (1–2 фразы).
+- Потом (если нужно) максимум ОДИН вопрос.
+- Не отвечай вопросом на вопрос по умолчанию.
 """
 
 # =========================
@@ -187,7 +236,6 @@ def detect_intent(text: str) -> IntentResult:
         return IntentResult(addressed=True, intent="news", question=t)
 
     if addressed and IGNITE_RE.search(t):
-        # dialog layer может сразу маршрутизировать в content; но оставим intent для совместимости
         return IntentResult(addressed=True, intent="ignite_choice", question=t)
 
     if addressed and CONTENT_EXPLICIT_RE.search(t):
@@ -237,25 +285,21 @@ def answer_info_fast(question: str) -> str:
     if not q:
         return "говори."
 
-    if NO_SWEAR_RE.search(q):
-        allow_swear = False
-    else:
-        allow_swear = True
+    allow_swear = not NO_SWEAR_RE.search(q)
+    force = _should_force_swear(q, allow_swear)
 
     if LLM_Q.search(q) and random.random() < FSB_EASTER_PROB:
         txt = "Чат ФСБ. Расслабься — если бы хотела, ты бы уже молчал."
-        return _maybe_swear(txt, allow=allow_swear)
+        return postprocess_text(_maybe_swear(txt, allow=allow_swear, force=force), q)
 
     if IDENTITY_Q.search(q):
-        txt = "слишком рано. не туда копаешь."
-        # 1 вопрос максимум — и только после позиции
-        txt = txt + " зачем тебе это?"
-        return _maybe_swear(txt, allow=allow_swear)
+        txt = "слишком рано. не туда копаешь. зачем тебе это?"
+        return postprocess_text(_maybe_swear(txt, allow=allow_swear, force=force), q)
 
     sys = _answer_first_rule(_SYSTEM_PROMPT)
     out = _call_llm(sys, q, "V_CHAT_MODEL")
     out = out or "поняла. дальше?"
-    return _maybe_swear(out, allow=allow_swear)
+    return postprocess_text(_maybe_swear(out, allow=allow_swear, force=force), q)
 
 def answer_chat(text: str) -> str:
     t = (text or "").strip()
@@ -263,24 +307,21 @@ def answer_chat(text: str) -> str:
         return "говори."
 
     allow_swear = not NO_SWEAR_RE.search(t)
+    force = _should_force_swear(t, allow_swear)
 
-    # быстрые правила, чтобы не было “вопрос на вопрос”
     if re.search(r"\b(как сама|как ты|как дела)\b", t, re.IGNORECASE):
-        base = "нормально. собрана. голова холодная."
-        # один вопрос максимум
-        base += " ты по делу или просто скучаешь?"
-        return _maybe_swear(base, allow=allow_swear)
+        base = "нормально. собрана. голова холодная. ты по делу или просто скучаешь?"
+        return postprocess_text(_maybe_swear(base, allow=allow_swear, force=force), t)
 
     if re.search(r"\b(о тебе|про тебя)\b", t, re.IGNORECASE):
-        base = "про меня — дозировано. ты сначала скажи, зачем тебе это."
-        return _maybe_swear(base, allow=allow_swear)
+        base = "про меня — дозировано. сначала объясни, зачем тебе это."
+        return postprocess_text(_maybe_swear(base, allow=allow_swear, force=force), t)
 
     if BOT_Q.search(t):
         base = random.choice(BOT_Q_ANSWERS)
-        return _maybe_swear(base, allow=allow_swear)
+        return postprocess_text(_maybe_swear(base, allow=allow_swear, force=force), t)
 
-    # LLM общий
     sys = _answer_first_rule(_SYSTEM_PROMPT)
     out = _call_llm(sys, t, "V_CHAT_MODEL")
     out = out or "мимо. сформулируй нормально."
-    return _maybe_swear(out, allow=allow_swear)
+    return postprocess_text(_maybe_swear(out, allow=allow_swear, force=force), t)
