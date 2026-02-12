@@ -370,6 +370,9 @@ def build_html_message(items: List[DigestItem], *, hours: int) -> str:
 
 
 async def get_news_digest(*, news_sources_path: Path, hours: int = 12, limit: int = 10) -> List[DigestItem]:
+    from ingest_runner import run_once
+    run_once()
+
     """
     Главная функция для main.py:
     - память на RETENTION_DAYS
