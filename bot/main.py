@@ -118,20 +118,25 @@ async def vesya_handler(message: Message) -> None:
 
 
     if intent == "content":
-        if reply:
-            from aiogram.enums import ChatAction
-            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-            await message.answer(reply)
-        else:
-            from aiogram.enums import ChatAction
-            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-            await message.answer("ок. сейчас соберу контент.")
 
-            from aiogram.enums import ChatAction
-            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+        from aiogram.enums import ChatAction
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
+    if reply:
+        await message.answer(reply)
+    else:
+        await message.answer("сек, собираю горячее.")
 
-        return
+    # ЗАПУСК CONTENT PIPELINE
+    from c_youtube_fetcher import fetch_and_send_videos
+
+    await fetch_and_send_videos(
+        bot=message.bot,
+        chat_id=message.chat.id
+    )
+
+    return
+
 
 
     if intent == "end":
