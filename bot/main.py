@@ -128,12 +128,24 @@ async def vesya_handler(message: Message) -> None:
         await message.answer("сек, собираю горячее.")
 
     # ЗАПУСК CONTENT PIPELINE
-    from c_youtube_fetcher import fetch_and_send_videos
+    from c_youtube_fetcher import get_batch
 
-    await fetch_and_send_videos(
-        bot=message.bot,
-        chat_id=message.chat.id
-    )
+      
+    items = get_batch(
+    limit=5,
+    posted_video_ids=set(),
+    last_sent_by_source={},
+)
+
+    if not items:
+        await message.answer("пусто. позже принесу что-то горячее.")
+    return
+
+    for it in items:
+        title = (it.get("title") or "").strip()
+        url = (it.get("url") or "").strip()
+        if url:
+            await message.answer(f"{title}\n{url}" if title else url)
 
     return
 
