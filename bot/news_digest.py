@@ -59,6 +59,10 @@ def _parse_iso(s: str) -> Optional[datetime]:
 
 
 def _is_text_only_links(text: str) -> bool:
+    """
+    True если текст фактически состоит только из ссылок/пробелов/пунктуации.
+    Такие посты игнорируем.
+    """
     if not text:
         return True
     t = text.strip()
@@ -66,6 +70,7 @@ def _is_text_only_links(text: str) -> bool:
         return True
 
     no_urls = _URL_RE.sub(" ", t)
+    # оставить только буквы/цифры
     alnum = re.sub(
         r"[^0-9A-Za-zА-Яа-яЁёЇїІіЄєҐґ\u00C0-\u024F\u1E00-\u1EFF]",
         "",
@@ -80,15 +85,23 @@ def _ensure_seen_header() -> None:
 
 
 def _url_hash(url: str) -> str:
-    return hashlib.sha1((url or "").strip().encode("utf-8")).hexdigest()[:16]
+    u = (url or "").strip()
+    return hashlib.sha1(u.encode("utf-8")).hexdigest()[:16]
 
 
 def _norm_event_text(s: str) -> str:
+    """
+    Нормализация "смысла" события для стабильного event_id:
+    - lower
+    - убираем URL
+    - убираем лишние символы (оставляем буквы/цифры/пробел)
+    - схлопываем пробелы
+    """
     if not s:
         return ""
     t = s.lower()
     t = _URL_RE.sub(" ", t)
-    t = re.sub(r"[^0-9a-zа-яёіїєґ\s]", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"[^0-9a-zа-яёіїєґ\u00C0-\u024F\u1E00-\u1EFF\s]", " ", t, flags=re.IGNORECASE)
     t = _WS_RE.sub(" ", t).strip()
     return t
 
@@ -96,11 +109,18 @@ def _norm_event_text(s: str) -> str:
 def _event_id_from_title_summary(title: str, summary: str) -> str:
     base = (_norm_event_text(title) + " | " + _norm_event_text(summary)).strip()
     if not base:
+        base = _norm_event_text(title) or _norm_event_text(summary)
+    if not base:
         base = "empty"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
 
 
 def _load_seen_sets() -> tuple[set[str], set[str]]:
+    """
+    Возвращает два множества:
+      - seen_event_ids: чтобы не повторять СОБЫТИЯ
+      - seen_url_ids: чтобы не повторять ТОЧНО ТЕ ЖЕ ПОСТЫ (back-compat)
+    """
     if not NEWS_SEEN_TSV.exists():
         return set(), set()
 
@@ -111,10 +131,15 @@ def _load_seen_sets() -> tuple[set[str], set[str]]:
         if not line.strip() or line.startswith("ts_utc"):
             continue
         parts = line.split("\t")
-        if len(parts) >= 2:
-            seen_event.add(parts[1])
+        if len(parts) < 2:
+            continue
+        eid = (parts[1] or "").strip()
+        if eid:
+            seen_event.add(eid)
         if len(parts) >= 3:
-            seen_url.add(_url_hash(parts[2]))
+            u = (parts[2] or "").strip()
+            if u:
+                seen_url.add(_url_hash(u))
 
     return seen_event, seen_url
 
@@ -122,8 +147,41 @@ def _load_seen_sets() -> tuple[set[str], set[str]]:
 def _append_seen(event_id: str, url: str, title: str) -> None:
     _ensure_seen_header()
     ts = _now_utc().isoformat()
+    event_id = (event_id or "").strip()
+    if not event_id:
+        return
+    url = (url or "").replace("\t", " ").strip()
+    title = (title or "").replace("\t", " ").strip()
     with NEWS_SEEN_TSV.open("a", encoding="utf-8") as f:
         f.write(f"{ts}\t{event_id}\t{url}\t{title}\n")
+
+
+def _prune_seen(retention_days: int) -> None:
+    if not NEWS_SEEN_TSV.exists():
+        return
+    cut = _now_utc() - timedelta(days=max(1, int(retention_days)))
+
+    lines = NEWS_SEEN_TSV.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        return
+
+    header = lines[0] if lines[0].startswith("ts_utc") else "ts_utc\tevent_id\turl\ttitle"
+    kept: List[str] = [header]
+
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        dt = _parse_iso((parts[0] or "").strip())
+        if dt and dt >= cut:
+            kept.append(line)
+
+    try:
+        NEWS_SEEN_TSV.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def load_news_sources(path: Path) -> List[str]:
@@ -132,30 +190,61 @@ def load_news_sources(path: Path) -> List[str]:
     out: List[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         s = line.strip()
-        if s and not s.startswith("#"):
-            out.append(s)
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
     return out
 
 
+def _source_to_username_like(src: str) -> str:
+    s = (src or "").strip()
+    for pref in ("https://t.me/", "http://t.me/", "t.me/"):
+        if s.startswith(pref):
+            s = s[len(pref):]
+            break
+    if s.startswith("@"):
+        s = s[1:]
+    return s.strip().strip("/")
+
+
 def _post_url(username: str, msg_id: int) -> str:
-    return f"https://t.me/{username}/{msg_id}"
+    u = (username or "").strip().strip("/")
+    return f"https://t.me/{u}/{int(msg_id)}"
 
 
 def _build_prompt(posts: List[Dict[str, str]], limit: int) -> str:
-    payload = [{"url": p["url"], "text": p["text"]} for p in posts[:2000]]
+    """
+    Просим строго JSON:
+      [{ "title": "...", "summary": "...", "url": "https://t.me/..." }, ...]
+    """
+    posts = posts[:2000]
+    payload = [{"url": p["url"], "text": p["text"]} for p in posts]
+    payload_json = json.dumps(payload, ensure_ascii=False)
+
     return (
-        f"Ты — редактор новостей. Выбери максимум {limit} главных новостей.\n"
-        f"Верни JSON массив: "
-        f'[{{"title":"...","summary":"...","url":"..."}}]\n'
-        f"Пиши на русском.\n\n"
-        f"Посты:\n{json.dumps(payload, ensure_ascii=False)}"
+        f"Ты — редактор новостного дайджеста.\n"
+        f"Тебе дан список Telegram-постов за последние 12 часов (url + text).\n"
+        f"Выбери максимум {limit} главных новостей.\n\n"
+        f"Правила:\n"
+        f"- Сгруппируй похожие посты в одно событие.\n"
+        f"- Важность выше, если событие встречается в нескольких постах/каналах.\n"
+        f"- Пиши на РУССКОМ.\n"
+        f"- Не придумывай факты, опирайся только на тексты.\n"
+        f"- Верни ТОЛЬКО JSON-массив объектов, без текста вокруг.\n"
+        f"- Каждый объект: {{\"title\":\"...\",\"summary\":\"...\",\"url\":\"...\"}}\n"
+        f"- title: до ~110 символов.\n"
+        f"- summary: 1 строка.\n"
+        f"- url: одна ссылка из входных url.\n\n"
+        f"Входные посты (JSON):\n{payload_json}\n"
     )
 
 
-# ===== FIXED OPENAI CALL =====
 def _call_openai(posts: List[Dict[str, str]], limit: int) -> List[dict]:
+    """
+    FIX: вызываем Responses API одинаково для GPT-4/4o/5 (как в chatgpt_dialog),
+    и парсим JSON даже если модель добавила обёртку вокруг массива.
+    """
     client = OpenAI()
-
     prompt = _build_prompt(posts, limit)
 
     resp = client.responses.create(
@@ -183,7 +272,6 @@ def _call_openai(posts: List[Dict[str, str]], limit: int) -> List[dict]:
 
     if isinstance(data, list):
         return [x for x in data if isinstance(x, dict)]
-
     return []
 
 
@@ -196,31 +284,61 @@ class DigestItem:
 
 
 async def fetch_posts_last_hours(sources: List[str], hours: int) -> List[Dict[str, str]]:
-    cutoff = _now_utc() - timedelta(hours=hours)
+    """
+    Требования:
+    - pinned игнорировать
+    - посты без текста игнорировать
+    - посты "только ссылка" игнорировать
+    - forwarded включаем
+    """
+    cutoff = _now_utc() - timedelta(hours=max(1, int(hours)))
     out: List[Dict[str, str]] = []
 
     client = TelegramClient(SESSION_BASE, API_ID, API_HASH)
     await client.connect()
-
     try:
+        if not await client.is_user_authorized():
+            raise RuntimeError(f"Telethon session is NOT authorized: {SESSION_BASE}.session")
+
         for src in sources:
             try:
                 entity = await client.get_entity(src)
-                username = entity.username
-                if not username:
-                    continue
+            except Exception:
+                continue
 
+            username = getattr(entity, "username", None) or _source_to_username_like(src)
+            if not username:
+                continue
+
+            try:
                 async for msg in client.iter_messages(entity, offset_date=cutoff, reverse=True):
-                    text = (msg.message or "").strip()
+                    if bool(getattr(msg, "pinned", False)):
+                        continue
+
+                    text = (getattr(msg, "message", None) or "").strip()
                     if not text:
                         continue
                     if _is_text_only_links(text):
                         continue
 
+                    msg_id = getattr(msg, "id", None)
+                    if msg_id is None:
+                        continue
+
+                    tg_dt = getattr(msg, "date", None)
+                    if tg_dt is None:
+                        continue
+                    if tg_dt.tzinfo is None:
+                        tg_dt = tg_dt.replace(tzinfo=timezone.utc)
+                    tg_dt = tg_dt.astimezone(timezone.utc)
+                    if tg_dt < cutoff:
+                        continue
+
                     out.append(
                         {
-                            "url": _post_url(username, msg.id),
+                            "url": _post_url(username, int(msg_id)),
                             "text": text,
+                            "ts_utc": tg_dt.isoformat(),
                         }
                     )
 
@@ -229,39 +347,75 @@ async def fetch_posts_last_hours(sources: List[str], hours: int) -> List[Dict[st
             except Exception:
                 continue
 
+        return out
     finally:
         await client.disconnect()
-
-    return out
 
 
 def build_html_message(items: List[DigestItem], *, hours: int) -> str:
     if not items:
         return f"Новых значимых новостей за последние {hours} часов нет."
 
-    lines = [f"📰 Главные новости за последние {hours} часов", ""]
+    lines: List[str] = [f"📰 Главные новости за последние {hours} часов", ""]
+    for i, it in enumerate(items, start=1):
+        title = html.escape((it.title or "").strip() or "Новость")
+        summary = html.escape((it.summary or "").strip())
+        url = (it.url or "").strip()
 
-    for i, it in enumerate(items, 1):
-        lines.append(f'{i}. <a href="{it.url}">{html.escape(it.title)}</a>')
-        if it.summary:
-            lines.append(f"— {html.escape(it.summary)}")
+        lines.append(f'{i}. <a href="{url}">{title}</a>')
+        if summary:
+            lines.append(f"— {summary}")
         lines.append("")
-
-    return "\n".join(lines)
+    return "\n".join(lines).strip()
 
 
 async def get_news_digest(*, news_sources_path: Path, hours: int = 12, limit: int = 10) -> List[DigestItem]:
+    """
+    Главная функция для main.py:
+    - память на RETENTION_DAYS
+    - анти-повтор по событиям (title+summary)
+    - back-compat: не повторяем также точные URL
+    """
+    _prune_seen(RETENTION_DAYS)
     seen_event_ids, seen_url_ids = _load_seen_sets()
 
     sources = load_news_sources(news_sources_path)
     posts = await fetch_posts_last_hours(sources, hours)
-
     if not posts:
         return []
 
-    data = _call_openai(posts, limit)
+    data: List[dict] = []
+    for _ in range(1, MAX_TRIES + 1):
+        try:
+            data = _call_openai(posts, limit)
+            break
+        except Exception:
+            time.sleep(SLEEP_BETWEEN_TRIES_SEC)
 
     out: List[DigestItem] = []
+    for x in (data or []):
+        title = str(x.get("title") or "").strip()
+        summary = str(x.get("summary") or "").strip()
+        url = str(x.get("url") or "").strip()
 
-    for x in data:
-        title = x.get("ti
+        if not url.startswith("https://t.me/"):
+            continue
+
+        event_id = _event_id_from_title_summary(title, summary)
+        uh = _url_hash(url)
+
+        if event_id in seen_event_ids:
+            continue
+        if uh in seen_url_ids:
+            continue
+
+        out.append(DigestItem(event_id=event_id, title=title, summary=summary, url=url))
+        if len(out) >= max(0, int(limit)):
+            break
+
+    return out
+
+
+def mark_digest_as_seen(items: List[DigestItem]) -> None:
+    for it in items:
+        _append_seen(it.event_id, it.url, it.title)
