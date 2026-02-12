@@ -111,10 +111,14 @@ async def vesya_handler(message: Message) -> None:
     if intent == "news":
         # reply должен быть “человеческим” (guardrail в chatgpt_dialog.py)
         if reply:
-            await message.answer_chat_action("typing")
+            from aiogram.enums import ChatAction
+            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
             await message.answer(reply)
         else:
-            await message.answer_chat_action("typing")
+            from aiogram.enums import ChatAction
+            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
             await message.answer("ок. сейчас соберу сводку.")
             await _run_news_for_message(...)
                 
@@ -122,24 +126,32 @@ async def vesya_handler(message: Message) -> None:
 
     if intent == "content":
         if reply:
-            await message.answer_chat_action("typing")
+            from aiogram.enums import ChatAction
+            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
             await message.answer(reply)
         else:
-            await message.answer_chat_action("typing")
+            from aiogram.enums import ChatAction
+            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
             await message.answer("ок. сейчас соберу контент.")
 
-            await message.answer_chat_action("typing")
+            from aiogram.enums import ChatAction
+            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
 
         return
 
 
     if intent == "end":
-        await message.answer(reply or "принято.")
+        from aiogram.enums import ChatAction
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
         return
 
     # обычный чат
     if reply:
-        await message.answer_chat_action("typing")
+        from aiogram.enums import ChatAction
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
         await message.answer(reply)
 
 
