@@ -97,6 +97,13 @@ async def vesya_handler(message: Message) -> None:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
+    reply = ""
+    intent = "chat"
+    decision = chatgpt_dialog.decide(chat_id, user_id, text)
+    intent = (decision.intent or "chat").strip().lower()
+    reply = (decision.reply or "").strip()
+
+        
     decision = chatgpt_dialog.decide(chat_id, user_id, text)
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
