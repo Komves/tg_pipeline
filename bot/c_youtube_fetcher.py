@@ -12,13 +12,12 @@ import yt_dlp
 
 COOKIES_PATH = os.getenv("YT_COOKIES_PATH", "/data/cookies.txt").strip()
 
-MAX_QUERIES = int(os.getenv("YT_MAX_QUERIES", "6"))
-SEARCH_PER_QUERY = int(os.getenv("YT_SEARCH_PER_QUERY", "6"))
-MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "4"))
+MAX_QUERIES = int(os.getenv("YT_MAX_QUERIES", "8"))
+SEARCH_PER_QUERY = int(os.getenv("YT_SEARCH_PER_QUERY", "8"))
+MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "6"))
 
 MAX_DURATION_SEC = int(os.getenv("YT_MAX_DURATION_SEC", str(12 * 60)))
 MIN_DURATION_SEC = int(os.getenv("YT_MIN_DURATION_SEC", "80"))
-
 
 BAD_TITLE_RE = re.compile(
     r"(?i)\b("
@@ -28,13 +27,17 @@ BAD_TITLE_RE = re.compile(
     r")\b"
 )
 
-GOOD_HINT_RE = re.compile(
-    r"(?i)\b(cover|кавер|tribute|acoustic)\b"
-)
+# Обязательное: cover/кавер
+MUST_COVER_RE = re.compile(r"(?i)\b(cover|кавер)\b")
 
-YT_ID_RE = re.compile(
-    r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_-]{11})"
-)
+# Бан-скрипты (арабский/тайский/японский/китайский/корейский)
+BANNED_SCRIPTS_RE = re.compile(r"[\u0600-\u06FF\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]")
+
+# Разрешаем только если есть кириллица ИЛИ латиница
+HAS_CYR_RE = re.compile(r"[А-Яа-яЁё]")
+HAS_LAT_RE = re.compile(r"[A-Za-z]")
+
+YT_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_-]{11})")
 
 
 def log(msg: str) -> None:
@@ -52,11 +55,7 @@ class YTItem:
 
 
 def _has_cookies() -> bool:
-    return (
-        bool(COOKIES_PATH)
-        and os.path.exists(COOKIES_PATH)
-        and os.path.getsize(COOKIES_PATH) > 0
-    )
+    return bool(COOKIES_PATH) and os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0
 
 
 def _ydl_opts(flat: bool) -> dict:
@@ -67,17 +66,11 @@ def _ydl_opts(flat: bool) -> dict:
         "noplaylist": True,
         "socket_timeout": 20,
         "retries": 1,
-
         # КРИТИЧНО: только метаданные
         "simulate": True,
         "ignore_no_formats_error": True,
-
         # помогает обходить format errors
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android"]
-            }
-        },
+        "extractor_args": {"youtube": {"player_client": ["android"]}},
     }
 
     if flat:
@@ -91,15 +84,31 @@ def _ydl_opts(flat: bool) -> dict:
 
 
 def _build_queries() -> List[str]:
-    neg = "-concert -live -full -playlist -album -mix -stream"
-    return [
-        f"rock cover {neg}",
-        f"metal cover {neg}",
-        f"acoustic cover {neg}",
-        f"кавер песня {neg}",
-        f"рок кавер {neg}",
-        f"metal guitar cover {neg}",
+    neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke"
+
+    ru = [
+        f"рок кавер хит {neg}",
+        f"метал кавер хит {neg}",
+        f"кавер известная песня рок {neg}",
+        f"кавер русские хиты рок {neg}",
+        f"кавер зарубежные хиты рок {neg}",
+        f"рок кавер гитара {neg}",
+        f"метал кавер гитара {neg}",
+        f"рок кавер легендарный хит {neg}",
     ]
+
+    en = [
+        f"rock cover hit {neg}",
+        f"metal cover hit {neg}",
+        f"classic rock cover {neg}",
+        f"famous song rock cover {neg}",
+        f"legendary hit cover rock {neg}",
+        f"guitar rock cover {neg}",
+        f"guitar metal cover {neg}",
+        f"best rock cover {neg}",
+    ]
+
+    return ru + en
 
 
 def _extract_video_id(url: str) -> str:
@@ -132,7 +141,6 @@ def get_batch(
     posted_video_ids: Set[str],
     last_sent_by_source: Dict[str, str],
 ) -> List[Dict]:
-
     if limit <= 0:
         return []
 
@@ -147,19 +155,15 @@ def get_batch(
     queries = _build_queries()[:MAX_QUERIES]
 
     for query in queries:
-
         if len(out) >= limit:
             break
 
         candidates = _search(query, SEARCH_PER_QUERY)
-
         checked = 0
 
         for c in candidates:
-
             if len(out) >= limit:
                 break
-
             if checked >= MAX_CHECK_PER_QUERY:
                 break
 
@@ -169,10 +173,8 @@ def get_batch(
 
             if not vid:
                 vid = _extract_video_id(url)
-
             if not vid:
                 continue
-
             if vid in used:
                 continue
 
@@ -188,11 +190,25 @@ def get_batch(
                     continue
 
             title = (full.get("title") or title or "").strip()
+            uploader = (full.get("uploader") or full.get("channel") or "").strip()
+            desc = (full.get("description") or "").strip()
 
+            text_blob = " ".join([title, uploader, desc]).strip()
+
+            # 1) баним арабский/тайский/японский/китайский/корейский
+            if BANNED_SCRIPTS_RE.search(text_blob):
+                continue
+
+            # 2) допускаем только если есть кириллица или латиница
+            if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
+                continue
+
+            # 3) чёрный список по названию
             if BAD_TITLE_RE.search(title):
                 continue
 
-            if not GOOD_HINT_RE.search(title):
+            # 4) обязательно cover/кавер (в title/uploader/desc)
+            if not MUST_COVER_RE.search(text_blob):
                 continue
 
             url = full.get("webpage_url") or url
