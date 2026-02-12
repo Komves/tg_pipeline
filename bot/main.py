@@ -104,20 +104,27 @@ async def vesya_handler(message: Message) -> None:
     if intent == "news":
         # reply должен быть “человеческим” (guardrail в chatgpt_dialog.py)
         if reply:
+            await message.answer_chat_action("typing")
             await message.answer(reply)
         else:
+            await message.answer_chat_action("typing")
             await message.answer("ок. сейчас соберу сводку.")
-        await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
+            await _run_news_for_message(...)
+                
         return
 
     if intent == "content":
         if reply:
+            await message.answer_chat_action("typing")
             await message.answer(reply)
         else:
+            await message.answer_chat_action("typing")
             await message.answer("ок. сейчас соберу контент.")
-        # безопасный stub
-        await message.answer("контент пайплайн сейчас не подключён в этом main.py.")
+
+            await message.answer_chat_action("typing")
+
         return
+
 
     if intent == "end":
         await message.answer(reply or "принято.")
@@ -125,6 +132,7 @@ async def vesya_handler(message: Message) -> None:
 
     # обычный чат
     if reply:
+        await message.answer_chat_action("typing")
         await message.answer(reply)
 
 

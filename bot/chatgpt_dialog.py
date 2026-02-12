@@ -437,7 +437,12 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     """
     user_text = (user_text or "").strip()
     add_user(chat_id, user_id, user_text)
-    touch(chat_id, user_id)
+    touch(chat_id, user_id)    
+    tl = user_text.lower()
+    if ("веся" in tl or "веслава" in tl) and ("новост" in tl or "дайджест" in tl):
+        reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
+    add_assistant(chat_id, user_id, reply)
+    return DialogDecision(intent="news", reply=reply)
 
     # 0) Fast routing using persona rules (restores character + stable behavior)
     try:
@@ -480,6 +485,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     if ir and ir.addressed and ir.intent == "info_q":
         reply = persona.answer_info_fast(ir.question)
         reply = _sanitize_reply(reply)
+        reply = persona.postprocess_text(reply, user_text)
         if not reply:
             reply = _pick_clarify(chat_id, user_id, user_text)
         add_assistant(chat_id, user_id, reply)
@@ -488,6 +494,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     if ir and ir.addressed and ir.intent == "chat":
         reply = persona.answer_chat(ir.question or "")
         reply = _sanitize_reply(reply)
+        reply = persona.postprocess_text(reply, user_text)
         if not reply:
             reply = _pick_clarify(chat_id, user_id, user_text)
         add_assistant(chat_id, user_id, reply)
@@ -528,9 +535,9 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         reply = _sanitize_reply(str(data.get("reply", "")))
 
         # Guardrails for action intents
-        if intent == "news" and (_looks_like_clarification(reply) or _looks_like_meta_pipeline(reply) or not reply):
+        if intent == "news" and (_looks_like_clarification(reply) or _looks_like_meta_pipeline(reply) or not reply or reply.strip().lower() == "ack"):
             reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
-        elif intent == "content" and (_looks_like_clarification(reply) or _looks_like_meta_pipeline(reply) or not reply):
+        elif intent == "content" and (_looks_like_clarification(reply) or _looks_like_meta_pipeline(reply) or not reply or reply.strip().lower() == "ack"):
             reply = _deterministic_pick(_ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
         else:
             if _looks_like_meta_pipeline(reply):
