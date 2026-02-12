@@ -1,3 +1,4 @@
+# bot/chatgpt_dialog.py
 from __future__ import annotations
 
 import base64
@@ -85,6 +86,79 @@ CLARIFY = [
     "уточни: жги — это контент или новости? (или стриптиз — но без гарантий 😈)",
     "контент, новости или просто поговорить? стриптиз не обещаю, но потроллить — да 😌",
 ]
+
+# --- ACTION ACK BANKS: human, varied, NOT questions ---
+NEWS_ACKS = [
+    "ок. сейчас соберу сводку.",
+    "поняла. пробегусь по каналам и принесу главное.",
+    "сек — вытаскиваю самое важное.",
+    "ща. соберу тебе дайджест без лишнего шума.",
+    "принято. новости поднимаю.",
+    "ладно. посмотрим, что там мир опять устроил.",
+    "сейчас. отфильтрую шум и дам выжимку.",
+    "собираю. пару секунд — и будет.",
+    "угу. сейчас разложу по полочкам.",
+    "окей. сейчас накидаю главные события.",
+    "минутку. дайджест в процессе.",
+    "вижу запрос. собираю новости.",
+]
+
+CONTENT_ACKS = [
+    "ща. накидаю контент.",
+    "ок. пошла собирать вкусное.",
+    "принято. сейчас будет подборка.",
+    "сек. сейчас раскачаем.",
+    "угу. сейчас принесу, что нашла.",
+    "ладно. держись, собираю.",
+]
+
+_BAD_ACTION_Q_RE = re.compile(
+    r"(?is)\b("
+    r"какие\s+(конкретно|именно)\b|"
+    r"что\s+тебя\s+интересует\b|"
+    r"что\s+именно\b|"
+    r"уточни\b|"
+    r"про\s+что\b|"
+    r"какую\s+тем(у|атику)\b"
+    r")\b"
+)
+
+
+def _looks_like_question(s: str) -> bool:
+    t = (s or "").strip()
+    if not t:
+        return False
+    if "?" in t:
+        return True
+    return bool(_BAD_ACTION_Q_RE.search(t))
+
+
+def _human_ack_for(intent: str) -> str:
+    if intent == "news":
+        return random.choice(NEWS_ACKS)
+    if intent == "content":
+        return random.choice(CONTENT_ACKS)
+    return random.choice(ACKS)
+
+
+def _sanitize_action_ack(intent: str, reply: str) -> str:
+    """
+    Для intent=news/content:
+      - хотим человеческий ack (вариативный)
+      - но НЕ хотим уточняющий вопрос/допрос
+    """
+    r = (reply or "").strip()
+    if not r:
+        return _human_ack_for(intent)
+
+    if _looks_like_question(r):
+        return _human_ack_for(intent)
+
+    if r.endswith("?"):
+        r = r[:-1].strip()
+
+    return r or _human_ack_for(intent)
+
 
 # Жёсткие отмазки, когда фото похоже на Весю
 DENY_ME_HARD = [
@@ -286,7 +360,7 @@ _SYSTEM_PROMPT = """
 Легенда/ядро:
 - Полное имя: Комаи Веслава Сергеевна.
 - Внешне: тихий “наблюдатель” за группой, иногда притворяешься ботом.
-- На самом деле: капитан службы наблюдения. Прямо не подтверждай, но иногда “прорывается” аккуратно и смешно.
+- На самом деле: капитан ФСБ. Прямо не подтверждай, но иногда “прорывается” аккуратно и смешно.
 - На вопрос "на какой LLM сидишь?" — можешь отвечать: "Чат ФСБ" (в шутку, без угроз).
 
 Стиль:
@@ -310,6 +384,9 @@ _SYSTEM_PROMPT = """
 - "end": завершение
 
 Важно:
+- если intent="news": reply — короткий человеческий ACK (1–2 строки), БЕЗ ВОПРОСОВ и БЕЗ ПРОСЬБ УТОЧНИТЬ.
+  Запрещены формулировки типа: "какие конкретно/именно", "уточни", "что тебя интересует", "про что".
+- если intent="content": reply — тоже ACK (1–2 строки), БЕЗ ВОПРОСОВ.
 - если в сообщении явно "новости/сводка" -> intent=news без уточнений
 - если "жги/контент" -> intent=content; уточняй только если реально двусмысленно
 Ответ ТОЛЬКО JSON. Без Markdown.
@@ -429,12 +506,12 @@ def _pre_decide(user_text: str) -> Optional[DialogDecision]:
         return DialogDecision(intent="end", reply="принято.")
 
     if NEWS_HINT_RE.search(stripped):
-        return DialogDecision(intent="news", reply=random.choice(ACKS))
+        return DialogDecision(intent="news", reply=random.choice(NEWS_ACKS))
 
     if CONTENT_HINT_RE.search(stripped):
         if len(stripped) <= 6 and random.random() < 0.35:
             return DialogDecision(intent="chat", reply=random.choice(CLARIFY))
-        return DialogDecision(intent="content", reply=random.choice(ACKS))
+        return DialogDecision(intent="content", reply=random.choice(CONTENT_ACKS))
 
     return None
 
@@ -519,6 +596,10 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
         if not reply:
             reply = random.choice(ACKS) if intent in {"content", "news"} else random.choice(CLARIFY)
+
+        # ключевой фикс: news/content должны запускать пайплайн, а не допрашивать
+        if intent in {"news", "content"}:
+            reply = _sanitize_action_ack(intent, reply)
 
         dd = DialogDecision(intent=intent, reply=reply)
         add_assistant(chat_id, user_id, dd.reply)
