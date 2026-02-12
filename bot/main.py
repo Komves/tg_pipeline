@@ -103,26 +103,19 @@ async def vesya_handler(message: Message) -> None:
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
 
-        
-    decision = chatgpt_dialog.decide(chat_id, user_id, text)
-    intent = (decision.intent or "chat").strip().lower()
-    reply = (decision.reply or "").strip()
-
+    
     if intent == "news":
-        # reply должен быть “человеческим” (guardrail в chatgpt_dialog.py)
-        if reply:
-            from aiogram.enums import ChatAction
-            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+        from aiogram.enums import ChatAction
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
+        if reply:
             await message.answer(reply)
         else:
-            from aiogram.enums import ChatAction
-            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-
             await message.answer("ок. сейчас соберу сводку.")
-            await _run_news_for_message(...)
-                
+
+        await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
         return
+
 
     if intent == "content":
         if reply:
@@ -142,9 +135,8 @@ async def vesya_handler(message: Message) -> None:
 
 
     if intent == "end":
-        from aiogram.enums import ChatAction
-        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-
+        await message.answer(reply or "принято.")
+    
         return
 
     # обычный чат
