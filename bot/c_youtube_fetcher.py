@@ -87,25 +87,24 @@ def _build_queries() -> List[str]:
     neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke"
 
     ru = [
-        f"рок кавер хит {neg}",
-        f"метал кавер хит {neg}",
-        f"кавер известная песня рок {neg}",
-        f"кавер русские хиты рок {neg}",
-        f"кавер зарубежные хиты рок {neg}",
-        f"рок кавер гитара {neg}",
-        f"метал кавер гитара {neg}",
-        f"рок кавер легендарный хит {neg}",
+        f"лучший рок метал кавер хит {neg}",
+        f"топ рок метал кавер живое выступление {neg}",
+        f"вирусный рок метал кавер миллион просмотров {neg}",
+        f"лучший рок метал кавер хит {neg}",
+        f"топ метал рок кавер гитара {neg}",
+        f"лучший кавер известная песня рок метал {neg}",
+        f"лучший кавер зарубежные хиты рок метал {neg}",
+        f"лучший кавер русские хиты рок метал {neg}",
     ]
-
     en = [
-        f"rock cover hit {neg}",
-        f"metal cover hit {neg}",
-        f"classic rock cover {neg}",
-        f"famous song rock cover {neg}",
-        f"legendary hit cover rock {neg}",
-        f"guitar rock cover {neg}",
-        f"guitar metal cover {neg}",
-        f"best rock cover {neg}",
+        f"rock metal cover hit {neg}",
+        f"metal rock cover hit {neg}",
+        f"classic rock metal cover {neg}",
+        f"famous song rock metal cover {neg}",
+        f"legendary hit cover rock metal {neg}",
+        f"guitar rock metal cover {neg}",
+        f"guitar metal rock cover {neg}",
+        f"best rock metal cover {neg}",
     ]
 
     return ru + en
