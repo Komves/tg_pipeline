@@ -135,14 +135,12 @@ async def vesya_handler(message: Message) -> None:
         category=CAT_A_VIDEO,
         n=3,
     )
-
-    print(f"[content:A] items={len(a_items)}", flush=True)
     for it in a_items:
         try:
-            await message.answer(it.abs_path)
+            from aiogram.types import FSInputFile
+            await message.answer_video(FSInputFile(it.abs_path))
         except Exception as e:
-                print(f"[content:A] send error: {e}", flush=True)
-
+            print(f"[content:A] send error: {e}", flush=True)
 
     items = get_batch(
     limit=5,
@@ -153,21 +151,11 @@ async def vesya_handler(message: Message) -> None:
     print(f"[content] items type={type(items)} len={len(items) if items else 0}", flush=True)
     if items:
         print(f"[content] first keys={list(items[0].keys())}", flush=True)
-
-
         if not items:
             await message.answer("пусто. позже принесу что-то горячее.")
             return
 
-        for it in items:
-            title = (it.get("title") or "").strip()
-            url = (it.get("url") or "").strip()
-            if url:
-                await message.answer(f"{title}\n{url}" if title else url)
-
-        return
-        print(f"[content] sending {url}", flush=True)
-
+        
     if intent == "end":
         await message.answer(reply or "принято.")
     
