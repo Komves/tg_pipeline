@@ -118,7 +118,6 @@ async def vesya_handler(message: Message) -> None:
 
 
     if intent == "content":
-
         from aiogram.enums import ChatAction
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
@@ -129,8 +128,6 @@ async def vesya_handler(message: Message) -> None:
 
     # ЗАПУСК CONTENT PIPELINE
     from c_youtube_fetcher import get_batch
-
-         
     
     items = get_batch(
     limit=5,
@@ -143,19 +140,18 @@ async def vesya_handler(message: Message) -> None:
         print(f"[content] first keys={list(items[0].keys())}", flush=True)
 
 
-    if not items:
-        await message.answer("пусто. позже принесу что-то горячее.")
-    return
+        if not items:
+            await message.answer("пусто. позже принесу что-то горячее.")
+            return
 
-    for it in items:
-        title = (it.get("title") or "").strip()
-        url = (it.get("url") or "").strip()
-        if url:
-            await message.answer(f"{title}\n{url}" if title else url)
+        for it in items:
+            title = (it.get("title") or "").strip()
+            url = (it.get("url") or "").strip()
+            if url:
+                await message.answer(f"{title}\n{url}" if title else url)
 
-    return
-
-
+        return
+        print(f"[content] sending {url}", flush=True)
 
     if intent == "end":
         await message.answer(reply or "принято.")
