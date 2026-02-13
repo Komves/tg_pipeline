@@ -87,7 +87,7 @@ async def cmd_get12(message: Message) -> None:
 # =========================
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
-    print(f"[DEBUG] update_id={message.update_id} msg_id={message.message_id} chat_id={message.chat.id}", flush=True)
+    print(f"[DEBUG] msg_id={message.message_id} chat_id={message.chat.id} from={message.from_user.id if message.from_user else 0}", flush=True)
 
     if not _chat_allowed(message):
         return
