@@ -233,27 +233,21 @@ async def main() -> None:
     _log("starting aiogram polling")
     asyncio.create_task(heartbeat_loop())
     await dp.start_polling(bot)
-async def on_feedback(cb):
-    action, item_id = cb.data.split(":")[1:]
-    print(f"[feedback] action={action} item_id={item_id} user={cb.from_user.id}", flush=True)
-    await cb.answer("принято")
-
+    
 @dp.callback_query(F.data.startswith("fb:"))
 async def on_feedback(cb):
-    action, item_id = cb.data.split(":")[1:]
-    user_id = cb.from_user.id
-    chat_id = cb.message.chat.id if cb.message else 0
-    ts = int(time.time())
+    parts = cb.data.split(":")
+    action = parts[1]
+    item_id = ":".join(parts[2:])   # ← FIX
 
-    line = f"{ts}\t{chat_id}\t{user_id}\t{action}\t{item_id}\n"
-    try:
-        with open(FEEDBACK_PATH, "a", encoding="utf-8") as f:
-            f.write(line)
-    except Exception as e:
-        print(f"[feedback] write error: {e}", flush=True)
+    print(f"[feedback] action={action} item_id={item_id} user={cb.from_user.id}", flush=True)
 
-    print(f"[feedback] {line.strip()}", flush=True)
-    await cb.answer("принято")
+    import time
+    with open(FEEDBACK_PATH, "a", encoding="utf-8") as f:
+        f.write(f"{int(time.time())}\t{cb.from_user.id}\t{action}\t{item_id}\n")
+
+    await cb.answer("принято 🔥")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
