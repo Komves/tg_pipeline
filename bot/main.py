@@ -1,9 +1,9 @@
 # bot/main.py (aiogram canonical sender; Telethon ingest-only via modules)
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from __future__ import annotations
 import asyncio
 import os
 import time
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 RECENT_MSG_IDS = {}
 from pathlib import Path
 from typing import Optional
