@@ -1,10 +1,9 @@
 # bot/main.py (aiogram canonical sender; Telethon ingest-only via modules)
-RECENT_MSG_IDS = {}
 from __future__ import annotations
-
 import asyncio
 import os
 import time
+RECENT_MSG_IDS = {}
 from pathlib import Path
 from typing import Optional
 
