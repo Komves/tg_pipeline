@@ -170,6 +170,10 @@ async def vesya_handler(message: Message) -> None:
                 ]])
         # --- видео ---
         a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
+
+        seen = set()
+        a_items = [it for it in a_items if not (it.item_id in seen or seen.add(it.item_id))]
+
         for it in a_items:
             await message.answer_video(
                 FSInputFile(it.abs_path),
