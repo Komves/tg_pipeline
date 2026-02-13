@@ -125,7 +125,9 @@ async def vesya_handler(message: Message) -> None:
     print(f"[route] intent={decision.intent} reply={decision.reply!r}", flush=True)
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
-
+    if intent == "chat":
+        await message.answer(reply or "слушаю")
+        return
     
     if intent == "news":
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
