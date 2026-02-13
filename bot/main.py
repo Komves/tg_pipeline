@@ -138,84 +138,54 @@ async def vesya_handler(message: Message) -> None:
         from aiogram.enums import ChatAction
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
-    if reply:
-        await message.answer(reply)
+        if reply:
+            await message.answer(reply)
     else:
         await message.answer("сек, собираю горячее.")
 
-    # ЗАПУСК CONTENT PIPELINE
     from ranker import rank_top_n, CAT_A_VIDEO
     from ingest_runner import ingest_hours
-    print("[content] calling ingest_hours(12)...", flush=True)
-    from c_youtube_fetcher import get_batch
     from meme_ranker import rank_memes
-    # A pipeline
+    from aiogram.types import FSInputFile
+
+    print("[content] calling ingest_hours(12)...", flush=True)
     try:
         await ingest_hours(12)
     except Exception as e:
         print(f"[content] ingest_hours error: {e}", flush=True)
-
     print("[content] ingest_hours done", flush=True)
-    a_items = rank_top_n(
-        user_id=user_id,
-        category=CAT_A_VIDEO,
-        n=3,
-    )
+
     def fb_kb(item_id: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
-                    InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
-                    InlineKeyboardButton(text="🚫 бан", callback_data=f"fb:ban:{item_id}"),
-                ]
-            ]
+            inline_keyboard=[[
+                InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
+                InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
+                InlineKeyboardButton(text="🚫 бан", callback_data=f"fb:ban:{item_id}"),
+            ]]
         )
 
+    a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
     for it in a_items:
         try:
-            from aiogram.types import FSInputFile
             await message.answer_video(
                 FSInputFile(it.abs_path),
-                reply_markup=fb_kb(it.item_id)
-)
+                reply_markup=fb_kb(it.item_id),
+            )
         except Exception as e:
             print(f"[content:A] send error: {e}", flush=True)
-            # A memes
+
     m_items = rank_memes(user_id=user_id, n=3)
     print(f"[content:MEME] items={len(m_items)}", flush=True)
-
     for it in m_items:
         try:
-            from aiogram.types import FSInputFile
             await message.answer_photo(
                 FSInputFile(it.abs_path),
-                reply_markup=fb_kb(it.item_id)
-)
-
+                reply_markup=fb_kb(it.item_id),
+            )
         except Exception as e:
             print(f"[content:MEME] send error: {e}", flush=True)
+
     return
-    items = get_batch(
-    limit=5,
-    posted_video_ids=set(),
-    last_sent_by_source={},
-    )
-    print(f"[content] items type={type(items)} len={len(items) if items else 0}", flush=True)
-    if items:
-        print(f"[content] first keys={list(items[0].keys())}", flush=True)
-        if not items:
-            await message.answer("пусто. позже принесу что-то горячее.")
-            return
-    if intent == "end":
-        await message.answer(reply or "принято.")
-        return
-    # обычный чат
-    if reply:
-        from aiogram.enums import ChatAction
-        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-        await message.answer(reply)
-        return
 
 # =========================
 # HEARTBEAT (optional)
