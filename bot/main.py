@@ -5,6 +5,7 @@ import os
 import time
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 RECENT_MSG_IDS = {}
+FEEDBACK_PATH = "/data/feedback.tsv"
 from pathlib import Path
 from typing import Optional
 
@@ -105,6 +106,7 @@ async def vesya_handler(message: Message) -> None:
         return
 
     text = (message.text or "").strip()
+    print(f"[route] text={text!r}", flush=True)
     if not text:
         return
 
@@ -114,6 +116,7 @@ async def vesya_handler(message: Message) -> None:
     reply = ""
     intent = "chat"
     decision = chatgpt_dialog.decide(chat_id, user_id, text)
+    print(f"[route] intent={decision.intent} reply={decision.reply!r}", flush=True)
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
 
@@ -147,7 +150,11 @@ async def vesya_handler(message: Message) -> None:
     from c_youtube_fetcher import get_batch
     from meme_ranker import rank_memes
     # A pipeline
-    await ingest_hours(12)
+    try:
+        await ingest_hours(12)
+    except Exception as e:
+        print(f"[content] ingest_hours error: {e}", flush=True)
+
     print("[content] ingest_hours done", flush=True)
     a_items = rank_top_n(
         user_id=user_id,
@@ -234,7 +241,19 @@ async def on_feedback(cb):
 @dp.callback_query(F.data.startswith("fb:"))
 async def on_feedback(cb):
     action, item_id = cb.data.split(":")[1:]
-    print(f"[feedback] action={action} item_id={item_id} user={cb.from_user.id}", flush=True)
+    user_id = cb.from_user.id
+    chat_id = cb.message.chat.id if cb.message else 0
+    ts = int(time.time())
+
+    line = f"{ts}\t{chat_id}\t{user_id}\t{action}\t{item_id}\n"
+    try:
+        with open(FEEDBACK_PATH, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as e:
+        print(f"[feedback] write error: {e}", flush=True)
+
+    print(f"[feedback] {line.strip()}", flush=True)
     await cb.answer("принято")
+
 if __name__ == "__main__":
     asyncio.run(main())
