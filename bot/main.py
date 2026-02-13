@@ -152,16 +152,15 @@ async def vesya_handler(message: Message) -> None:
             await message.answer("сек, собираю горячее.")
             print("[content] calling ingest_hours(12)...", flush=True)
 
-        try:
-            await ingest_hours(12)
-        except Exception as e:
-            print(f"[content] ingest_hours error: {e}", flush=True)
+        async with TG_LOCK:
+            try:
+                await ingest_hours(12)
+            except Exception as e:
+                print(f"[content] ingest_hours error: {e}", flush=True)
 
     # всё ниже — ТОЛЬКО внутри: if intent == "content":
 
-    # чтобы не ловить sqlite "database is locked" при telethon
-        async with TG_LOCK:
-            # --- кнопки фидбека ---
+                # --- кнопки фидбека ---
             def fb_kb(item_id: str) -> InlineKeyboardMarkup:
                 return InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
