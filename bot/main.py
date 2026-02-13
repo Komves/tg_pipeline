@@ -6,6 +6,7 @@ import time
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 RECENT_MSG_IDS = {}
 FEEDBACK_PATH = "/data/feedback.tsv"
+TG_LOCK = asyncio.Lock()
 from pathlib import Path
 from typing import Optional
 
@@ -55,14 +56,16 @@ def _log(msg: str) -> None:
 # NEWS RUNNER (calls Telethon inside news_digest)
 # =========================
 async def _run_news_for_message(message: Message, *, hours: int, limit: int) -> None:
-    items = await news_digest.get_news_digest(
-        news_sources_path=NEWS_SOURCES,
-        hours=hours,
-        limit=limit,
-    )
-    text = news_digest.build_html_message(items, hours=hours)
-    await message.answer(text, parse_mode="html")
-    news_digest.mark_digest_as_seen(items)
+    async with TG_LOCK:
+        items = await news_digest.get_news_digest(
+            news_sources_path=NEWS_SOURCES,
+            hours=hours,
+            limit=limit,
+        )
+
+        text = news_digest.build_html_message(items, hours=hours)
+        await message.answer(text, parse_mode="html")
+        news_digest.mark_digest_as_seen(items)
 
 
 # =========================
@@ -140,8 +143,16 @@ async def vesya_handler(message: Message) -> None:
 
         if reply:
             await message.answer(reply)
+        else:
+            await message.answer("сек, собираю горячее.")
+
+    # ВАЖНО: pipeline только здесь
     else:
-        await message.answer("сек, собираю горячее.")
+    # обычный чат — НЕ запускать pipeline
+        if reply:
+            await message.answer(reply)
+    return
+
 
     from ranker import rank_top_n, CAT_A_VIDEO
     from ingest_runner import ingest_hours
