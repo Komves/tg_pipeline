@@ -130,29 +130,18 @@ async def vesya_handler(message: Message) -> None:
     # ЗАПУСК CONTENT PIPELINE
     from c_youtube_fetcher import get_batch
 
-      
-    items = await get_batch(...)
-    print(f"[content] items type={type(items)} len={len(items) if items else 0}", flush=True)
-    if items:
-        print(f"[content] first keys={list(items[0].keys()) if isinstance(items, list) and items else 'n/a'}", flush=True)
-
-    if not items:
-        await message.answer("пусто. позже принесу что-то горячее.")
-        return
-
-    for it in items:
-        title = (it.get("title") or "").strip()
-        url = (it.get("url") or "").strip()
-        print(f"[content] send url={url[:80]}", flush=True)
-        if url:
-            await message.answer(f"{title}\n{url}" if title else url)
-    
+         
     
     items = get_batch(
     limit=5,
     posted_video_ids=set(),
     last_sent_by_source={},
-)
+    )
+
+    print(f"[content] items type={type(items)} len={len(items) if items else 0}", flush=True)
+    if items:
+        print(f"[content] first keys={list(items[0].keys())}", flush=True)
+
 
     if not items:
         await message.answer("пусто. позже принесу что-то горячее.")
