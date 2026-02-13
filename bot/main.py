@@ -155,10 +155,15 @@ async def vesya_handler(message: Message) -> None:
         n=3,
     )
     def fb_kb(item_id: str) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
-            InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
-        ]])
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
+                    InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
+                    InlineKeyboardButton(text="🚫 бан", callback_data=f"fb:ban:{item_id}"),
+                ]
+            ]
+        )
 
     for it in a_items:
         try:
@@ -221,7 +226,15 @@ async def main() -> None:
     _log("starting aiogram polling")
     asyncio.create_task(heartbeat_loop())
     await dp.start_polling(bot)
+async def on_feedback(cb):
+    action, item_id = cb.data.split(":")[1:]
+    print(f"[feedback] action={action} item_id={item_id} user={cb.from_user.id}", flush=True)
+    await cb.answer("принято")
 
-
+@dp.callback_query(F.data.startswith("fb:"))
+async def on_feedback(cb):
+    action, item_id = cb.data.split(":")[1:]
+    print(f"[feedback] action={action} item_id={item_id} user={cb.from_user.id}", flush=True)
+    await cb.answer("принято")
 if __name__ == "__main__":
     asyncio.run(main())
