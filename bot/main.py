@@ -181,44 +181,7 @@ async def vesya_handler(message: Message) -> None:
             )
         return
 
-    print("[content] calling ingest_hours(12)...", flush=True)
-    try:
-        await ingest_hours(12)
-    except Exception as e:
-        print(f"[content] ingest_hours error: {e}", flush=True)
-    print("[content] ingest_hours done", flush=True)
-
-    def fb_kb(item_id: str) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[[
-                InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
-                InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
-                InlineKeyboardButton(text="🚫 бан", callback_data=f"fb:ban:{item_id}"),
-            ]]
-        )
-
-    a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
-    for it in a_items:
-        try:
-            await message.answer_video(
-                FSInputFile(it.abs_path),
-                reply_markup=fb_kb(it.item_id),
-            )
-        except Exception as e:
-            print(f"[content:A] send error: {e}", flush=True)
-
-    m_items = rank_memes(user_id=user_id, n=3)
-    print(f"[content:MEME] items={len(m_items)}", flush=True)
-    for it in m_items:
-        try:
-            await message.answer_photo(
-                FSInputFile(it.abs_path),
-                reply_markup=fb_kb(it.item_id),
-            )
-        except Exception as e:
-            print(f"[content:MEME] send error: {e}", flush=True)
-
-    return
+    
 
 # =========================
 # HEARTBEAT (optional)
