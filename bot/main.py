@@ -127,8 +127,23 @@ async def vesya_handler(message: Message) -> None:
         await message.answer("сек, собираю горячее.")
 
     # ЗАПУСК CONTENT PIPELINE
+    from ranker import rank_top_n, CAT_A_VIDEO
     from c_youtube_fetcher import get_batch
-    
+    # A pipeline
+    a_items = rank_top_n(
+        user_id=user_id,
+        category=CAT_A_VIDEO,
+        n=3,
+    )
+
+    print(f"[content:A] items={len(a_items)}", flush=True)
+    for it in a_items:
+        try:
+            await message.answer(it.abs_path)
+        except Exception as e:
+                print(f"[content:A] send error: {e}", flush=True)
+
+
     items = get_batch(
     limit=5,
     posted_video_ids=set(),
