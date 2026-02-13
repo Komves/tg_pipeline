@@ -145,6 +145,7 @@ async def vesya_handler(message: Message) -> None:
     from c_youtube_fetcher import get_batch
     from meme_ranker import rank_memes
     # A pipeline
+    await ingest_hours(12)
     a_items = rank_top_n(
         user_id=user_id,
         category=CAT_A_VIDEO,
