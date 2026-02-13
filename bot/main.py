@@ -1,4 +1,5 @@
 # bot/main.py (aiogram canonical sender; Telethon ingest-only via modules)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from __future__ import annotations
 import asyncio
 import os
@@ -153,11 +154,19 @@ async def vesya_handler(message: Message) -> None:
         category=CAT_A_VIDEO,
         n=3,
     )
+    def fb_kb(item_id: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
+            InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
+        ]])
+
     for it in a_items:
         try:
             from aiogram.types import FSInputFile
-            await message.answer_video(FSInputFile(it.abs_path))
-            await message.answer("👍 / 👎")
+            await message.answer_video(
+                FSInputFile(it.abs_path),
+                reply_markup=fb_kb(it.item_id)
+)
         except Exception as e:
             print(f"[content:A] send error: {e}", flush=True)
             # A memes
@@ -167,7 +176,11 @@ async def vesya_handler(message: Message) -> None:
     for it in m_items:
         try:
             from aiogram.types import FSInputFile
-            await message.answer_photo(FSInputFile(it.abs_path))
+            await message.answer_photo(
+                FSInputFile(it.abs_path),
+                reply_markup=fb_kb(it.item_id)
+)
+
         except Exception as e:
             print(f"[content:MEME] send error: {e}", flush=True)
     return
