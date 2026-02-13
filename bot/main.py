@@ -141,6 +141,7 @@ async def vesya_handler(message: Message) -> None:
 
     # ЗАПУСК CONTENT PIPELINE
     from ranker import rank_top_n, CAT_A_VIDEO
+    from ingest_runner import ingest_hours
     from c_youtube_fetcher import get_batch
     from meme_ranker import rank_memes
     # A pipeline
@@ -153,6 +154,7 @@ async def vesya_handler(message: Message) -> None:
         try:
             from aiogram.types import FSInputFile
             await message.answer_video(FSInputFile(it.abs_path))
+            await message.answer("👍 / 👎")
         except Exception as e:
             print(f"[content:A] send error: {e}", flush=True)
             # A memes
