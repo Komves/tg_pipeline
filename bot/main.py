@@ -1,4 +1,5 @@
 # bot/main.py (aiogram canonical sender; Telethon ingest-only via modules)
+RECENT_MSG_IDS = {}
 from __future__ import annotations
 
 import asyncio
@@ -88,6 +89,17 @@ async def cmd_get12(message: Message) -> None:
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
     print(f"[DEBUG] msg_id={message.message_id} chat_id={message.chat.id} from={message.from_user.id if message.from_user else 0}", flush=True)
+
+    now = time.time()
+    k = (int(message.chat.id), int(message.message_id))
+
+    for kk, ts in list(RECENT_MSG_IDS.items()):
+        if now - ts > 60:
+            RECENT_MSG_IDS.pop(kk, None)
+    if k in RECENT_MSG_IDS:
+        print(f"[DEBUG] DUPLICATE msg_id={message.message_id} skipped", flush=True)
+        return
+    RECENT_MSG_IDS[k] = now
 
     if not _chat_allowed(message):
         return
