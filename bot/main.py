@@ -16,6 +16,13 @@ from aiogram.filters import Command
 
 import chatgpt_dialog
 import news_digest
+from aiogram.enums import ChatAction
+from aiogram.types import FSInputFile
+
+from ranker import rank_top_n, CAT_A_VIDEO
+from ingest_runner import ingest_hours
+from meme_ranker import rank_memes
+
 
 # =========================
 # ENV / CONFIG
@@ -121,7 +128,6 @@ async def vesya_handler(message: Message) -> None:
 
     
     if intent == "news":
-        from aiogram.enums import ChatAction
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
         if reply:
@@ -169,15 +175,14 @@ async def vesya_handler(message: Message) -> None:
     # всё ниже — ТОЛЬКО внутри: if intent == "content":
 
     # чтобы не ловить sqlite "database is locked" при telethon
-    async with TG_LOCK:
-
-        # --- кнопки фидбека ---
-        def fb_kb(item_id: str) -> InlineKeyboardMarkup:
-            return InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
-                InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
-                InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
-            ]])
+        async with TG_LOCK:
+            # --- кнопки фидбека ---
+            def fb_kb(item_id: str) -> InlineKeyboardMarkup:
+                return InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
+                    InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
+                    InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
+                ]])
 
         # --- видео ---
         a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
@@ -195,7 +200,7 @@ async def vesya_handler(message: Message) -> None:
                 reply_markup=fb_kb(it.item_id),
             )
 
-    return
+        return
 
 # =========================
 # HEARTBEAT (optional)
