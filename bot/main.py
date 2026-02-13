@@ -51,7 +51,6 @@ def _log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     print(f"[main] {ts} UTC {msg}", flush=True)
 
-
 # =========================
 # NEWS RUNNER (calls Telethon inside news_digest)
 # =========================
@@ -67,7 +66,6 @@ async def _run_news_for_message(message: Message, *, hours: int, limit: int) -> 
         await message.answer(text, parse_mode="html")
         news_digest.mark_digest_as_seen(items)
 
-
 # =========================
 # COMMANDS
 # =========================
@@ -78,14 +76,12 @@ async def cmd_news(message: Message) -> None:
     await message.answer("ок. сейчас соберу сводку.")
     await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
 
-
 @dp.message(Command("get12"))
 async def cmd_get12(message: Message) -> None:
     if not _chat_allowed(message):
         return
     # у тебя content pipeline может быть в другом модуле; тут безопасный stub
     await message.answer("ок. контент пайплайн сейчас не подключён в этом main.py.")
-
 
 # =========================
 # MAIN ROUTER
@@ -170,16 +166,36 @@ async def vesya_handler(message: Message) -> None:
             await message.answer_video(
                 FSInputFile(it.abs_path),
             )
-# мемы
-        m_items = rank_memes(user_id=user_id, n=3)
+    # всё ниже — ТОЛЬКО внутри: if intent == "content":
 
+    # чтобы не ловить sqlite "database is locked" при telethon
+    async with TG_LOCK:
+
+        # --- кнопки фидбека ---
+        def fb_kb(item_id: str) -> InlineKeyboardMarkup:
+            return InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
+                InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
+                InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
+            ]])
+
+        # --- видео ---
+        a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
+        for it in a_items:
+            await message.answer_video(
+                FSInputFile(it.abs_path),
+                reply_markup=fb_kb(it.item_id),
+            )
+
+        # --- мемы ---
+        m_items = rank_memes(user_id=user_id, n=3)
         for it in m_items:
             await message.answer_photo(
                 FSInputFile(it.abs_path),
+                reply_markup=fb_kb(it.item_id),
             )
-        return
 
-    
+    return
 
 # =========================
 # HEARTBEAT (optional)
