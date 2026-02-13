@@ -129,6 +129,7 @@ async def vesya_handler(message: Message) -> None:
     # ЗАПУСК CONTENT PIPELINE
     from ranker import rank_top_n, CAT_A_VIDEO
     from c_youtube_fetcher import get_batch
+    from meme_ranker import rank_memes
     # A pipeline
     a_items = rank_top_n(
         user_id=user_id,
@@ -141,33 +142,37 @@ async def vesya_handler(message: Message) -> None:
             await message.answer_video(FSInputFile(it.abs_path))
         except Exception as e:
             print(f"[content:A] send error: {e}", flush=True)
+            # A memes
+    m_items = rank_memes(user_id=user_id, n=3)
+    print(f"[content:MEME] items={len(m_items)}", flush=True)
 
+    for it in m_items:
+        try:
+            from aiogram.types import FSInputFile
+            await message.answer_photo(FSInputFile(it.abs_path))
+        except Exception as e:
+            print(f"[content:MEME] send error: {e}", flush=True)
+    return
     items = get_batch(
     limit=5,
     posted_video_ids=set(),
     last_sent_by_source={},
     )
-
     print(f"[content] items type={type(items)} len={len(items) if items else 0}", flush=True)
     if items:
         print(f"[content] first keys={list(items[0].keys())}", flush=True)
         if not items:
             await message.answer("пусто. позже принесу что-то горячее.")
             return
-
-        
     if intent == "end":
         await message.answer(reply or "принято.")
-    
         return
-
     # обычный чат
     if reply:
         from aiogram.enums import ChatAction
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-
         await message.answer(reply)
-
+        return
 
 # =========================
 # HEARTBEAT (optional)
