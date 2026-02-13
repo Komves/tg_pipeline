@@ -128,6 +128,7 @@ async def vesya_handler(message: Message) -> None:
     if intent == "chat":
         await message.answer(reply or "слушаю")
         return
+
     
     if intent == "news":
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
@@ -142,19 +143,14 @@ async def vesya_handler(message: Message) -> None:
 
 
     if intent == "content":
-        from aiogram.enums import ChatAction
+        
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
         if reply:
             await message.answer(reply)
         else:
             await message.answer("сек, собираю горячее.")
-        # pipeline (content) — ТОЛЬКО внутри intent == "content"
-        from ranker import rank_top_n, CAT_A_VIDEO
-        from ingest_runner import ingest_hours
-        from meme_ranker import rank_memes
-        from aiogram.types import FSInputFile
-        print("[content] calling ingest_hours(12)...", flush=True)
+            print("[content] calling ingest_hours(12)...", flush=True)
 
         try:
             await ingest_hours(12)
@@ -163,7 +159,7 @@ async def vesya_handler(message: Message) -> None:
 
         print("[content] ingest_hours done", flush=True)
 
-# видео
+    # видео
         a_items = rank_top_n(
             user_id=user_id,
             category=CAT_A_VIDEO,
@@ -185,14 +181,13 @@ async def vesya_handler(message: Message) -> None:
                     InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
                     InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
                 ]])
-
         # --- видео ---
         a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
         for it in a_items:
             await message.answer_video(
                 FSInputFile(it.abs_path),
                 reply_markup=fb_kb(it.item_id),
-            )
+           )
 
         # --- мемы ---
         m_items = rank_memes(user_id=user_id, n=3)
