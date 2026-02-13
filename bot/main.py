@@ -157,19 +157,6 @@ async def vesya_handler(message: Message) -> None:
         except Exception as e:
             print(f"[content] ingest_hours error: {e}", flush=True)
 
-        print("[content] ingest_hours done", flush=True)
-
-    # видео
-        a_items = rank_top_n(
-            user_id=user_id,
-            category=CAT_A_VIDEO,
-            n=3,
-        )
-
-        for it in a_items:
-            await message.answer_video(
-                FSInputFile(it.abs_path),
-            )
     # всё ниже — ТОЛЬКО внутри: if intent == "content":
 
     # чтобы не ловить sqlite "database is locked" при telethon

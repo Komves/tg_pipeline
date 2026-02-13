@@ -320,12 +320,12 @@ _ACTION_ACKS_NEWS = [
     "сейчас проверю, что нового",
 ]
 
-_ACTION_ACKS_CONTENT = [
-    "угу. сейчас принесу, что нашла",
-    "ок, пошла собирать вкусное",
-    "минутку — подбираю идеи",
-    "сейчас накидаю контента",
-    "поняла, уже собираю материалы",
+ACTION_ACKS_CONTENT = [
+    "сек, пошла искать 🔥",
+    "уже в деле. не мешай 😏",
+    "ищу самое горячее. жди.",
+    "щас принесу огонь.",
+    "пошла копать глубже.",
 ]
 
 
@@ -475,7 +475,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
     # IMPORTANT: "жги/огня/ignite" must start content run (user requirement)
     if ir and ir.addressed and ir.intent in {"ignite_choice", "run_all"}:
-        reply = _deterministic_pick(_ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
+        reply = _deterministic_pick(ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="content", reply=reply)
 
@@ -540,7 +540,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         if intent == "news" and (_looks_like_clarification(reply) or _looks_like_meta_pipeline(reply) or not reply or reply.strip().lower() == "ack"):
             reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
         elif intent == "content" and (_looks_like_clarification(reply) or _looks_like_meta_pipeline(reply) or not reply or reply.strip().lower() == "ack"):
-            reply = _deterministic_pick(_ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
+            reply = _deterministic_pick(ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
         else:
             if _looks_like_meta_pipeline(reply):
                 reply = ""
