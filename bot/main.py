@@ -169,7 +169,6 @@ async def vesya_handler(message: Message) -> None:
         for it in a_items:
             await message.answer_video(
                 FSInputFile(it.abs_path),
-                reply_markup=fb_kb(it.item_id),
             )
 # мемы
         m_items = rank_memes(user_id=user_id, n=3)
@@ -177,7 +176,6 @@ async def vesya_handler(message: Message) -> None:
         for it in m_items:
             await message.answer_photo(
                 FSInputFile(it.abs_path),
-                reply_markup=fb_kb(it.item_id),
             )
         return
 
