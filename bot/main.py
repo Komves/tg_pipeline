@@ -142,10 +142,12 @@ async def vesya_handler(message: Message) -> None:
     # ЗАПУСК CONTENT PIPELINE
     from ranker import rank_top_n, CAT_A_VIDEO
     from ingest_runner import ingest_hours
+    print("[content] calling ingest_hours(12)...", flush=True)
     from c_youtube_fetcher import get_batch
     from meme_ranker import rank_memes
     # A pipeline
     await ingest_hours(12)
+    print("[content] ingest_hours done", flush=True)
     a_items = rank_top_n(
         user_id=user_id,
         category=CAT_A_VIDEO,
