@@ -364,6 +364,60 @@ async def heartbeat_loop() -> None:
         _log("heartbeat")
         await asyncio.sleep(300)
 
+# =====================
+# INGEST24 LOOP (06:00 MSK)
+# =====================
+
+from datetime import datetime, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
+
+async def ingest24_loop(bot: Bot) -> None:
+    await asyncio.sleep(10)
+
+    while True:
+        now = datetime.now(MSK)
+        next_run = now.replace(hour=6, minute=0, second=0, microsecond=0)
+
+        if now >= next_run:
+            next_run += timedelta(days=1)
+
+        wait_sec = (next_run - now).total_seconds()
+        print(f"[ingest24] next run in {int(wait_sec)} sec", flush=True)
+
+        await asyncio.sleep(wait_sec)
+
+        print("[ingest24] starting ingest_hours(24)", flush=True)
+
+        try:
+            async with TG_LOCK:
+                await ingest_hours(24)
+
+            # отправка пользователю (тот же user_id что использовался последним)
+            if RECENT_MSG_IDS:
+                chat_id = list(RECENT_MSG_IDS.keys())[-1][0]
+
+                class Dummy:
+                    def __init__(self, bot, chat_id):
+                        self.bot = bot
+                        self.chat = type("c", (), {"id": chat_id})
+
+                    async def answer(self, text, **kw):
+                        await self.bot.send_message(self.chat.id, text, **kw)
+
+                    async def answer_photo(self, photo, **kw):
+                        await self.bot.send_photo(self.chat.id, photo, **kw)
+
+                    async def answer_video(self, video, **kw):
+                        await self.bot.send_video(self.chat.id, video, **kw)
+
+                dummy = Dummy(bot, chat_id)
+
+                # используем существующий pipeline content
+                await vesya_handler(dummy)
+
+        except Exception as e:
+            print(f"[ingest24] error: {e}", flush=True)
 
 # =========================
 # START
@@ -371,6 +425,7 @@ async def heartbeat_loop() -> None:
 async def main() -> None:
     _log("starting aiogram polling")
     asyncio.create_task(heartbeat_loop())
+    asyncio.create_task(ingest24_loop(bot))
     await dp.start_polling(bot)
     
 @dp.callback_query(F.data.startswith("fb:"))
