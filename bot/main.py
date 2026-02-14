@@ -405,7 +405,15 @@ async def vesya_handler(message: Message) -> None:
             for (title, url) in final:
                 item_id = f"yt:{url}"
                 text = f"🎵 {title}\n{url}" if title else url
-                await message.answer(text, reply_markup=yt_kb(item_id))
+                for _attempt in range(3):
+                    try:
+                        await message.answer(text, reply_markup=yt_kb(item_id))
+                        break
+                    except Exception as _e:
+                        if _attempt == 2:
+                            raise
+                        await asyncio.sleep(1.5)
+
                 sentyt.add(url)
 
                 vid = url_to_vid.get(url)
