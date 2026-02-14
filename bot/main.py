@@ -267,8 +267,10 @@ async def vesya_handler(message: Message) -> None:
             picked_ai = []
             seen_urls = set()
             sentyt_path = DATA_DIR / f"sent_yt_{user_id}.json"
-            sentyt = _load_sent(sentyt_path)
-
+            try:
+                sentyt = set(json.loads(sentyt_path.read_text(encoding="utf-8"))) if sentyt_path.exists() else set()
+            except Exception:
+                sentyt = set()
 
             for x in pool:
                 title = (x.get("title") or "").strip()
@@ -314,7 +316,7 @@ async def vesya_handler(message: Message) -> None:
                     uploader = (x.get("uploader") or x.get("channel") or "").strip()
                     desc = (x.get("description") or "").strip()
 
-                    if not url or not url.startswith("http") or url in seen:
+                    if (not url) or (not url.startswith("http")) or (url in seen_urls) or (url in sentyt):
                         continue
 
                     final.append((title, url))
@@ -332,6 +334,7 @@ async def vesya_handler(message: Message) -> None:
                 await message.answer(text, reply_markup=yt_kb(item_id))
                 sentyt.add(url)
             _save_sent(sentyt_path, sentyt, keep_last=800)
+            sentyt_path.write_text(json.dumps(list(sentyt)[-800:], ensure_ascii=False), encoding="utf-8")
 
         except Exception as e:
             print(f"[content] youtube links error: {e}", flush=True)
