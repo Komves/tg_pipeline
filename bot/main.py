@@ -4,8 +4,9 @@ import asyncio
 import os
 import time
 import json
+import shutil
+import uuid
 from pathlib import Path
-
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -246,11 +247,22 @@ async def vesya_handler(message: Message) -> None:
         a_items = [it for it in a_items if not (it.item_id in seen or seen.add(it.item_id))]
 
         for it in a_items:
-            await message.answer_video(
-                FSInputFile(it.abs_path),
-                reply_markup=fb_kb(it.item_id),
-           )
-            sentv.add(it.item_id)
+            tmp_path = f"/tmp/vesya_video_{uuid.uuid4().hex}.mp4"
+            try:
+                shutil.copyfile(it.abs_path, tmp_path)
+
+                await message.answer_video(
+                    FSInputFile(tmp_path),
+                    reply_markup=fb_kb(it.item_id),
+                )
+
+                sentv.add(it.item_id)
+            finally:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
         _save_sent(sentv_path, sentv, keep_last=700)
 
         # --- мемы ---
