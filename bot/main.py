@@ -267,6 +267,24 @@ async def vesya_handler(message: Message) -> None:
                     break
 
             final = picked_en + picked_ru + picked_ai
+            # добор до 6, если не хватило категорий
+            if len(final) < 6:
+                for x in pool:
+                    title = (x.get("title") or "").strip()
+                    url = (x.get("url") or "").strip()
+                    uploader = (x.get("uploader") or x.get("channel") or "").strip()
+                    desc = (x.get("description") or "").strip()
+
+                    if not url or not url.startswith("http") or url in seen:
+                        continue
+
+                    final.append((title, url))
+                    seen.add(url)
+
+                    if len(final) == 6:
+                        break
+
+            final = final[:6]
 
             # отправляем по одному сообщению, с фидбеком
             for (title, url) in final:
