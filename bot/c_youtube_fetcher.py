@@ -116,7 +116,7 @@ def _extract_video_id(url: str) -> str:
 
 
 def _search(query: str, n: int) -> List[dict]:
-    q = f"ytsearch{n}:{query}"
+    q = f"ytsearchdate{n}:{query}"
     try:
         with yt_dlp.YoutubeDL(_ydl_opts(flat=True)) as ydl:
             data = ydl.extract_info(q, download=False)
