@@ -299,8 +299,8 @@ async def vesya_handler(message: Message) -> None:
             # Берём с запасом, чтобы отфильтровать недоступные/неподходящие
             pool = c_youtube_fetcher.get_batch(
                 limit=30,
-                posted_video_ids=set(),
-                last_sent_by_source={},
+                posted_video_ids=posted_ids,
+                last_sent_by_source=last_sent_by_source,
             )
 
             def norm(s: str) -> str:
@@ -325,6 +325,21 @@ async def vesya_handler(message: Message) -> None:
                 sentyt = set(json.loads(sentyt_path.read_text(encoding="utf-8"))) if sentyt_path.exists() else set()
             except Exception:
                 sentyt = set()
+                # --- yt state (persists across deploys) ---
+                ytstate_path = DATA_DIR / f"yt_state_{user_id}.json"
+                try:
+                    _st = json.loads(ytstate_path.read_text(encoding="utf-8")) if ytstate_path.exists() else {}
+                except Exception:
+                    _st = {}
+
+                posted_ids = set(_st.get("posted_video_ids") or [])
+                last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
+                url_to_vid = {}
+                for _x in pool:
+                    _u = (_x.get("url") or "").strip()
+                    _v = (_x.get("video_id") or "").strip()
+                    if _u and _v:
+                        url_to_vid[_u] = _v
 
             for x in pool:
                 title = (x.get("title") or "").strip()
@@ -391,7 +406,25 @@ async def vesya_handler(message: Message) -> None:
                 text = f"🎵 {title}\n{url}" if title else url
                 await message.answer(text, reply_markup=yt_kb(item_id))
                 sentyt.add(url)
+                vid = url_to_vid.get(url)
+                if vid:
+                    posted_ids.add(vid)
+                    last_sent_by_source["c_youtube"] = vid
+
             _save_sent(sentyt_path, sentyt, keep_last=800)
+            try:
+                ytstate_path.write_text(
+                    json.dumps(
+                        {
+                            "posted_video_ids": list(posted_ids)[-5000:],
+                            "last_sent_by_source": last_sent_by_source,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
             
         except Exception as e:
             print(f"[content] youtube links error: {e}", flush=True)
@@ -483,7 +516,11 @@ async def on_feedback(cb):
     with open(FEEDBACK_PATH, "a", encoding="utf-8") as f:
         f.write(f"{int(time.time())}\t{cb.from_user.id}\t{action}\t{item_id}\n")
 
-    await cb.answer("принято 🔥")
+    try:
+        await cb.answer("принято 🔥")
+    except Exception:
+        pass
+
 
 
 if __name__ == "__main__":
