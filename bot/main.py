@@ -288,7 +288,12 @@ async def vesya_handler(message: Message) -> None:
         _save_sent(sentm_path, sentm, keep_last=700)
 
                 # --- youtube links (6: 2 EN / 2 RU / 2 AI) ---
+        posted_ids = set()
+        last_sent_by_source = {}
+        
         try:
+            posted_ids = set(_st.get("posted_video_ids") or [])
+            last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
             def yt_kb(item_id: str) -> InlineKeyboardMarkup:
                 return InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
