@@ -4,6 +4,15 @@ import asyncio
 import os
 import time
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.enums import ChatAction
+from aiogram.types import FSInputFile
+
+from ranker import rank_top_n, CAT_A_VIDEO
+from ingest_runner import ingest_hours
+from meme_ranker import rank_memes
+
+import c_youtube_fetcher
+
 RECENT_MSG_IDS = {}
 FEEDBACK_PATH = "/data/feedback.tsv"
 TG_LOCK = asyncio.Lock()
@@ -16,6 +25,8 @@ from aiogram.filters import Command
 
 import chatgpt_dialog
 import news_digest
+import c_youtube_fetcher
+
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
 
@@ -88,7 +99,7 @@ async def cmd_get12(message: Message) -> None:
     if not _chat_allowed(message):
         return
     # у тебя content pipeline может быть в другом модуле; тут безопасный stub
-    await message.answer("ок. контент пайплайн сейчас не подключён в этом main.py.")
+    await vesya_handler(message)
 
 # =========================
 # MAIN ROUTER
@@ -155,6 +166,8 @@ async def vesya_handler(message: Message) -> None:
         async with TG_LOCK:
             try:
                 await ingest_hours(12)
+                c_youtube_fetcher.ingest_to_videos(limit=8)
+
             except Exception as e:
                 print(f"[content] ingest_hours error: {e}", flush=True)
 
@@ -186,6 +199,23 @@ async def vesya_handler(message: Message) -> None:
                 FSInputFile(it.abs_path),
                 reply_markup=fb_kb(it.item_id),
             )
+        # --- youtube links ---
+        try:
+            yt = c_youtube_fetcher.get_batch(limit=5)
+            if yt:
+                lines = ["🎵 YouTube каверы (лучшее):"]
+                for x in yt:
+                    title = (x.get("title") or "").strip()
+                    url = (x.get("url") or "").strip()
+                    if not url:
+                        continue
+                    if title:
+                        lines.append(f"• {title}\n{url}")
+                    else:
+                        lines.append(f"• {url}")
+                await message.answer("\n\n".join(lines))
+        except Exception as e:
+            print(f"[content] youtube links error: {e}", flush=True)
 
         return
 
