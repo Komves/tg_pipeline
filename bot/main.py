@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import json
+from pathlib import Path
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -15,6 +18,25 @@ import c_youtube_fetcher
 
 RECENT_MSG_IDS = {}
 FEEDBACK_PATH = "/data/feedback.tsv"
+import json
+
+def _load_sent(path: Path) -> set[str]:
+    try:
+        if path.exists():
+            return set(json.loads(path.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    return set()
+
+def _save_sent(path: Path, sent: set[str], *, keep_last: int = 500) -> None:
+    try:
+        data = list(sent)
+        if len(data) > keep_last:
+            data = data[-keep_last:]
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
 TG_LOCK = asyncio.Lock()
 from pathlib import Path
 from typing import Optional
@@ -179,7 +201,10 @@ async def vesya_handler(message: Message) -> None:
                     InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
                 ]])
         # --- видео ---
+        sentv_path = DATA_DIR / f"sent_video_{user_id}.json"
+        sentv = _load_sent(sentv_path)
         a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
+        a_items = [it for it in a_items if it.item_id not in sentv]
 
         seen = set()
         a_items = [it for it in a_items if not (it.item_id in seen or seen.add(it.item_id))]
@@ -189,14 +214,25 @@ async def vesya_handler(message: Message) -> None:
                 FSInputFile(it.abs_path),
                 reply_markup=fb_kb(it.item_id),
            )
+            sentv.add(it.item_id)
+        _save_sent(sentv_path, sentv, keep_last=700)
 
         # --- мемы ---
+        sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
+        sentm = _load_sent(sentm_path)
+
         m_items = rank_memes(user_id=user_id, n=3)
+        m_items = [it for it in m_items if it.item_id not in sentm]
+
         for it in m_items:
             await message.answer_photo(
+
                 FSInputFile(it.abs_path),
                 reply_markup=fb_kb(it.item_id),
             )
+            sentm.add(it.item_id)
+        _save_sent(sentm_path, sentm, keep_last=700)
+
                 # --- youtube links (6: 2 EN / 2 RU / 2 AI) ---
         try:
             def yt_kb(item_id: str) -> InlineKeyboardMarkup:
@@ -230,6 +266,9 @@ async def vesya_handler(message: Message) -> None:
             picked_ru = []
             picked_ai = []
             seen_urls = set()
+            sentyt_path = DATA_DIR / f"sent_yt_{user_id}.json"
+            sentyt = _load_sent(sentyt_path)
+
 
             for x in pool:
                 title = (x.get("title") or "").strip()
@@ -237,11 +276,11 @@ async def vesya_handler(message: Message) -> None:
                 uploader = (x.get("uploader") or x.get("channel") or "").strip()
                 desc = (x.get("description") or "").strip()
 
-                if not url or url in seen_urls:
+                if (not url) or (url in seen_urls) or (url in sentyt):
                     continue
 
                 # пропускаем очевидные “не кликабельные” пустые
-                if not url.startswith("http"):
+                if (not url) or (not url.startswith("http")) or (url in seen_urls) or (url in sentyt):
                     continue
 
                 ai = is_ai(title, desc, uploader)
@@ -279,7 +318,7 @@ async def vesya_handler(message: Message) -> None:
                         continue
 
                     final.append((title, url))
-                    seen.add(url)
+                    seen_urls.add(url)
 
                     if len(final) == 6:
                         break
@@ -291,6 +330,8 @@ async def vesya_handler(message: Message) -> None:
                 item_id = f"yt:{url}"
                 text = f"🎵 {title}\n{url}" if title else url
                 await message.answer(text, reply_markup=yt_kb(item_id))
+                sentyt.add(url)
+            _save_sent(sentyt_path, sentyt, keep_last=800)
 
         except Exception as e:
             print(f"[content] youtube links error: {e}", flush=True)
