@@ -384,25 +384,24 @@ async def vesya_handler(message: Message) -> None:
 
             final = picked_en + picked_ru + picked_ai
 
-            # 2) добор до 6 (тоже с баном/антиповтором)
+            # fallback добор до 6 безопасно
             if len(final) < 6:
                 for x in pool:
                     title = (x.get("title") or "").strip()
                     url = (x.get("url") or "").strip()
 
-                    if (not url) or (not url.startswith("http")):
+                    if not url.startswith("http"):
                         continue
-                    if url in seen_urls or url in sentyt:
+                    if url in seen_urls:
                         continue
-                    if _is_banned(f"yt:{url}"):
+                    item_id = f"yt:{url}"
+                    if _is_banned(item_id):
                         continue
-
                     final.append((title, url))
                     seen_urls.add(url)
-
-                    if len(final) == 6:
+                    if len(final) >= 6:
                         break
-
+            
             final = final[:6]
 
             # 3) отправка + обновление sent/state
