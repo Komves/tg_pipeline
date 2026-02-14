@@ -558,6 +558,49 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="chat", reply=reply)
 
+def meme_should_send(img_bytes: bytes, caption: str = "", src: str = "") -> bool:
+    try:
+        if not _has_key():
+            return True
+
+        client = OpenAI()
+        b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+        cap = (caption or "").strip()
+        s = (src or "").strip()
+
+        prompt = (
+            "Ты фильтр контента для телеграм-бота. Реши, можно ли отправлять картинку как мем.\n"
+            "Отклоняй (ok=false), если это реклама/промо/магазин/розыгрыш/казино/крипта/подписки/промокоды,\n"
+            "или личное фото/селфи/частная фотография без мемного смысла,\n"
+            "или просто пейзаж/еда/товар/скрин витрины/инфографика/объявление,\n"
+            "или просто картинка без шутки/мемного посыла.\n"
+            "Разрешай (ok=true), если это мем: есть шутка/ирония/сарказм/контекст (обычно текст на картинке или узнаваемая мемная подача).\n"
+            "Верни строго JSON: {\"ok\":true|false}.\n"
+            f"src={s}\n"
+            f"caption={cap}\n"
+        )
+
+        resp = client.responses.create(
+            model=VISION_MODEL,
+            input=[
+                {"role": "system", "content": "Верни только валидный JSON без пояснений."},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_base64": b64},
+                    ],
+                },
+            ],
+        )
+
+        out = _extract_text(resp)
+        data = _parse_json_object(out) or {}
+        return bool(data.get("ok", True))
+
+    except Exception:
+        return True
 
 # =============================================================================
 # PHOTO: describe/compare (main.py may call this)

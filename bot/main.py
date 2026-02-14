@@ -50,6 +50,29 @@ def _save_sent(path: Path, sent: set[str], *, keep_last: int = 500) -> None:
     except Exception:
         pass
 
+async def _gpt_meme_ok(abs_path: str, src: str = "") -> bool:
+    try:
+        p = Path(abs_path)
+        if not p.exists():
+            return True
+
+        img_bytes = p.read_bytes()
+
+        cap = ""
+        mp = Path(str(p) + ".meta.json")
+        if mp.exists():
+            try:
+                meta = json.loads(mp.read_text(encoding="utf-8"))
+                cap = (meta.get("caption") or "").strip()
+                if not src:
+                    src = (meta.get("src") or "").strip()
+            except Exception:
+                pass
+
+        return bool(chatgpt_dialog.meme_should_send(img_bytes, caption=cap, src=src))
+    except Exception:
+        return True
+
 TG_LOCK = asyncio.Lock()
 from pathlib import Path
 from typing import Optional
@@ -234,15 +257,21 @@ async def vesya_handler(message: Message) -> None:
         sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
         sentm = _load_sent(sentm_path)
 
-        m_items = rank_memes(user_id=user_id, n=3)
+        m_items = rank_memes(user_id=user_id, n=10)
         m_items = [it for it in m_items if it.item_id not in sentm]
+
+        m_ok = []
+        for it in m_items:
+            ok = await _gpt_meme_ok(it.abs_path, src=getattr(it, "src", "") or "")
+            if ok:
+                m_ok.append(it)
+        m_items = m_ok
 
         for it in m_items:
             await message.answer_photo(
-
                 FSInputFile(it.abs_path),
                 reply_markup=fb_kb(it.item_id),
-            )
+    )
             sentm.add(it.item_id)
         _save_sent(sentm_path, sentm, keep_last=700)
 
