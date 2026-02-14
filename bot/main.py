@@ -306,11 +306,16 @@ async def vesya_handler(message: Message) -> None:
             last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
 
             # Берём с запасом, чтобы отфильтровать недоступные/неподходящие
-            pool = c_youtube_fetcher.get_batch(
-                limit=30,
-                posted_video_ids=posted_ids,
-                last_sent_by_source=last_sent_by_source,
-            )
+            pool = await asyncio.wait_for(
+                asyncio.to_thread(
+                    c_youtube_fetcher.get_batch,
+                    limit=30,
+                    posted_video_ids=posted_ids,
+                    last_sent_by_source=last_sent_by_source,
+                ),
+                timeout=45,
+)
+
 
             # url -> video_id (для posted_ids)
             url_to_vid = {}
