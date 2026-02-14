@@ -84,7 +84,7 @@ def _ydl_opts(flat: bool) -> dict:
 
 
 def _build_queries() -> List[str]:
-    neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke"
+    neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke -shorts -short"
 
     ru = [
         f"лучший рок метал кавер хит {neg}",

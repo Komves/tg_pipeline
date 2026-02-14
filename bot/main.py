@@ -197,23 +197,86 @@ async def vesya_handler(message: Message) -> None:
                 FSInputFile(it.abs_path),
                 reply_markup=fb_kb(it.item_id),
             )
-        # --- youtube links ---
+                # --- youtube links (6: 2 EN / 2 RU / 2 AI) ---
         try:
-            yt = c_youtube_fetcher.get_batch(limit=5, posted_video_ids=set(), last_sent_by_source={})
-            if yt:
-                lines = ["🎵 YouTube каверы (лучшее):"]
-                for x in yt:
-                    title = (x.get("title") or "").strip()
-                    url = (x.get("url") or "").strip()
-                    if not url:
-                        continue
-                    if title:
-                        lines.append(f"• {title}\n{url}")
-                    else:
-                        lines.append(f"• {url}")
-                await message.answer("\n\n".join(lines))
+            def yt_kb(item_id: str) -> InlineKeyboardMarkup:
+                return InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
+                    InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
+                    InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
+                ]])
+
+            # Берём с запасом, чтобы отфильтровать недоступные/неподходящие
+            pool = c_youtube_fetcher.get_batch(
+                limit=30,
+                posted_video_ids=set(),
+                last_sent_by_source={},
+            )
+
+            def norm(s: str) -> str:
+                return (s or "").strip().lower()
+
+            def is_ai(title: str, desc: str, uploader: str) -> bool:
+                t = norm(title); d = norm(desc); u = norm(uploader)
+                keys = ["ai cover", "a.i. cover", "ai кавер", "аi кавер", "нейрокавер", "нейро кавер", "нейро-кавер", "voice model", "rvc"]
+                return any(k in t or k in d or k in u for k in keys)
+
+            def is_ru(title: str, desc: str, uploader: str) -> bool:
+                # очень простой классификатор: кириллица в заголовке/описании/канале
+                text = (title or "") + " " + (desc or "") + " " + (uploader or "")
+                return any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in text)
+
+            picked_en = []
+            picked_ru = []
+            picked_ai = []
+            seen_urls = set()
+
+            for x in pool:
+                title = (x.get("title") or "").strip()
+                url = (x.get("url") or "").strip()
+                uploader = (x.get("uploader") or x.get("channel") or "").strip()
+                desc = (x.get("description") or "").strip()
+
+                if not url or url in seen_urls:
+                    continue
+
+                # пропускаем очевидные “не кликабельные” пустые
+                if not url.startswith("http"):
+                    continue
+
+                ai = is_ai(title, desc, uploader)
+                ru = is_ru(title, desc, uploader)
+
+                # приоритет: сначала набираем AI, затем EN/RU
+                if ai and len(picked_ai) < 2:
+                    picked_ai.append((title, url))
+                    seen_urls.add(url)
+                    continue
+
+                if ru and len(picked_ru) < 2:
+                    picked_ru.append((title, url))
+                    seen_urls.add(url)
+                    continue
+
+                if (not ru) and len(picked_en) < 2:
+                    picked_en.append((title, url))
+                    seen_urls.add(url)
+                    continue
+
+                if len(picked_ai) == 2 and len(picked_ru) == 2 and len(picked_en) == 2:
+                    break
+
+            final = picked_en + picked_ru + picked_ai
+
+            # отправляем по одному сообщению, с фидбеком
+            for (title, url) in final:
+                item_id = f"yt:{url}"
+                text = f"🎵 {title}\n{url}" if title else url
+                await message.answer(text, reply_markup=yt_kb(item_id))
+
         except Exception as e:
             print(f"[content] youtube links error: {e}", flush=True)
+
 
         return
 
