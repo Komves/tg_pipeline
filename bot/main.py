@@ -333,10 +333,14 @@ async def vesya_handler(message: Message) -> None:
                 desc = (x.get("description") or "").strip()
 
                 if (not url) or (url in seen_urls) or (url in sentyt):
+                    if _is_banned(f"yt:{url}"):
+                        continue
                     continue
 
                 # пропускаем очевидные “не кликабельные” пустые
                 if (not url) or (not url.startswith("http")) or (url in seen_urls) or (url in sentyt):
+                    if _is_banned(f"yt:{url}"):
+                        continue
                     continue
 
                 ai = is_ai(title, desc, uploader)
@@ -384,8 +388,6 @@ async def vesya_handler(message: Message) -> None:
             # отправляем по одному сообщению, с фидбеком
             for (title, url) in final:
                 item_id = f"yt:{url}"
-                if _is_banned(item_id):
-                    continue
                 text = f"🎵 {title}\n{url}" if title else url
                 await message.answer(text, reply_markup=yt_kb(item_id))
                 sentyt.add(url)
