@@ -18,6 +18,19 @@ import c_youtube_fetcher
 
 RECENT_MSG_IDS = {}
 FEEDBACK_PATH = "/data/feedback.tsv"
+def _is_banned(item_id: str) -> bool:
+    try:
+        p = Path(FEEDBACK_PATH)
+        if not p.exists():
+            return False
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                if "\tban\t" in line and item_id in line:
+                    return True
+    except Exception:
+        pass
+    return False
+
 import json
 
 def _load_sent(path: Path) -> set[str]:
@@ -330,12 +343,13 @@ async def vesya_handler(message: Message) -> None:
             # отправляем по одному сообщению, с фидбеком
             for (title, url) in final:
                 item_id = f"yt:{url}"
+                if _is_banned(item_id):
+                    continue
                 text = f"🎵 {title}\n{url}" if title else url
                 await message.answer(text, reply_markup=yt_kb(item_id))
                 sentyt.add(url)
             _save_sent(sentyt_path, sentyt, keep_last=800)
-            sentyt_path.write_text(json.dumps(list(sentyt)[-800:], ensure_ascii=False), encoding="utf-8")
-
+            
         except Exception as e:
             print(f"[content] youtube links error: {e}", flush=True)
 
