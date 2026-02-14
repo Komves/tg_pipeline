@@ -166,8 +166,6 @@ async def vesya_handler(message: Message) -> None:
         async with TG_LOCK:
             try:
                 await ingest_hours(12)
-                c_youtube_fetcher.ingest_to_videos(limit=8)
-
             except Exception as e:
                 print(f"[content] ingest_hours error: {e}", flush=True)
 
@@ -201,7 +199,7 @@ async def vesya_handler(message: Message) -> None:
             )
         # --- youtube links ---
         try:
-            yt = c_youtube_fetcher.get_batch(limit=5)
+            yt = c_youtube_fetcher.get_batch(limit=5, posted_video_ids=set(), last_sent_by_source={})
             if yt:
                 lines = ["🎵 YouTube каверы (лучшее):"]
                 for x in yt:
