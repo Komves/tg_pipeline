@@ -287,19 +287,23 @@ async def vesya_handler(message: Message) -> None:
             sentm.add(it.item_id)
         _save_sent(sentm_path, sentm, keep_last=700)
 
-                # --- youtube links (6: 2 EN / 2 RU / 2 AI) ---
-        posted_ids = set()
-        last_sent_by_source = {}
-        
+                    # --- youtube links (6: 2 EN / 2 RU / 2 AI) ---
         try:
-            posted_ids = set(_st.get("posted_video_ids") or [])
-            last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
             def yt_kb(item_id: str) -> InlineKeyboardMarkup:
                 return InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
                     InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
                     InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
                 ]])
+
+            # --- yt state (persisted) ---
+            ytstate_path = DATA_DIR / f"yt_state_{user_id}.json"
+            try:
+                _st = json.loads(ytstate_path.read_text(encoding="utf-8")) if ytstate_path.exists() else {}
+            except Exception:
+                _st = {}
+            posted_ids = set(_st.get("posted_video_ids") or [])
+            last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
 
             # Берём с запасом, чтобы отфильтровать недоступные/неподходящие
             pool = c_youtube_fetcher.get_batch(
@@ -308,65 +312,54 @@ async def vesya_handler(message: Message) -> None:
                 last_sent_by_source=last_sent_by_source,
             )
 
+            # url -> video_id (для posted_ids)
+            url_to_vid = {}
+            for _x in pool:
+                _u = (_x.get("url") or "").strip()
+                _v = (_x.get("video_id") or "").strip()
+                if _u and _v:
+                    url_to_vid[_u] = _v
+
             def norm(s: str) -> str:
                 return (s or "").strip().lower()
 
             def is_ai(title: str, desc: str, uploader: str) -> bool:
                 t = norm(title); d = norm(desc); u = norm(uploader)
                 keys = ["ai cover", "a.i. cover", "ai кавер", "аi кавер", "нейрокавер", "нейро кавер", "нейро-кавер", "voice model", "rvc"]
-                return any(k in t or k in d or k in u for k in keys)
+                return any((k in t) or (k in d) or (k in u) for k in keys)
 
             def is_ru(title: str, desc: str, uploader: str) -> bool:
-                # очень простой классификатор: кириллица в заголовке/описании/канале
                 text = (title or "") + " " + (desc or "") + " " + (uploader or "")
-                return any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in text)
+                return any(("а" <= ch.lower() <= "я") or (ch.lower() == "ё") for ch in text)
 
-            picked_en = []
-            picked_ru = []
-            picked_ai = []
-            seen_urls = set()
             sentyt_path = DATA_DIR / f"sent_yt_{user_id}.json"
             try:
                 sentyt = set(json.loads(sentyt_path.read_text(encoding="utf-8"))) if sentyt_path.exists() else set()
             except Exception:
                 sentyt = set()
-                # --- yt state (persists across deploys) ---
-                ytstate_path = DATA_DIR / f"yt_state_{user_id}.json"
-                try:
-                    _st = json.loads(ytstate_path.read_text(encoding="utf-8")) if ytstate_path.exists() else {}
-                except Exception:
-                    _st = {}
 
-                posted_ids = set(_st.get("posted_video_ids") or [])
-                last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
-                url_to_vid = {}
-                for _x in pool:
-                    _u = (_x.get("url") or "").strip()
-                    _v = (_x.get("video_id") or "").strip()
-                    if _u and _v:
-                        url_to_vid[_u] = _v
+            picked_en = []
+            picked_ru = []
+            picked_ai = []
+            seen_urls = set()
 
+            # 1) набираем 2/2/2, бан применяем НА ОТБОРЕ
             for x in pool:
                 title = (x.get("title") or "").strip()
                 url = (x.get("url") or "").strip()
                 uploader = (x.get("uploader") or x.get("channel") or "").strip()
                 desc = (x.get("description") or "").strip()
 
-                if (not url) or (url in seen_urls) or (url in sentyt):
-                    if _is_banned(f"yt:{url}"):
-                        continue
+                if (not url) or (not url.startswith("http")):
                     continue
-
-                # пропускаем очевидные “не кликабельные” пустые
-                if (not url) or (not url.startswith("http")) or (url in seen_urls) or (url in sentyt):
-                    if _is_banned(f"yt:{url}"):
-                        continue
+                if url in seen_urls or url in sentyt:
+                    continue
+                if _is_banned(f"yt:{url}"):
                     continue
 
                 ai = is_ai(title, desc, uploader)
                 ru = is_ru(title, desc, uploader)
 
-                # приоритет: сначала набираем AI, затем EN/RU
                 if ai and len(picked_ai) < 2:
                     picked_ai.append((title, url))
                     seen_urls.add(url)
@@ -386,15 +379,18 @@ async def vesya_handler(message: Message) -> None:
                     break
 
             final = picked_en + picked_ru + picked_ai
-            # добор до 6, если не хватило категорий
+
+            # 2) добор до 6 (тоже с баном/антиповтором)
             if len(final) < 6:
                 for x in pool:
                     title = (x.get("title") or "").strip()
                     url = (x.get("url") or "").strip()
-                    uploader = (x.get("uploader") or x.get("channel") or "").strip()
-                    desc = (x.get("description") or "").strip()
 
-                    if (not url) or (not url.startswith("http")) or (url in seen_urls) or (url in sentyt):
+                    if (not url) or (not url.startswith("http")):
+                        continue
+                    if url in seen_urls or url in sentyt:
+                        continue
+                    if _is_banned(f"yt:{url}"):
                         continue
 
                     final.append((title, url))
@@ -405,18 +401,20 @@ async def vesya_handler(message: Message) -> None:
 
             final = final[:6]
 
-            # отправляем по одному сообщению, с фидбеком
+            # 3) отправка + обновление sent/state
             for (title, url) in final:
                 item_id = f"yt:{url}"
                 text = f"🎵 {title}\n{url}" if title else url
                 await message.answer(text, reply_markup=yt_kb(item_id))
                 sentyt.add(url)
+
                 vid = url_to_vid.get(url)
                 if vid:
                     posted_ids.add(vid)
                     last_sent_by_source["c_youtube"] = vid
 
             _save_sent(sentyt_path, sentyt, keep_last=800)
+
             try:
                 ytstate_path.write_text(
                     json.dumps(
@@ -430,7 +428,7 @@ async def vesya_handler(message: Message) -> None:
                 )
             except Exception:
                 pass
-            
+
         except Exception as e:
             print(f"[content] youtube links error: {e}", flush=True)
 
