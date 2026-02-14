@@ -313,9 +313,8 @@ async def vesya_handler(message: Message) -> None:
                     posted_video_ids=posted_ids,
                     last_sent_by_source=last_sent_by_source,
                 ),
-                timeout=45,
+                timeout=120,
 )
-
 
             # url -> video_id (для posted_ids)
             url_to_vid = {}
@@ -443,8 +442,7 @@ async def vesya_handler(message: Message) -> None:
                 pass
 
         except Exception as e:
-            print(f"[content] youtube links error: {e}", flush=True)
-
+            print(f"[content] youtube links error: {type(e).__name__}: {e}", flush=True)
 
         return
 
