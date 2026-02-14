@@ -213,7 +213,6 @@ async def vesya_handler(message: Message) -> None:
 
 
     if intent == "content":
-        
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
         if reply:
@@ -222,24 +221,25 @@ async def vesya_handler(message: Message) -> None:
             await message.answer("сек, собираю горячее.")
             print("[content] calling ingest_hours(12)...", flush=True)
 
+        # --- Telethon/sqlite только под lock ---
         async with TG_LOCK:
             try:
                 await ingest_hours(12)
             except Exception as e:
                 print(f"[content] ingest_hours error: {e}", flush=True)
 
-    # всё ниже — ТОЛЬКО внутри: if intent == "content":
+        # --- кнопки фидбека ---
+        def fb_kb(item_id: str) -> InlineKeyboardMarkup:
+            return InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
+                InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
+                InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
+            ]])
 
-                # --- кнопки фидбека ---
-            def fb_kb(item_id: str) -> InlineKeyboardMarkup:
-                return InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
-                    InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
-                    InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
-                ]])
         # --- видео ---
         sentv_path = DATA_DIR / f"sent_video_{user_id}.json"
         sentv = _load_sent(sentv_path)
+
         a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
         a_items = [it for it in a_items if it.item_id not in sentv]
 
@@ -250,12 +250,10 @@ async def vesya_handler(message: Message) -> None:
             tmp_path = f"/tmp/vesya_video_{uuid.uuid4().hex}.mp4"
             try:
                 shutil.copyfile(it.abs_path, tmp_path)
-
                 await message.answer_video(
                     FSInputFile(tmp_path),
                     reply_markup=fb_kb(it.item_id),
                 )
-
                 sentv.add(it.item_id)
             finally:
                 try:
@@ -283,11 +281,12 @@ async def vesya_handler(message: Message) -> None:
             await message.answer_photo(
                 FSInputFile(it.abs_path),
                 reply_markup=fb_kb(it.item_id),
-    )
+            )
             sentm.add(it.item_id)
+
         _save_sent(sentm_path, sentm, keep_last=700)
 
-                    # --- youtube links (6: 2 EN / 2 RU / 2 AI) ---
+        # --- youtube links (6: 2 EN / 2 RU / 2 AI) ---
         try:
             def yt_kb(item_id: str) -> InlineKeyboardMarkup:
                 return InlineKeyboardMarkup(inline_keyboard=[[
@@ -296,33 +295,15 @@ async def vesya_handler(message: Message) -> None:
                     InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
                 ]])
 
-            # --- yt state (persisted) ---
-            ytstate_path = DATA_DIR / f"yt_state_{user_id}.json"
-            try:
-                _st = json.loads(ytstate_path.read_text(encoding="utf-8")) if ytstate_path.exists() else {}
-            except Exception:
-                _st = {}
-            posted_ids = set(_st.get("posted_video_ids") or [])
-            last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
-
-            # Берём с запасом, чтобы отфильтровать недоступные/неподходящие
             pool = await asyncio.wait_for(
                 asyncio.to_thread(
                     c_youtube_fetcher.get_batch,
                     limit=30,
-                    posted_video_ids=posted_ids,
-                    last_sent_by_source=last_sent_by_source,
+                    posted_video_ids=set(),
+                    last_sent_by_source={},
                 ),
                 timeout=120,
-)
-
-            # url -> video_id (для posted_ids)
-            url_to_vid = {}
-            for _x in pool:
-                _u = (_x.get("url") or "").strip()
-                _v = (_x.get("video_id") or "").strip()
-                if _u and _v:
-                    url_to_vid[_u] = _v
+            )
 
             def norm(s: str) -> str:
                 return (s or "").strip().lower()
@@ -333,21 +314,17 @@ async def vesya_handler(message: Message) -> None:
                 return any((k in t) or (k in d) or (k in u) for k in keys)
 
             def is_ru(title: str, desc: str, uploader: str) -> bool:
-                text = (title or "") + " " + (desc or "") + " " + (uploader or "")
-                return any(("а" <= ch.lower() <= "я") or (ch.lower() == "ё") for ch in text)
+                text2 = (title or "") + " " + (desc or "") + " " + (uploader or "")
+                return any(("а" <= ch.lower() <= "я") or (ch.lower() == "ё") for ch in text2)
 
             sentyt_path = DATA_DIR / f"sent_yt_{user_id}.json"
-            try:
-                sentyt = set(json.loads(sentyt_path.read_text(encoding="utf-8"))) if sentyt_path.exists() else set()
-            except Exception:
-                sentyt = set()
+            sentyt = _load_sent(sentyt_path)
 
             picked_en = []
             picked_ru = []
             picked_ai = []
             seen_urls = set()
 
-            # 1) набираем 2/2/2, бан применяем НА ОТБОРЕ
             for x in pool:
                 title = (x.get("title") or "").strip()
                 url = (x.get("url") or "").strip()
@@ -384,15 +361,13 @@ async def vesya_handler(message: Message) -> None:
 
             final = picked_en + picked_ru + picked_ai
 
-            # fallback добор до 6 безопасно
             if len(final) < 6:
                 for x in pool:
                     title = (x.get("title") or "").strip()
                     url = (x.get("url") or "").strip()
-
-                    if not url.startswith("http"):
+                    if (not url) or (not url.startswith("http")):
                         continue
-                    if url in seen_urls:
+                    if url in seen_urls or url in sentyt:
                         continue
                     item_id = f"yt:{url}"
                     if _is_banned(item_id):
@@ -401,44 +376,24 @@ async def vesya_handler(message: Message) -> None:
                     seen_urls.add(url)
                     if len(final) >= 6:
                         break
-            
+
             final = final[:6]
 
-            # 3) отправка + обновление sent/state
             for (title, url) in final:
                 item_id = f"yt:{url}"
-                text = f"🎵 {title}\n{url}" if title else url
+                text2 = f"🎵 {title}\n{url}" if title else url
                 for _attempt in range(3):
                     try:
-                        await message.answer(text, reply_markup=yt_kb(item_id))
+                        await message.answer(text2, reply_markup=yt_kb(item_id))
                         break
-                    except Exception as _e:
+                    except Exception:
                         if _attempt == 2:
                             raise
                         await asyncio.sleep(1.5)
 
                 sentyt.add(url)
 
-                vid = url_to_vid.get(url)
-                if vid:
-                    posted_ids.add(vid)
-                    last_sent_by_source["c_youtube"] = vid
-
             _save_sent(sentyt_path, sentyt, keep_last=800)
-
-            try:
-                ytstate_path.write_text(
-                    json.dumps(
-                        {
-                            "posted_video_ids": list(posted_ids)[-5000:],
-                            "last_sent_by_source": last_sent_by_source,
-                        },
-                        ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
 
         except Exception as e:
             print(f"[content] youtube links error: {type(e).__name__}: {e}", flush=True)
