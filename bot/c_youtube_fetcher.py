@@ -22,7 +22,7 @@ MIN_DURATION_SEC = int(os.getenv("YT_MIN_DURATION_SEC", "80"))
 BAD_TITLE_RE = re.compile(
     r"(?i)\b("
     r"concert|концерт|full|playlist|album|mix|compilation|"
-    r"live|session|stream|hour|час|"
+    r"stream|hour|час|"
     r"karaoke|lyrics"
     r")\b"
 )
@@ -90,29 +90,17 @@ def _build_queries() -> List[str]:
     return [
 
         # популярные cover-запросы (самые эффективные)
-        f"rock metal cover {neg}",
-        f"metal cover popular songs {neg}",
-        f"best metal cover songs {neg}",
-        f"famous rock cover metal version {neg}",
-        f"legendary rock metal cover {neg}",
-
-        # female vocal covers — очень часто популярные
+         f"best rock metal covers {neg}",
+        f"rock metal cover hit {neg}",
+        f"famous song metal cover {neg}",
+        f"full band metal cover {neg}",
         f"female vocal metal cover {neg}",
-        f"female rock cover metal version {neg}",
-
-        # guitar covers — high engagement
         f"guitar rock metal cover {neg}",
-        f"electric guitar metal cover {neg}",
+        f"classic rock metal cover {neg}",
+        f"legendary hit metal cover {neg}",
 
-        # AI covers — пусть будут, но не доминируют
+        # ai only 1-2 queries (optional)
         f"ai cover rock metal {neg}",
-        f"ai metal cover song {neg}",
-
-        # общие cover запросы с максимальным recall
-        f"song metal cover version {neg}",
-        f"rock cover version metal {neg}",
-        f"metal cover youtube {neg}",
-        f"cover song metal youtube {neg}",
     ]
 
 def _extract_video_id(url: str) -> str:
@@ -194,6 +182,16 @@ def get_batch(
             if duration:
                 if duration < MIN_DURATION_SEC or duration > MAX_DURATION_SEC:
                     continue
+            view_count = int(full.get("view_count") or 0)
+            like_count = int(full.get("like_count") or 0)
+
+            # popularity score: views dominate, likes add extra signal
+            score = (view_count * 1.0) + (like_count * 30.0)
+
+            # soft anti-AI: not a ban, just a penalty so AI doesn't dominate
+            blob_low = text_blob.lower()
+            if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
+                score *= 0.35
 
             title = (full.get("title") or title or "").strip()
             uploader = (full.get("uploader") or full.get("channel") or "").strip()
@@ -241,10 +239,15 @@ def get_batch(
                     "source": item.source,
                     "title": item.title,
                     "ts": item.ts,
+                    "score": float(score),
+                    "views": view_count,
+                    "likes": like_count,
                 }
             )
 
             used.add(vid)
 
+    out.sort(key=lambda x: x.get("score", 0), reverse=True)
     log(f"returning={len(out)}")
     return out
+
