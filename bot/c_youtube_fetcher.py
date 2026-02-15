@@ -109,6 +109,18 @@ def _build_queries() -> List[str]:
 
     return ru + en
 
+def _build_queries_ai() -> List[str]:
+    neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke -shorts -short"
+    return [
+        f"ai cover rock metal {neg}",
+        f"a.i. cover rock metal {neg}",
+        f"ai voice cover rock {neg}",
+        f"rvc cover rock {neg}",
+        f"voice model cover rock {neg}",
+        f"ai cover famous song rock {neg}",
+        f"ai cover classic rock {neg}",
+        f"ai cover metal {neg}",
+    ]
 
 def _extract_video_id(url: str) -> str:
     m = YT_ID_RE.search(url or "")
@@ -153,7 +165,17 @@ def get_batch(
     out: List[Dict] = []
     used = set(posted_video_ids or set())
 
-    queries = _build_queries()[:MAX_QUERIES]
+    m = (mode or "mix").strip().lower()
+    if m == "ru":
+        queries = _build_queries()[:8]
+    elif m == "en":
+        queries = _build_queries()[8:]
+    elif m == "ai":
+        queries = _build_queries_ai()
+    else:
+        queries = _build_queries()
+
+    queries = queries[:MAX_QUERIES]
 
     for query in queries:
         if len(out) >= limit:

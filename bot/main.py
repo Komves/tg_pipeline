@@ -74,6 +74,7 @@ async def _gpt_meme_ok(abs_path: str, src: str = "") -> bool:
     except Exception:
         return False
 
+
 TG_LOCK = asyncio.Lock()
 from pathlib import Path
 from typing import Optional

@@ -609,10 +609,11 @@ def meme_should_send(img_bytes: bytes, caption: str = "", src: str = "") -> bool
 
         out = _extract_text(resp)
         data = _parse_json_object(out) or {}
-        return bool(data.get("ok", True))
+        return bool(data.get("ok", False))
 
     except Exception:
-        return True
+        return False
+
 
 # =============================================================================
 # PHOTO: describe/compare (main.py may call this)
