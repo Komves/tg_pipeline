@@ -87,41 +87,32 @@ def _ydl_opts(flat: bool) -> dict:
 def _build_queries() -> List[str]:
     neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke -shorts -short"
 
-    ru = [
-        f"russian rock metal cover {neg}",
-        f"ru rock metal cover {neg}",
-        f"russian metal cover {neg}",
-        f"russian hard rock cover {neg}",
-        f"russian band rock cover {neg}",
-        f"russian hit cover rock {neg}",
-        f"russian vocalist cover rock {neg}",
-        f"russian guitar cover rock {neg}",
-    ]
-
-    en = [
-        f"rock metal cover hit {neg}",
-        f"metal rock cover hit {neg}",
-        f"classic rock metal cover {neg}",
-        f"famous song rock metal cover {neg}",
-        f"legendary hit cover rock metal {neg}",
-        f"guitar rock metal cover {neg}",
-        f"guitar metal rock cover {neg}",
-        f"best rock metal cover {neg}",
-    ]
-
-    return ru + en
-
-def _build_queries_ai() -> List[str]:
-    neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke -shorts -short"
     return [
+
+        # популярные cover-запросы (самые эффективные)
+        f"rock metal cover {neg}",
+        f"metal cover popular songs {neg}",
+        f"best metal cover songs {neg}",
+        f"famous rock cover metal version {neg}",
+        f"legendary rock metal cover {neg}",
+
+        # female vocal covers — очень часто популярные
+        f"female vocal metal cover {neg}",
+        f"female rock cover metal version {neg}",
+
+        # guitar covers — high engagement
+        f"guitar rock metal cover {neg}",
+        f"electric guitar metal cover {neg}",
+
+        # AI covers — пусть будут, но не доминируют
         f"ai cover rock metal {neg}",
-        f"a.i. cover rock metal {neg}",
-        f"ai voice cover rock {neg}",
-        f"rvc cover rock {neg}",
-        f"voice model cover rock {neg}",
-        f"ai cover famous song rock {neg}",
-        f"ai cover classic rock {neg}",
-        f"ai cover metal {neg}",
+        f"ai metal cover song {neg}",
+
+        # общие cover запросы с максимальным recall
+        f"song metal cover version {neg}",
+        f"rock cover version metal {neg}",
+        f"metal cover youtube {neg}",
+        f"cover song metal youtube {neg}",
     ]
 
 def _extract_video_id(url: str) -> str:
@@ -130,7 +121,7 @@ def _extract_video_id(url: str) -> str:
 
 
 def _search(query: str, n: int) -> List[dict]:
-    q = f"ytsearchdate{n}:{query}"
+    q = f"ytsearch{n}:{query}"
     try:
         with yt_dlp.YoutubeDL(_ydl_opts(flat=True)) as ydl:
             data = ydl.extract_info(q, download=False)
@@ -167,17 +158,7 @@ def get_batch(
     out: List[Dict] = []
     used = set(posted_video_ids or set())
 
-    m = (mode or "mix").strip().lower()
-    if m == "ru":
-        queries = _build_queries()[:8]
-    elif m == "en":
-        queries = _build_queries()[8:]
-    elif m == "ai":
-        queries = _build_queries_ai()
-    else:
-        queries = _build_queries()
-
-    queries = queries[:MAX_QUERIES]
+    queries = _build_queries()[:MAX_QUERIES]
 
     for query in queries:
         if len(out) >= limit:
