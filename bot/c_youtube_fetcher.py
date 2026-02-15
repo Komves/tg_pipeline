@@ -139,7 +139,9 @@ def get_batch(
     limit: int,
     posted_video_ids: Set[str],
     last_sent_by_source: Dict[str, str],
+    mode: str = "mix",
 ) -> List[Dict]:
+
     if limit <= 0:
         return []
 
