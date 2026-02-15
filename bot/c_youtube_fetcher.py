@@ -36,6 +36,7 @@ BANNED_SCRIPTS_RE = re.compile(r"[\u0600-\u06FF\u0E00-\u0E7F\u3040-\u30FF\u4E00-
 # Разрешаем только если есть кириллица ИЛИ латиница
 HAS_CYR_RE = re.compile(r"[А-Яа-яЁё]")
 HAS_LAT_RE = re.compile(r"[A-Za-z]")
+EN_HINT_RE = re.compile(r"(?i)\b(the|and|or|to|for|with|from|in|on|of|a|an|this|that|live|official|cover|version|remix)\b")
 
 YT_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_-]{11})")
 
@@ -225,6 +226,12 @@ def get_batch(
             # 2) допускаем только если есть кириллица или латиница
             if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
                 continue
+            has_cyr = bool(HAS_CYR_RE.search(text_blob))
+            has_lat = bool(HAS_LAT_RE.search(text_blob))
+            if has_lat and (not has_cyr):
+                if not EN_HINT_RE.search(text_blob):
+                    continue
+
 
             # 3) чёрный список по названию
             if BAD_TITLE_RE.search(title):
