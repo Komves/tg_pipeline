@@ -286,7 +286,7 @@ async def vesya_handler(message: Message) -> None:
 
         _save_sent(sentm_path, sentm, keep_last=700)
 
-        # --- youtube links (6: 2 EN / 2 RU / 2 AI) ---
+         # --- youtube links (6: 2 EN / 2 RU / 2 AI) ---
         try:
             def yt_kb(item_id: str) -> InlineKeyboardMarkup:
                 return InlineKeyboardMarkup(inline_keyboard=[[
@@ -295,14 +295,22 @@ async def vesya_handler(message: Message) -> None:
                     InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
                 ]])
 
-            pool = await asyncio.wait_for(
-                asyncio.to_thread(
-                    c_youtube_fetcher.get_batch,
-                    limit=30,
-                    posted_video_ids=set(),
-                    last_sent_by_source={},
-                ),
-                timeout=120,
+            sentyt_path = DATA_DIR / f"sent_yt_{user_id}.json"
+            sentyt = _load_sent(sentyt_path)
+
+            ytstate_path = DATA_DIR / f"yt_state_{user_id}.json"
+            try:
+                _st = json.loads(ytstate_path.read_text(encoding="utf-8")) if ytstate_path.exists() else {}
+            except Exception:
+                _st = {}
+
+            posted_ids = set(_st.get("posted_video_ids") or [])
+            last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
+
+            pool = c_youtube_fetcher.get_batch(
+                limit=30,
+                posted_video_ids=posted_ids,
+                last_sent_by_source=last_sent_by_source,
             )
 
             def norm(s: str) -> str:
@@ -311,32 +319,39 @@ async def vesya_handler(message: Message) -> None:
             def is_ai(title: str, desc: str, uploader: str) -> bool:
                 t = norm(title); d = norm(desc); u = norm(uploader)
                 keys = ["ai cover", "a.i. cover", "ai кавер", "аi кавер", "нейрокавер", "нейро кавер", "нейро-кавер", "voice model", "rvc"]
-                return any((k in t) or (k in d) or (k in u) for k in keys)
+                return any(k in t or k in d or k in u for k in keys)
 
             def is_ru(title: str, desc: str, uploader: str) -> bool:
-                text2 = (title or "") + " " + (desc or "") + " " + (uploader or "")
-                return any(("а" <= ch.lower() <= "я") or (ch.lower() == "ё") for ch in text2)
-
-            sentyt_path = DATA_DIR / f"sent_yt_{user_id}.json"
-            sentyt = _load_sent(sentyt_path)
+                text = (title or "") + " " + (desc or "") + " " + (uploader or "")
+                return any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in text)
 
             picked_en = []
             picked_ru = []
             picked_ai = []
             seen_urls = set()
 
+            url_to_vid = {}
+
             for x in pool:
                 title = (x.get("title") or "").strip()
                 url = (x.get("url") or "").strip()
                 uploader = (x.get("uploader") or x.get("channel") or "").strip()
                 desc = (x.get("description") or "").strip()
+                vid = (x.get("video_id") or "").strip()
 
                 if (not url) or (not url.startswith("http")):
                     continue
-                if url in seen_urls or url in sentyt:
+                if url in seen_urls:
                     continue
-                if _is_banned(f"yt:{url}"):
+                if url in sentyt:
                     continue
+
+                item_id = f"yt:{url}"
+                if _is_banned(item_id):
+                    continue
+
+                if vid:
+                    url_to_vid[url] = vid
 
                 ai = is_ai(title, desc, uploader)
                 ru = is_ru(title, desc, uploader)
@@ -361,17 +376,27 @@ async def vesya_handler(message: Message) -> None:
 
             final = picked_en + picked_ru + picked_ai
 
+            # fallback добор до 6 безопасно
             if len(final) < 6:
                 for x in pool:
                     title = (x.get("title") or "").strip()
                     url = (x.get("url") or "").strip()
+                    vid = (x.get("video_id") or "").strip()
+
                     if (not url) or (not url.startswith("http")):
                         continue
-                    if url in seen_urls or url in sentyt:
+                    if url in seen_urls:
                         continue
+                    if url in sentyt:
+                        continue
+
                     item_id = f"yt:{url}"
                     if _is_banned(item_id):
                         continue
+
+                    if vid:
+                        url_to_vid[url] = vid
+
                     final.append((title, url))
                     seen_urls.add(url)
                     if len(final) >= 6:
@@ -379,6 +404,7 @@ async def vesya_handler(message: Message) -> None:
 
             final = final[:6]
 
+            # 3) отправка (по одному сообщению) + запись sent/state
             for (title, url) in final:
                 item_id = f"yt:{url}"
                 text2 = f"🎵 {title}\n{url}" if title else url
@@ -393,20 +419,32 @@ async def vesya_handler(message: Message) -> None:
 
                 sentyt.add(url)
 
+                vid = url_to_vid.get(url)
+                if vid:
+                    posted_ids.add(vid)
+                    last_sent_by_source["c_youtube"] = vid
+
             _save_sent(sentyt_path, sentyt, keep_last=800)
+
+            try:
+                ytstate_path.write_text(
+                    json.dumps(
+                        {
+                            "posted_video_ids": list(posted_ids)[-5000:],
+                            "last_sent_by_source": last_sent_by_source,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
 
         except Exception as e:
             print(f"[content] youtube links error: {type(e).__name__}: {e}", flush=True)
 
         return
 
-# =========================
-# HEARTBEAT (optional)
-# =========================
-async def heartbeat_loop() -> None:
-    while True:
-        _log("heartbeat")
-        await asyncio.sleep(300)
 
 # =====================
 # INGEST24 LOOP (06:00 MSK)
@@ -441,27 +479,34 @@ async def ingest24_loop(bot: Bot) -> None:
             if RECENT_MSG_IDS:
                 chat_id = list(RECENT_MSG_IDS.keys())[-1][0]
 
-                class Dummy:
-                    def __init__(self, bot, chat_id):
-                        self.bot = bot
-                        self.chat = type("c", (), {"id": chat_id})
+            class Dummy:
+                def __init__(self, bot, chat_id, user_id):
+                    self.bot = bot
+                    self.chat = type("c", (), {"id": chat_id})
+                    self.message_id = 0
+                    self.from_user = type("u", (), {"id": user_id})
 
-                    async def answer(self, text, **kw):
-                        await self.bot.send_message(self.chat.id, text, **kw)
+                async def answer(self, text, **kw):
+                    return await self.bot.send_message(self.chat.id, text, **kw)
+                async def answer_photo(self, photo, **kw):
+                    return await self.bot.send_photo(self.chat.id, photo, **kw)
+                async def answer_video(self, video, **kw):
+                    return await self.bot.send_video(self.chat.id, video, **kw)
+                async def answer_document(self, document, **kw):
+                    return await self.bot.send_document(self.chat.id, document, **kw)
 
-                    async def answer_photo(self, photo, **kw):
-                        await self.bot.send_photo(self.chat.id, photo, **kw)
-
-                    async def answer_video(self, video, **kw):
-                        await self.bot.send_video(self.chat.id, video, **kw)
-
-                dummy = Dummy(bot, chat_id)
+            user_id = list(RECENT_MSG_IDS.keys())[-1][1] if RECENT_MSG_IDS else chat_id
+            dummy: Dummy = Dummy(bot, chat_id, user_id)
 
                 # используем существующий pipeline content
-                await vesya_handler(dummy)
+            await vesya_handler(dummy)
 
         except Exception as e:
             print(f"[ingest24] error: {e}", flush=True)
+async def heartbeat_loop() -> None:
+    while True:
+        _log("heartbeat")
+        await asyncio.sleep(300)
 
 # =========================
 # START
