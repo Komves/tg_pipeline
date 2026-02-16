@@ -142,10 +142,13 @@ def _search(query: str, max_results: int = 40):
     "q": query,
     "type": "video",
     "maxResults": max_results,
-    "relevanceLanguage": lang,
-    "regionCode": region,
     "key": key,
+
+    "relevanceLanguage": "en",
+    "regionCode": "US",
+    "videoCategoryId": "10",
 }
+
 
     try:
         r = requests.get(url, params=params, timeout=20)
