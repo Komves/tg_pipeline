@@ -514,6 +514,18 @@ async def vesya_handler(message: Message) -> None:
                 )
 
             final = picked_en[:2] + picked_ru[:2] + picked_ai[:2]
+            if len(final) < 6:
+                # добиваем чем есть, чтобы хоть что-то отправлять
+                pool = (picked_en + picked_ru + picked_ai)
+                seen = set(u for _, u in final)
+                for t, u in pool:
+                    if len(final) >= 6:
+                        break
+                    if u in seen:
+                        continue
+                    final.append((t, u))
+                    seen.add(u)
+
 
             # send + write sent/state
             for (title, url) in final:

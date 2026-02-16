@@ -224,6 +224,25 @@ def get_batch(
 
             full = infos.get(url)
             if not full:
+                # FALLBACK: если YouTube блокирует player response — всё равно отдаём ссылку
+                title = (title0 or "").strip()
+                if not title or BAD_TITLE_RE.search(title):
+                    continue
+
+                out.append(     
+                    {
+                        "feed": "c_youtube",
+                        "url": url,
+                        "video_id": vid,
+                        "source": f"yt:{vid}",
+                        "title": title,
+                        "ts": int(time.time()),
+                        "score": 0.0,
+                        "views": 0,
+                        "likes": 0,
+                    }
+                )
+                used.add(vid)
                 continue
 
             duration = full.get("duration")
