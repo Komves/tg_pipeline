@@ -70,7 +70,17 @@ def _ydl_opts(flat: bool) -> dict:
         "skip_download": True,
         "noplaylist": True,
         "socket_timeout": 20,
-        "retries": 1,
+        "retries": 5,
+        "extractor_retries": 5,
+        "fragment_retries": 5,
+        "sleep_interval_requests": 1.0,   # пауза между HTTP запросами
+        "sleep_interval": 1.0,            # базовая пауза
+        "max_sleep_interval": 2.0,        # рандомизация паузы до 2с
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+        },
+
         # КРИТИЧНО: только метаданные
         "simulate": True,
         "ignore_no_formats_error": True,
