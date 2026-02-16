@@ -164,6 +164,79 @@ async def cmd_get12(message: Message) -> None:
 # =========================
 # MAIN ROUTER
 # =========================
+async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int | None) -> None:
+    chat_id = int(message.chat.id)
+
+    # --- Telethon ingest (optional) ---
+    if ingest_hours_n is not None:
+        async with TG_LOCK:
+            try:
+                await ingest_hours(int(ingest_hours_n))
+            except Exception as e:
+                print(f"[content] ingest_hours({ingest_hours_n}) error: {e}", flush=True)
+
+    # --- feedback keyboard ---
+    def fb_kb(item_id: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
+            InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
+            InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
+        ]])
+
+    # --- videos ---
+    sentv_path = DATA_DIR / f"sent_video_{user_id}.json"
+    sentv = _load_sent(sentv_path)
+
+    a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
+    a_items = [it for it in a_items if it.item_id not in sentv]
+
+    seen = set()
+    a_items = [it for it in a_items if not (it.item_id in seen or seen.add(it.item_id))]
+
+    for it in a_items:
+        tmp_path = f"/tmp/vesya_video_{uuid.uuid4().hex}.mp4"
+        try:
+            shutil.copyfile(it.abs_path, tmp_path)
+            await message.answer_video(
+                FSInputFile(tmp_path),
+                reply_markup=fb_kb(it.item_id),
+            )
+            sentv.add(it.item_id)
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    _save_sent(sentv_path, sentv, keep_last=700)
+
+    # --- memes ---
+    sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
+    sentm = _load_sent(sentm_path)
+
+    m_items = rank_memes(user_id=user_id, n=10)
+    m_items = [it for it in m_items if it.item_id not in sentm]
+
+    m_ok = []
+    for it in m_items:
+        ok = await _gpt_meme_ok(it.abs_path, src=getattr(it, "src", "") or "")
+        if ok:
+            m_ok.append(it)
+    m_items = m_ok
+
+    for it in m_items:
+        await message.answer_photo(
+            FSInputFile(it.abs_path),
+            reply_markup=fb_kb(it.item_id),
+        )
+        sentm.add(it.item_id)
+
+    _save_sent(sentm_path, sentm, keep_last=700)
+
+    # --- youtube (оставь твой текущий блок здесь как есть) ---
+    # !!! ВАЖНО: просто перенеси сюда весь текущий try/except youtube из vesya_handler
+    # и НЕ вызывай здесь ingest_hours.
+
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
     print(f"[DEBUG] msg_id={message.message_id} chat_id={message.chat.id} from={message.from_user.id if message.from_user else 0}", flush=True)
@@ -482,7 +555,7 @@ async def ingest24_loop(bot: Bot) -> None:
             dummy: Dummy = Dummy(bot, chat_id, user_id)
 
                 # используем существующий pipeline content
-            await vesya_handler(dummy)
+            await _send_content(dummy, user_id=user_id, ingest_hours_n=None)
 
         except Exception as e:
             print(f"[ingest24] error: {e}", flush=True)

@@ -185,6 +185,12 @@ def get_batch(
             view_count = int(full.get("view_count") or 0)
             like_count = int(full.get("like_count") or 0)
 
+            title = (full.get("title") or title or "").strip()
+            uploader = (full.get("uploader") or full.get("channel") or "").strip()
+            desc = (full.get("description") or "").strip()
+
+            text_blob = " ".join([title, uploader, desc]).strip()
+
             # popularity score: views dominate, likes add extra signal
             score = (view_count * 1.0) + (like_count * 30.0)
 
@@ -192,12 +198,6 @@ def get_batch(
             blob_low = text_blob.lower()
             if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
                 score *= 0.35
-
-            title = (full.get("title") or title or "").strip()
-            uploader = (full.get("uploader") or full.get("channel") or "").strip()
-            desc = (full.get("description") or "").strip()
-
-            text_blob = " ".join([title, uploader, desc]).strip()
 
             # 1) баним арабский/тайский/японский/китайский/корейский
             if BANNED_SCRIPTS_RE.search(text_blob):
