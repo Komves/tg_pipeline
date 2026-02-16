@@ -214,26 +214,79 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
     _save_sent(sentv_path, sentv, keep_last=700)
 
-    # --- memes ---
+    # --- memes (BATCH GPT RANKING, Variant A) ---
     sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
     sentm = _load_sent(sentm_path)
 
-    m_items = rank_memes(user_id=user_id, n=10)
+    POOL_N = int(os.getenv("V_MEME_POOL_N", "30"))
+    SEND_K = int(os.getenv("V_MEME_SEND_K", "6"))
+
+    m_items = rank_memes(user_id=user_id, n=POOL_N)
     m_items = [it for it in m_items if it.item_id not in sentm]
 
-    m_ok = []
-    for it in m_items:
-        ok = await _gpt_meme_ok(it.abs_path, src=getattr(it, "src", "") or "")
-        if ok:
-            m_ok.append(it)
-    m_items = m_ok
+    print(f"[meme] pool_after_sent={len(m_items)} pool_n={POOL_N}", flush=True)
 
+    batch: list[chatgpt_dialog.MemeCandidate] = []
     for it in m_items:
-        await message.answer_photo(
-            FSInputFile(it.abs_path),
-            reply_markup=fb_kb(it.item_id),
-        )
-        sentm.add(it.item_id)
+        try:
+            p = Path(it.abs_path)
+            if not p.exists():
+                continue
+
+            img_bytes = p.read_bytes()
+
+            cap = ""
+            src = getattr(it, "src", "") or ""
+
+            mp = Path(str(p) + ".meta.json")
+            if mp.exists():
+                try:
+                    meta = json.loads(mp.read_text(encoding="utf-8"))
+                    cap = (meta.get("caption") or "").strip()
+                    if not src:
+                        src = (meta.get("src") or "").strip()
+                except Exception:
+                    pass
+
+            batch.append(
+                chatgpt_dialog.MemeCandidate(
+                    item_id=str(it.item_id),
+                    img_bytes=img_bytes,
+                    caption=cap,
+                    src=src,
+                )
+            )
+        except Exception:
+            continue
+
+    picked_ids: list[str] = []
+    try:
+        res = chatgpt_dialog.meme_rank_batch(batch, top_k=SEND_K)
+        picked_ids = list(res.get("picked_item_ids") or [])
+    except Exception:
+        picked_ids = []
+
+    picked_set = set(picked_ids)
+    picked_items = [it for it in m_items if it.item_id in picked_set]
+
+    # preserve GPT order
+    order = {iid: i for i, iid in enumerate(picked_ids)}
+    picked_items.sort(key=lambda it: order.get(it.item_id, 10**9))
+
+    print(f"[meme] picked={len(picked_items)} send_k={SEND_K}", flush=True)
+
+    for it in picked_items[:SEND_K]:
+        try:
+            await message.answer_photo(
+                FSInputFile(it.abs_path),
+                reply_markup=fb_kb(it.item_id),
+            )
+            sentm.add(it.item_id)
+        except Exception as e:
+            print(
+                f"[meme] send error item_id={it.item_id} path={it.abs_path} err={type(e).__name__}: {e}",
+                flush=True,
+            )
 
     _save_sent(sentm_path, sentm, keep_last=700)
 

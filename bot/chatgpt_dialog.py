@@ -670,3 +670,134 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
     except Exception as e:
         _dbg(f"vision EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="вижу фото. что делаем дальше?")
+
+# =============================================================================
+# MEME: batch ranker (Variant A)
+# =============================================================================
+
+from typing import NamedTuple
+
+class MemeCandidate(NamedTuple):
+    item_id: str
+    img_bytes: bytes
+    caption: str
+    src: str
+
+def meme_rank_batch(
+    candidates: List[MemeCandidate],
+    *,
+    top_k: int = 6,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Batch ranking for memes:
+    - GPT sees a set of images and picks top_k "most meme" + filters obvious non-memes/ads.
+    - Returns dict with keys: ok (bool), picked_item_ids (list[str]), items (list[dict]).
+    Fail-open: if no key or error => pick first top_k in given order.
+    """
+    # fail-open if no key
+    if not _has_key():
+        picked = [c.item_id for c in candidates[: max(0, int(top_k))]]
+        return {"ok": True, "picked_item_ids": picked, "items": []}
+
+    if not candidates:
+        return {"ok": True, "picked_item_ids": [], "items": []}
+
+    top_k = max(0, int(top_k))
+    use_model = (model or VISION_MODEL or DIALOG_MODEL)
+
+    # Hard cap to avoid huge payloads; caller should pre-trim
+    max_n = int(os.getenv("V_MEME_BATCH_MAX_N", "18"))
+    candidates = candidates[:max_n]
+
+    client = OpenAI()
+
+    # Build content blocks: prompt + multiple images
+    prompt_lines = [
+        "Ты — ранжировщик мемов для телеграм-бота.",
+        "Твоя задача: из набора картинок выбрать самые мемные и отфильтровать мусор.",
+        "",
+        "Отклоняй (ok=false) конкретный элемент, если это:",
+        "- реклама/промо/магазин/розыгрыш/казино/крипта/подписки/промокоды",
+        "- личное фото/селфи/частная фотография без мемного смысла",
+        "- пейзаж/еда/товар/скрин витрины/инфографика/объявление",
+        "- просто картинка без шутки/мемного посыла",
+        "",
+        "Разрешай (ok=true), если это мем/шутка/ирония/сарказм/узнаваемая мемная подача.",
+        "ВАЖНО: даже если сомневаешься, всё равно выбери top_k лучших из набора (они могут быть 'наименее плохими').",
+        "",
+        f"Нужно вернуть JSON СТРОГО такого вида:",
+        "{",
+        '  "items": [',
+        '    {"idx":0,"item_id":"...","ok":true,"score":0-100,"reason":"коротко","tags":["..."]},',
+        "    ...",
+        "  ],",
+        '  "picked_item_ids": ["...","..."]',
+        "}",
+        "",
+        "Правила:",
+        f"- picked_item_ids: ровно {top_k} штук, если в наборе >= {top_k}.",
+        "- score: 0..100 (чем мемнее/смешнее/релевантнее, тем выше).",
+        "- reason: 2–8 слов (например: 'реклама', 'скрин без шутки', 'мем с текстом', 'реакция').",
+        "- tags: 0–5 тегов (например: 'text', 'reaction', 'screenshot', 'ad-like', 'personal').",
+        "",
+        "Метаданные к каждому элементу (caption/src) — слабый сигнал, картинка важнее.",
+        "Ниже идут элементы 0..N-1:",
+        "",
+    ]
+
+    for i, c in enumerate(candidates):
+        cap = (c.caption or "").strip().replace("\n", " ")
+        src = (c.src or "").strip()
+        prompt_lines.append(f"{i}) item_id={c.item_id} | src={src} | caption={cap[:120]}")
+
+    prompt_text = "\n".join(prompt_lines)
+
+    user_content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt_text}]
+
+    for c in candidates:
+        b64 = base64.b64encode(c.img_bytes).decode("utf-8")
+        user_content.append({"type": "input_image", "image_base64": b64})
+
+    try:
+        resp = client.responses.create(
+            model=use_model,
+            input=[
+                {"role": "system", "content": "Верни только валидный JSON без пояснений."},
+                {"role": "user", "content": user_content},
+            ],
+        )
+
+        out = _extract_text(resp)
+        data = _parse_json_object(out) or {}
+        items = data.get("items") if isinstance(data.get("items"), list) else []
+        picked = data.get("picked_item_ids") if isinstance(data.get("picked_item_ids"), list) else []
+
+        # sanitize picked ids
+        valid_ids = {c.item_id for c in candidates}
+        picked = [str(x) for x in picked if str(x) in valid_ids]
+
+        # If model returned too few (or none), fail-open fallback: pick by score if present else by original order
+        if len(picked) < min(top_k, len(candidates)):
+            # Build idx->score map from items if possible
+            score_by_id: Dict[str, float] = {}
+            for it in items:
+                try:
+                    iid = str(it.get("item_id", ""))
+                    sc = float(it.get("score", 0))
+                    if iid in valid_ids:
+                        score_by_id[iid] = sc
+                except Exception:
+                    pass
+            rest = [c.item_id for c in candidates if c.item_id not in set(picked)]
+            if score_by_id:
+                rest.sort(key=lambda x: score_by_id.get(x, 0.0), reverse=True)
+            picked = (picked + rest)[:top_k]
+
+        return {"ok": True, "picked_item_ids": picked[:top_k], "items": items}
+
+    except Exception as e:
+        _dbg(f"meme_rank_batch EXC: {type(e).__name__}: {e}")
+        # fail-open fallback
+        picked = [c.item_id for c in candidates[:top_k]]
+        return {"ok": True, "picked_item_ids": picked, "items": []}
