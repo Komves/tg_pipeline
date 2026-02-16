@@ -19,7 +19,7 @@ MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "6"))
 MAX_DURATION_SEC = int(os.getenv("YT_MAX_DURATION_SEC", str(12 * 60)))
 MIN_DURATION_SEC = int(os.getenv("YT_MIN_DURATION_SEC", "80"))
 MIN_VIEW_COUNT = int(os.getenv("YT_MIN_VIEWS", "50000"))
-
+FALLBACK_MIN_VIEWS = int(os.getenv("YT_FALLBACK_MIN_VIEWS", "50000"))
 
 BAD_TITLE_RE = re.compile(
     r"(?i)\b("
@@ -85,30 +85,20 @@ def _ydl_opts(flat: bool) -> dict:
 
     return opts
 
-
 def _build_queries() -> List[str]:
     neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke -shorts -short"
 
     return [
 
         # популярные cover-запросы (самые эффективные)
-        f"best rock metal covers {neg}",
+        f"rock metal covers {neg}",
         f"rock metal cover hit {neg}",
         f"famous song metal cover {neg}",
         f"full band metal cover {neg}",
-        f"female vocal metal cover {neg}",
-        f"classic rock metal cover {neg}",
         f"legendary hit metal cover {neg}",
-        f"best russian covers {neg}",
-        f"rock russian metal cover hit {neg}",
-        f"famous russian song metal cover {neg}",
-        f"full russian band metal cover {neg}",
-        f"female russian vocal metal cover {neg}",
-        f"classic russian rock metal cover {neg}",
-        f"legendary russian hit metal cover {neg}",
-        f"Best rock metal cover concerte live metal cover {neg}",
-        f"Best russian rock metal cover concerte live metal cover {neg}",
-
+        f"Русские каверы рок {neg}",
+        f"Русские метал каверы {neg}",
+        
         # ai only 1-2 queries (optional)
         f"ai cover rock metal {neg}",
     ]
@@ -156,7 +146,7 @@ def get_batch(
     out: List[Dict] = []
     used = set(posted_video_ids or set())
 
-    queries = _build_queries()[:MAX_QUERIES]
+    queries = _build_queries(mode)[:MAX_QUERIES]
 
     for query in queries:
         if len(out) >= limit:
@@ -260,6 +250,93 @@ def get_batch(
             )
 
             used.add(vid)
+
+    # Fallback: if strict gate didn't fill quota, relax view gate to FALLBACK_MIN_VIEWS
+    if len(out) < limit and FALLBACK_MIN_VIEWS < MIN_VIEW_COUNT:
+        need = limit - len(out)
+        log(f"fallback: need={need} relax views to {FALLBACK_MIN_VIEWS}")
+
+        # run same queries again but with relaxed view gate
+        for query in queries:
+            if len(out) >= limit:
+                break
+
+            candidates = _search(query, SEARCH_PER_QUERY)
+            checked = 0
+
+            for c in candidates:
+                if len(out) >= limit:
+                    break
+                if checked >= MAX_CHECK_PER_QUERY:
+                    break
+
+                vid = (c.get("id") or "").strip()
+                url = (c.get("url") or "").strip()
+                title = (c.get("title") or "").strip()
+
+                if not vid:
+                    vid = _extract_video_id(url)
+                if not vid or vid in used:
+                    continue
+
+                checked += 1
+                full = _info(url)
+                if not full:
+                    continue
+
+                duration = full.get("duration")
+                if duration:
+                    if duration < MIN_DURATION_SEC or duration > MAX_DURATION_SEC:
+                        continue
+
+                view_count = int(full.get("view_count") or 0)
+                like_count = int(full.get("like_count") or 0)
+
+                if view_count < FALLBACK_MIN_VIEWS:
+                    continue
+
+                title = (full.get("title") or title or "").strip()
+                uploader = (full.get("uploader") or full.get("channel") or "").strip()
+                desc = (full.get("description") or "").strip()
+                text_blob = " ".join([title, uploader, desc]).strip()
+
+                score = (view_count * 1.0) + (like_count * 30.0)
+
+                blob_low = text_blob.lower()
+                if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
+                    score *= 0.35
+
+                if BANNED_SCRIPTS_RE.search(text_blob):
+                    continue
+                if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
+                    continue
+                has_cyr = bool(HAS_CYR_RE.search(text_blob))
+                has_lat = bool(HAS_LAT_RE.search(text_blob))
+                if has_lat and (not has_cyr):
+                    if not EN_HINT_RE.search(text_blob):
+                        continue
+
+                if BAD_TITLE_RE.search(title):
+                    continue
+                if not MUST_COVER_RE.search(text_blob):
+                    continue
+
+                url = full.get("webpage_url") or url
+
+                out.append(
+                    {
+                        "feed": "c_youtube",
+                        "url": url,
+                        "video_id": vid,
+                        "source": f"yt:{vid}",
+                        "title": title,
+                        "ts": int(time.time()),
+                        "score": float(score),
+                        "views": view_count,
+                        "likes": like_count,
+                    }
+                )
+                used.add(vid)
 
     out.sort(key=lambda x: x.get("score", 0), reverse=True)
     log(f"returning={len(out)}")
