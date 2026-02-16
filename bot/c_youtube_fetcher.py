@@ -90,14 +90,22 @@ def _build_queries() -> List[str]:
     return [
 
         # популярные cover-запросы (самые эффективные)
-         f"best rock metal covers {neg}",
+        f"best rock metal covers {neg}",
         f"rock metal cover hit {neg}",
         f"famous song metal cover {neg}",
         f"full band metal cover {neg}",
         f"female vocal metal cover {neg}",
-        f"guitar rock metal cover {neg}",
         f"classic rock metal cover {neg}",
         f"legendary hit metal cover {neg}",
+        f"best russian covers {neg}",
+        f"rock russian metal cover hit {neg}",
+        f"famous russian song metal cover {neg}",
+        f"full russian band metal cover {neg}",
+        f"female russian vocal metal cover {neg}",
+        f"classic russian rock metal cover {neg}",
+        f"legendary russian hit metal cover {neg}",
+        f"Best rock metal cover concerte live metal cover {neg}",
+        f"Best russian rock metal cover concerte live metal cover {neg}",
 
         # ai only 1-2 queries (optional)
         f"ai cover rock metal {neg}",

@@ -601,7 +601,7 @@ def meme_should_send(img_bytes: bytes, caption: str = "", src: str = "") -> bool
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": prompt},
-                        {"type": "input_image", "image_base64": b64},
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
                     ],
                 },
             ],
@@ -657,7 +657,7 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": prompt},
-                        {"type": "input_image", "image_base64": b64},
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
                     ],
                 },
             ],
@@ -757,7 +757,7 @@ def meme_rank_batch(
 
     for c in candidates:
         b64 = base64.b64encode(c.img_bytes).decode("utf-8")
-        user_content.append({"type": "input_image", "image_base64": b64})
+        user_content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
 
     try:
         resp = client.responses.create(
