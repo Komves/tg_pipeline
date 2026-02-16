@@ -7,7 +7,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+import os
+import requests
 import yt_dlp
 
 
@@ -125,16 +126,48 @@ def _extract_video_id(url: str) -> str:
     return m.group(1) if m else ""
 
 
-def _search(query: str, n: int) -> List[dict]:
-    q = f"ytsearch{n}:{query}"
-    try:
-        with yt_dlp.YoutubeDL(_ydl_opts(flat=True)) as ydl:
-            data = ydl.extract_info(q, download=False)
-            return (data or {}).get("entries") or []
-    except Exception as e:
-        log(f"search error: {e}")
+def _search(query: str, max_results: int = 40):
+    key = os.getenv("YT_API_KEY")
+    if not key:
+        log("YT_API_KEY missing")
         return []
 
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "part": "snippet",
+        "q": query,
+        "type": "video",
+        "maxResults": max_results,
+        "key": key,
+    }
+
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code != 200:
+            log(f"YT API error {r.status_code}: {r.text[:200]}")
+            return []
+
+        data = r.json()
+
+        out = []
+        for item in data.get("items", []):
+            vid = item["id"]["videoId"]
+            title = item["snippet"]["title"]
+            url = f"https://www.youtube.com/watch?v={vid}"
+
+            out.append({
+                "id": vid,
+                "url": url,
+                "title": title,
+                "uploader": item["snippet"].get("channelTitle", ""),
+            })
+
+        log(f"YT API search ok query='{query}' results={len(out)}")
+        return out
+
+    except Exception as e:
+        log(f"YT API search error: {e}")
+        return []
 
 def _info(url: str) -> Optional[dict]:
     try:
