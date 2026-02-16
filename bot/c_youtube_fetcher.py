@@ -146,7 +146,7 @@ def get_batch(
     out: List[Dict] = []
     used = set(posted_video_ids or set())
 
-    queries = _build_queries(mode)[:MAX_QUERIES]
+    queries = _build_queries()[:MAX_QUERIES]
 
     for query in queries:
         if len(out) >= limit:
