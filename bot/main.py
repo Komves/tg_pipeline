@@ -155,10 +155,7 @@ async def cmd_news(message: Message) -> None:
     await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
 
 @dp.message(Command("get12"))
-@dp.message(Command("test24"))
-async def cmd_test24(message: Message):
-    await message.answer("Running ingest24 test...")
-    await ingest24_loop(bot)
+
 async def cmd_get12(message: Message) -> None:
     if not _chat_allowed(message):
         return
