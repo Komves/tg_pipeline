@@ -18,6 +18,8 @@ MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "6"))
 
 MAX_DURATION_SEC = int(os.getenv("YT_MAX_DURATION_SEC", str(12 * 60)))
 MIN_DURATION_SEC = int(os.getenv("YT_MIN_DURATION_SEC", "80"))
+MIN_VIEW_COUNT = int(os.getenv("YT_MIN_VIEWS", "50000"))
+
 
 BAD_TITLE_RE = re.compile(
     r"(?i)\b("
@@ -192,6 +194,10 @@ def get_batch(
                     continue
             view_count = int(full.get("view_count") or 0)
             like_count = int(full.get("like_count") or 0)
+            
+            # hard popularity gate
+            if view_count < MIN_VIEW_COUNT:
+                continue
 
             title = (full.get("title") or title or "").strip()
             uploader = (full.get("uploader") or full.get("channel") or "").strip()
