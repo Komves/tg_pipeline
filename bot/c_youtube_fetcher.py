@@ -6,6 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yt_dlp
 
@@ -15,6 +16,7 @@ COOKIES_PATH = os.getenv("YT_COOKIES_PATH", "/data/cookies.txt").strip()
 MAX_QUERIES = int(os.getenv("YT_MAX_QUERIES", "8"))
 SEARCH_PER_QUERY = int(os.getenv("YT_SEARCH_PER_QUERY", "8"))
 MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "6"))
+INFO_WORKERS = int(os.getenv("YT_INFO_WORKERS", "8"))
 
 MAX_DURATION_SEC = int(os.getenv("YT_MAX_DURATION_SEC", str(12 * 60)))
 MIN_DURATION_SEC = int(os.getenv("YT_MIN_DURATION_SEC", "80"))
@@ -126,6 +128,21 @@ def _info(url: str) -> Optional[dict]:
     except Exception as e:
         log(f"info error: {e}")
         return None
+def _info_many(urls: List[str], max_workers: int) -> Dict[str, Optional[dict]]:
+    if not urls:
+        return {}
+    mw = max(1, int(max_workers or 1))
+    out: Dict[str, Optional[dict]] = {}
+    with ThreadPoolExecutor(max_workers=mw) as ex:
+        fut_map = {ex.submit(_info, u): u for u in urls}
+        for fut in as_completed(fut_map):
+            u = fut_map[fut]
+            try:
+                out[u] = fut.result()
+            except Exception:
+                out[u] = None
+    return out
+
 
 
 def get_batch(
@@ -148,17 +165,20 @@ def get_batch(
 
     queries = _build_queries()[:MAX_QUERIES]
 
-    for query in queries:
+    for qi, query in enumerate(queries, start=1):
         if len(out) >= limit:
             break
 
-        candidates = _search(query, SEARCH_PER_QUERY)
-        checked = 0
+        t0 = time.time()
+        log(f"query[{qi}/{len(queries)}]: {query}")
 
+        candidates = _search(query, SEARCH_PER_QUERY)
+        log(f"query[{qi}] candidates={len(candidates)}")
+
+        # pick up to MAX_CHECK_PER_QUERY unique urls to probe
+        probe: List[tuple[str, str, str]] = []  # (vid, url, title)
         for c in candidates:
-            if len(out) >= limit:
-                break
-            if checked >= MAX_CHECK_PER_QUERY:
+            if len(probe) >= MAX_CHECK_PER_QUERY:
                 break
 
             vid = (c.get("id") or "").strip()
@@ -171,10 +191,23 @@ def get_batch(
                 continue
             if vid in used:
                 continue
+            if not url:
+                continue
 
-            checked += 1
+            probe.append((vid, url, title))
 
-            full = _info(url)
+        urls = [u for (_, u, _) in probe]
+        infos = _info_many(urls, INFO_WORKERS)
+
+        accepted_in_query = 0
+
+        for (vid, url, title0) in probe:
+            if len(out) >= limit:
+                break
+            if vid in used:
+                continue
+
+            full = infos.get(url)
             if not full:
                 continue
 
@@ -182,32 +215,29 @@ def get_batch(
             if duration:
                 if duration < MIN_DURATION_SEC or duration > MAX_DURATION_SEC:
                     continue
+
             view_count = int(full.get("view_count") or 0)
             like_count = int(full.get("like_count") or 0)
-            
+
             # hard popularity gate
             if view_count < MIN_VIEW_COUNT:
                 continue
 
-            title = (full.get("title") or title or "").strip()
+            title = (full.get("title") or title0 or "").strip()
             uploader = (full.get("uploader") or full.get("channel") or "").strip()
             desc = (full.get("description") or "").strip()
 
             text_blob = " ".join([title, uploader, desc]).strip()
 
-            # popularity score: views dominate, likes add extra signal
             score = (view_count * 1.0) + (like_count * 30.0)
 
-            # soft anti-AI: not a ban, just a penalty so AI doesn't dominate
             blob_low = text_blob.lower()
             if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
                 score *= 0.35
 
-            # 1) баним арабский/тайский/японский/китайский/корейский
             if BANNED_SCRIPTS_RE.search(text_blob):
                 continue
 
-            # 2) допускаем только если есть кириллица или латиница
             if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
                 continue
             has_cyr = bool(HAS_CYR_RE.search(text_blob))
@@ -216,33 +246,22 @@ def get_batch(
                 if not EN_HINT_RE.search(text_blob):
                     continue
 
-
-            # 3) чёрный список по названию
             if BAD_TITLE_RE.search(title):
                 continue
 
-            # 4) обязательно cover/кавер (в title/uploader/desc)
             if not MUST_COVER_RE.search(text_blob):
                 continue
 
-            url = full.get("webpage_url") or url
-
-            item = YTItem(
-                url=url,
-                video_id=vid,
-                title=title,
-                source=f"yt:{vid}",
-                ts=int(time.time()),
-            )
+            url2 = full.get("webpage_url") or url
 
             out.append(
                 {
                     "feed": "c_youtube",
-                    "url": item.url,
-                    "video_id": item.video_id,
-                    "source": item.source,
-                    "title": item.title,
-                    "ts": item.ts,
+                    "url": url2,
+                    "video_id": vid,
+                    "source": f"yt:{vid}",
+                    "title": title,
+                    "ts": int(time.time()),
                     "score": float(score),
                     "views": view_count,
                     "likes": like_count,
@@ -250,94 +269,12 @@ def get_batch(
             )
 
             used.add(vid)
+            accepted_in_query += 1
+            log(f"picked vid={vid} views={view_count} score={int(score)} title={title[:80]}")
 
-    # Fallback: if strict gate didn't fill quota, relax view gate to FALLBACK_MIN_VIEWS
-    if len(out) < limit and FALLBACK_MIN_VIEWS < MIN_VIEW_COUNT:
-        need = limit - len(out)
-        log(f"fallback: need={need} relax views to {FALLBACK_MIN_VIEWS}")
-
-        # run same queries again but with relaxed view gate
-        for query in queries:
-            if len(out) >= limit:
-                break
-
-            candidates = _search(query, SEARCH_PER_QUERY)
-            checked = 0
-
-            for c in candidates:
-                if len(out) >= limit:
-                    break
-                if checked >= MAX_CHECK_PER_QUERY:
-                    break
-
-                vid = (c.get("id") or "").strip()
-                url = (c.get("url") or "").strip()
-                title = (c.get("title") or "").strip()
-
-                if not vid:
-                    vid = _extract_video_id(url)
-                if not vid or vid in used:
-                    continue
-
-                checked += 1
-                full = _info(url)
-                if not full:
-                    continue
-
-                duration = full.get("duration")
-                if duration:
-                    if duration < MIN_DURATION_SEC or duration > MAX_DURATION_SEC:
-                        continue
-
-                view_count = int(full.get("view_count") or 0)
-                like_count = int(full.get("like_count") or 0)
-
-                if view_count < FALLBACK_MIN_VIEWS:
-                    continue
-
-                title = (full.get("title") or title or "").strip()
-                uploader = (full.get("uploader") or full.get("channel") or "").strip()
-                desc = (full.get("description") or "").strip()
-                text_blob = " ".join([title, uploader, desc]).strip()
-
-                score = (view_count * 1.0) + (like_count * 30.0)
-
-                blob_low = text_blob.lower()
-                if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
-                    score *= 0.35
-
-                if BANNED_SCRIPTS_RE.search(text_blob):
-                    continue
-                if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
-                    continue
-                has_cyr = bool(HAS_CYR_RE.search(text_blob))
-                has_lat = bool(HAS_LAT_RE.search(text_blob))
-                if has_lat and (not has_cyr):
-                    if not EN_HINT_RE.search(text_blob):
-                        continue
-
-                if BAD_TITLE_RE.search(title):
-                    continue
-                if not MUST_COVER_RE.search(text_blob):
-                    continue
-
-                url = full.get("webpage_url") or url
-
-                out.append(
-                    {
-                        "feed": "c_youtube",
-                        "url": url,
-                        "video_id": vid,
-                        "source": f"yt:{vid}",
-                        "title": title,
-                        "ts": int(time.time()),
-                        "score": float(score),
-                        "views": view_count,
-                        "likes": like_count,
-                    }
-                )
-                used.add(vid)
-
+        dt = time.time() - t0
+        log(f"query[{qi}] accepted={accepted_in_query} out={len(out)}/{limit} dt={dt:.1f}s")
+    
     out.sort(key=lambda x: x.get("score", 0), reverse=True)
     log(f"returning={len(out)}")
     return out
