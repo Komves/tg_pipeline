@@ -214,7 +214,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
     _save_sent(sentv_path, sentv, keep_last=700)
 
-    # --- memes (BATCH GPT RANKING, Variant A) ---
+    # --- мемы (GPT BATCH RANKING: Variant A) ---
     sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
     sentm = _load_sent(sentm_path)
 
@@ -263,7 +263,8 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     try:
         res = chatgpt_dialog.meme_rank_batch(batch, top_k=SEND_K)
         picked_ids = list(res.get("picked_item_ids") or [])
-    except Exception:
+    except Exception as e:
+        print(f"[meme] meme_rank_batch error: {type(e).__name__}: {e}", flush=True)
         picked_ids = []
 
     picked_set = set(picked_ids)
@@ -289,7 +290,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             )
 
     _save_sent(sentm_path, sentm, keep_last=700)
-
+    
     # --- youtube (оставь твой текущий блок здесь как есть) ---
     # !!! ВАЖНО: просто перенеси сюда весь текущий try/except youtube из vesya_handler
     # и НЕ вызывай здесь ingest_hours.
