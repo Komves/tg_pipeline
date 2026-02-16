@@ -87,7 +87,7 @@ def _ydl_opts(flat: bool) -> dict:
         "simulate": True,
         "ignore_no_formats_error": True,
         # помогает обходить format errors
-        "extractor_args": {"youtube": {"player_client": ["web"]}},
+        "extractor_args": {"youtube": {"player_client": ["android"]}},
     }
 
     if flat:
