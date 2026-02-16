@@ -94,6 +94,9 @@ def _ydl_opts(flat: bool) -> dict:
 
     if _has_cookies():
         opts["cookiefile"] = COOKIES_PATH
+    proxy = (os.getenv("YT_PROXY") or "").strip()
+    if proxy:
+        opts["proxy"] = proxy
 
     return opts
 
