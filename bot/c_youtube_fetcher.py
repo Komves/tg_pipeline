@@ -131,15 +131,21 @@ def _search(query: str, max_results: int = 40):
     if not key:
         log("YT_API_KEY missing")
         return []
+    # определяем язык запроса
+    is_ru = any(ch in query for ch in "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя")
+    lang = "ru" if is_ru else "en"
+    region = "RU" if is_ru else "US"
 
     url = "https://www.googleapis.com/youtube/v3/search"
     params = {
-        "part": "snippet",
-        "q": query,
-        "type": "video",
-        "maxResults": max_results,
-        "key": key,
-    }
+    "part": "snippet",
+    "q": query,
+    "type": "video",
+    "maxResults": max_results,
+    "relevanceLanguage": lang,
+    "regionCode": region,
+    "key": key,
+}
 
     try:
         r = requests.get(url, params=params, timeout=20)
@@ -163,7 +169,74 @@ def _search(query: str, max_results: int = 40):
             })
 
         log(f"YT API search ok query='{query}' results={len(out)}")
-        return out
+
+        # --- добираем статистику и фильтруем ---
+        vids = [x["id"] for x in out]
+        if not vids:
+            return []
+
+        url2 = "https://www.googleapis.com/youtube/v3/videos"
+        params2 = {
+            "part": "contentDetails,statistics,snippet",
+            "id": ",".join(vids),
+            "key": key,
+        }
+
+        r2 = requests.get(url2, params=params2, timeout=20)
+        data2 = r2.json()
+
+        meta = {it["id"]: it for it in data2.get("items", [])}
+        # --- подтягиваем страну каналов ---
+        channel_ids = []
+        for it in meta.values():
+            cid = (it.get("snippet", {}) or {}).get("channelId")
+            if cid:
+                channel_ids.append(cid)
+
+        # unique
+        channel_ids = list(dict.fromkeys(channel_ids))
+
+        ch_country = {}
+        if channel_ids:
+            rch = requests.get("https://www.googleapis.com/youtube/v3/channels", params={
+                "part": "snippet",
+                "id": ",".join(channel_ids[:50]),
+                "key": key,
+            }, timeout=20)
+            jch = rch.json()
+            for ch in jch.get("items", []):
+                cid = ch.get("id")
+                country = (ch.get("snippet", {}) or {}).get("country") or ""
+                ch_country[cid] = country
+
+        filtered = []
+
+        for x in out:
+            it = meta.get(x["id"])
+            if not it:
+                continue
+
+            cid = (it.get("snippet", {}) or {}).get("channelId") or ""
+            country = ch_country.get(cid, "")
+
+            title = it["snippet"].get("title", "")
+            channel = it["snippet"].get("channelTitle", "")
+            desc = it["snippet"].get("description", "")
+
+            blob = f"{title} {channel} {desc}".lower()
+
+            if BANNED_SCRIPTS_RE.search(blob):
+                continue
+
+            views = int(it.get("statistics", {}).get("viewCount", 0))
+
+            if views < MIN_VIEW_COUNT:
+                continue
+
+            filtered.append(x)
+
+        return filtered
+
 
     except Exception as e:
         log(f"YT API search error: {e}")
@@ -190,8 +263,6 @@ def _info_many(urls: List[str], max_workers: int) -> Dict[str, Optional[dict]]:
             except Exception:
                 out[u] = None
     return out
-
-
 
 def get_batch(
     limit: int,
