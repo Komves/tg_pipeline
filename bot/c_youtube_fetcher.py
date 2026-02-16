@@ -32,7 +32,9 @@ BAD_TITLE_RE = re.compile(
 )
 
 # Обязательное: cover/кавер
-MUST_COVER_RE = re.compile(r"(?i)\b(cover|кавер)\b")
+# cover/кавер как сигнал, но не обязательное
+COVER_HINT_RE = re.compile(r"(?i)\b(cover|кавер|version)\b")
+OFFICIAL_HINT_RE = re.compile(r"(?i)\b(official|music video|vevo|topic|audio)\b")
 
 # Бан-скрипты (арабский/тайский/японский/китайский/корейский)
 BANNED_SCRIPTS_RE = re.compile(r"[\u0600-\u06FF\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]")
@@ -262,9 +264,8 @@ def get_batch(
             if BAD_TITLE_RE.search(title):
                 continue
 
-            if not MUST_COVER_RE.search(text_blob):
-                continue
-
+            # пропускаем, если это либо кавер, либо официальный/топовый трек
+            
             url2 = full.get("webpage_url") or url
 
             out.append(
