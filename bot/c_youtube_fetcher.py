@@ -14,9 +14,9 @@ import yt_dlp
 COOKIES_PATH = os.getenv("YT_COOKIES_PATH", "/data/cookies.txt").strip()
 
 MAX_QUERIES = int(os.getenv("YT_MAX_QUERIES", "8"))
-SEARCH_PER_QUERY = int(os.getenv("YT_SEARCH_PER_QUERY", "8"))
-MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "6"))
-INFO_WORKERS = int(os.getenv("YT_INFO_WORKERS", "8"))
+SEARCH_PER_QUERY = int(os.getenv("YT_SEARCH_PER_QUERY", "6"))
+MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "10"))
+INFO_WORKERS = int(os.getenv("YT_INFO_WORKERS", "6"))
 
 MAX_DURATION_SEC = int(os.getenv("YT_MAX_DURATION_SEC", str(12 * 60)))
 MIN_DURATION_SEC = int(os.getenv("YT_MIN_DURATION_SEC", "80"))
