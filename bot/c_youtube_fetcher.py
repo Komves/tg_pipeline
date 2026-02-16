@@ -148,7 +148,7 @@ def _info_many(urls: List[str], max_workers: int) -> Dict[str, Optional[dict]]:
         return {}
     mw = max(1, int(max_workers or 1))
     out: Dict[str, Optional[dict]] = {}
-    with ThreadPoolExecutor(max_workers=1) as ex:
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
         fut_map = {ex.submit(_info, u): u for u in urls}
         for fut in as_completed(fut_map):
             u = fut_map[fut]
