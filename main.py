@@ -502,6 +502,7 @@ async def vesya_handler(message: Message) -> None:
                 img_bytes = _shrink_jpeg_bytes(raw)
 
         # 2) If not reply, but text asks to describe → use last saved photo
+        wants_photo = False
         if img_bytes is None:
             t = text.lower()
             wants_photo = (
