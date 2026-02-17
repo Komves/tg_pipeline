@@ -598,9 +598,13 @@ async def ingest24_loop(bot: Bot) -> None:
             async with TG_LOCK:
                 await ingest_hours(24)
 
-            # отправка пользователю (тот же user_id что использовался последним)
-            if RECENT_MSG_IDS:
-                chat_id = list(RECENT_MSG_IDS.keys())[-1][0]
+                       # отправка пользователю
+            if not RECENT_MSG_IDS:
+                print("[ingest24] no recent users, skip sending", flush=True)
+                continue
+
+            chat_id = list(RECENT_MSG_IDS.keys())[-1][0]
+            user_id = list(RECENT_MSG_IDS.keys())[-1][1]
 
             class Dummy:
                 def __init__(self, bot, chat_id, user_id):
@@ -611,17 +615,18 @@ async def ingest24_loop(bot: Bot) -> None:
 
                 async def answer(self, text, **kw):
                     return await self.bot.send_message(self.chat.id, text, **kw)
+
                 async def answer_photo(self, photo, **kw):
                     return await self.bot.send_photo(self.chat.id, photo, **kw)
+
                 async def answer_video(self, video, **kw):
                     return await self.bot.send_video(self.chat.id, video, **kw)
+
                 async def answer_document(self, document, **kw):
                     return await self.bot.send_document(self.chat.id, document, **kw)
 
-            user_id = list(RECENT_MSG_IDS.keys())[-1][1] if RECENT_MSG_IDS else chat_id
-            dummy: Dummy = Dummy(bot, chat_id, user_id)
+            dummy = Dummy(bot, chat_id, user_id)
 
-                # используем существующий pipeline content
             await _send_content(dummy, user_id=user_id, ingest_hours_n=None)
 
         except Exception as e:
