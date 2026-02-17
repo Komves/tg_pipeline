@@ -7,3 +7,5 @@ __pycache__/
 .venv/
 tg_session.session
 tg_pipeline.env
+*.env
+.env
