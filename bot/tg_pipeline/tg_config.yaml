@@ -1,0 +1,42 @@
+telegram:
+  api_id: 123456
+  api_hash: 0123456789abcdef0123456789abcdef
+  session_dir: data/tg/session
+  session_name: tg_ingest
+ingest:
+  limit_per_source: 300
+  max_media_mb: 300
+  sleep_between_sources_sec: 1.0
+sources:
+  MIX:
+  - https://t.me/cheerful_wino
+  - https://t.me/drunktwi
+  - https://t.me/Galstukovaonline
+  - https://t.me/gusgagarik
+  - '@tgSmiler'
+  - https://t.me/beleebelogo
+  - https://t.me/Hoduttut
+  - https://t.me/+BOoK8HXCpytjZDgy
+  - https://t.me/babazoyka
+  - https://t.me/+Wd8CPKBj-uI1MTdi
+  - https://t.me/ytx_sex_public
+  - https://t.me/i_taaak_soidet
+  - https://t.me/smeh_proletariya
+  - https://t.me/delusion_generator
+  - https://t.me/NoviyDubll
+  - https://t.me/Women_Charm
+  - https://t.me/smesnonet
+  - https://t.me/sofa_driver
+  - https://t.me/yumor_video_ugar
+  - https://t.me/rjaka_memi
+  - https://t.me/pezduzalive
+  - https://t.me/strochki_bez_tochki
+  - https://t.me/+2PBhN4dBGFBhMTAy
+  - https://t.me/dvestroki
+  - https://t.me/memomagia
+  - https://t.me/aaakaramba
+  - https://t.me/IT_Humor_VIP
+paths:
+  raw_root: data/tg/raw
+  state_path: out/logs/tg_state.json
+  report_jsonl: out/reports/tg_ingest.jsonl

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env
+.venv/
+tg_session.session
+tg_pipeline.env
+*.env
+.env

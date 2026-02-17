@@ -1,0 +1,6 @@
+aiogram==3.24.0
+telethon==1.36.0
+pillow
+requests==2.31.0
+openai>=1.40.0
+yt-dlp==2026.02.04
