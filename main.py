@@ -19,7 +19,7 @@ from ingest_runner import ingest_hours
 from meme_ranker import rank_memes
 
 import c_youtube_fetcher
-
+# deploy trigger
 RECENT_MSG_IDS = {}
 # last image per (chat_id, user_id) to support "опиши фото" without reply
 LAST_USER_IMAGE_ID = {}  # (chat_id:int, user_id:int) -> file_id:str
