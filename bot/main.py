@@ -409,10 +409,7 @@ async def on_image_document(message: Message) -> None:
         return
     try:
         doc = message.document
-    try:
-
-        doc = message.document
-
+    
         if not doc.mime_type.startswith("image/"):
             return
 
@@ -507,7 +504,17 @@ async def vesya_handler(message: Message) -> None:
     print(f"[route] intent={decision.intent} reply={decision.reply!r}", flush=True)
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
+
     if intent == "chat":
+        # имитация "печатает..." + пауза 5–10 секунд
+        wait_s = random.uniform(5, 10)
+
+        # Telegram "typing" живёт недолго, поэтому поддерживаем его до отправки
+        end_at = time.time() + wait_s
+        while time.time() < end_at:
+            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+            await asyncio.sleep(min(4.0, end_at - time.time()))
+
         await message.answer(reply or "слушаю")
         return
 
