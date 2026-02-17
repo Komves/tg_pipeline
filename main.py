@@ -372,6 +372,12 @@ async def on_photo(message: Message) -> None:
         raw = await _download_tg_file_bytes(ph.file_id)
 
         img_bytes = _shrink_jpeg_bytes(raw)
+        
+        chatgpt_dialog.note_last_user_photo(
+            int(message.chat.id),
+            int(message.from_user.id) if message.from_user else 0,
+            img_bytes,
+        )
                 
         fn = IMG_INBOX / f"{message.chat.id}_{message.message_id}.jpg"
 
