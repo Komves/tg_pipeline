@@ -353,11 +353,11 @@ async def _download_tg_file_bytes(file_id: str) -> bytes:
 async def on_photo(message: Message) -> None:
     print("[IMG] photo handler triggered", flush=True)
 
-    if not _img_should_react(int(message.chat.id)):
-        print("[IMG] skipped by limiter", flush=True)
+    if not _chat_allowed(message):
         return
 
-    if not _chat_allowed(message):
+    if not _img_should_react(int(message.chat.id)):
+        print("[IMG] skipped by limiter", flush=True)
         return
     
     try:
@@ -366,6 +366,13 @@ async def on_photo(message: Message) -> None:
         raw = await _download_tg_file_bytes(ph.file_id)
 
         img_bytes = _shrink_jpeg_bytes(raw)
+                # save last photo for "опиши фото" without reply
+        chatgpt_dialog.note_last_user_photo(
+            int(message.chat.id),
+            int(message.from_user.id) if message.from_user else 0,
+            img_bytes,
+        )
+
 
         fn = IMG_INBOX / f"{message.chat.id}_{message.message_id}.jpg"
 
@@ -416,6 +423,12 @@ async def on_image_document(message: Message) -> None:
         raw = await _download_tg_file_bytes(doc.file_id)
 
         img_bytes = _shrink_jpeg_bytes(raw)
+                # save last image-document for "опиши фото" without reply
+        chatgpt_dialog.note_last_user_photo(
+            int(message.chat.id),
+            int(message.from_user.id) if message.from_user else 0,
+            img_bytes,
+        )
 
         res = chatgpt_dialog.image_react(
             chat_id=int(message.chat.id),
@@ -460,13 +473,20 @@ async def vesya_handler(message: Message) -> None:
 
     text = (message.text or "").strip()
         # =========================
-    # REPLY TO PHOTO → DESCRIBE
+    print(f"[route] text={text!r}", flush=True)
+    if not text:
+        return
+
+    # =========================
+    # PHOTO CONTEXT: reply OR last saved photo
     # =========================
     try:
+        img_bytes = None
+
+        # 1) If user replied to a photo/document → use that
         r = message.reply_to_message
         if r:
             img_id = None
-
             if getattr(r, "photo", None):
                 img_id = r.photo[-1].file_id
             elif getattr(r, "document", None) and (getattr(r.document, "mime_type", "") or "").startswith("image/"):
@@ -476,13 +496,35 @@ async def vesya_handler(message: Message) -> None:
                 raw = await _download_tg_file_bytes(img_id)
                 img_bytes = _shrink_jpeg_bytes(raw)
 
-                dd = chatgpt_dialog.describe_or_compare_photo(text, img_bytes)
-                if dd and (dd.reply or "").strip():
-                    await message.answer(dd.reply)
-                    return
-    except Exception as e:
-        print(f"[IMG] reply describe error: {type(e).__name__}: {e}", flush=True)
+        # 2) If not reply, but text asks to describe → use last saved photo
+        if img_bytes is None:
+            t = text.lower()
+            wants_photo = (
+                "что на фото" in t
+                or "что ты видишь" in t
+                or t.startswith("опиши")
+                or "опиши фото" in t
+                or "опиши форт" in t
+                or "опиши" in t
+            )
+            if wants_photo:
+                last = chatgpt_dialog.pop_last_user_photo(
+                    int(message.chat.id),
+                    int(message.from_user.id) if message.from_user else 0,
+                )
+                if last:
+                    img_bytes = last
 
+        # 3) If we have image bytes → call vision describe
+        if img_bytes is not None:
+            dd = chatgpt_dialog.describe_or_compare_photo(text, img_bytes)
+            if dd and (dd.reply or "").strip():
+                await message.answer(dd.reply)
+                return
+
+    except Exception as e:
+        print(f"[IMG] photo describe routing error: {type(e).__name__}: {e}", flush=True)
+    
     print(f"[route] text={text!r}", flush=True)
     if not text:
         return
