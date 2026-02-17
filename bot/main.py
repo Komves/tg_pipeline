@@ -10,6 +10,8 @@ from pathlib import Path
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
+import io
+from PIL import Image
 
 from ranker import rank_top_n, CAT_A_VIDEO
 from ingest_runner import ingest_hours
@@ -103,6 +105,28 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is empty (set Render env var BOT_TOKEN).")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+# =========================
+# IMAGE INBOX / SHRINK (vision economy)
+# =========================
+IMG_INBOX = DATA_DIR / "img_inbox"
+IMG_INBOX.mkdir(parents=True, exist_ok=True)
+
+def _shrink_jpeg_bytes(src_bytes: bytes, max_side: int = 1024, quality: int = 70) -> bytes:
+    try:
+        im = Image.open(io.BytesIO(src_bytes)).convert("RGB")
+        w, h = im.size
+
+        scale = min(1.0, max_side / float(max(w, h)))
+        if scale < 1.0:
+            im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=int(quality), optimize=True)
+        return out.getvalue()
+
+    except Exception:
+        return src_bytes
+
 NEWS_SOURCES = Path("news_sources.txt")  # лежит рядом с main.py в /opt/render/project/src/bot
 
 DEFAULT_NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
@@ -291,6 +315,101 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     # --- youtube (оставь твой текущий блок здесь как есть) ---
     # !!! ВАЖНО: просто перенеси сюда весь текущий try/except youtube из vesya_handler
     # и НЕ вызывай здесь ingest_hours.
+# =========================
+# IMAGE HANDLERS (group vision react)
+# =========================
+
+async def _download_tg_file_bytes(file_id: str) -> bytes:
+    f = await bot.get_file(file_id)
+    bio = io.BytesIO()
+    await bot.download_file(f.file_path, destination=bio)
+    return bio.getvalue()
+
+
+@dp.message(F.photo)
+async def on_photo(message: Message) -> None:
+    print("[IMG] photo handler triggered", flush=True)
+    if not _chat_allowed(message):
+        return
+
+    try:
+        ph = message.photo[-1]
+
+        raw = await _download_tg_file_bytes(ph.file_id)
+
+        img_bytes = _shrink_jpeg_bytes(raw)
+
+        fn = IMG_INBOX / f"{message.chat.id}_{message.message_id}.jpg"
+
+        try:
+            fn.write_bytes(img_bytes)
+        except Exception:
+            pass
+
+        res = chatgpt_dialog.image_react(
+            chat_id=int(message.chat.id),
+            user_id=int(message.from_user.id) if message.from_user else 0,
+            caption=(message.caption or ""),
+            img_bytes=img_bytes,
+        )
+
+        if not res:
+            return
+
+        action = (res.get("action") or "skip").lower()
+
+        reply = (res.get("reply") or "").strip()
+
+        if action == "like":
+            await message.reply(reply or "🔥")
+
+        elif action == "comment":
+            await message.reply(reply or "норм")
+
+    except Exception as e:
+        print(f"[img] photo error: {e}", flush=True)
+
+
+
+@dp.message(F.document)
+async def on_image_document(message: Message) -> None:
+
+    if not _chat_allowed(message):
+        return
+
+    try:
+
+        doc = message.document
+
+        if not doc.mime_type.startswith("image/"):
+            return
+
+        raw = await _download_tg_file_bytes(doc.file_id)
+
+        img_bytes = _shrink_jpeg_bytes(raw)
+
+        res = chatgpt_dialog.image_react(
+            chat_id=int(message.chat.id),
+            user_id=int(message.from_user.id) if message.from_user else 0,
+            caption=(message.caption or ""),
+            img_bytes=img_bytes,
+        )
+
+        if not res:
+            return
+
+        action = (res.get("action") or "skip").lower()
+
+        reply = (res.get("reply") or "").strip()
+
+        if action == "like":
+            await message.reply(reply or "👍")
+
+        elif action == "comment":
+            await message.reply(reply or "ок")
+
+    except Exception as e:
+        print(f"[img] doc error: {e}", flush=True)
 
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
@@ -314,6 +433,38 @@ async def vesya_handler(message: Message) -> None:
     print(f"[route] text={text!r}", flush=True)
     if not text:
         return
+    # =========================
+    # reply to photo → discuss
+    # =========================
+
+    try:
+
+        r = message.reply_to_message
+
+        if r:
+
+            img_id = None
+
+            if getattr(r, "photo", None):
+                img_id = r.photo[-1].file_id
+
+            elif getattr(r, "document", None) and r.document.mime_type.startswith("image/"):
+                img_id = r.document.file_id
+
+            if img_id:
+
+                raw = await _download_tg_file_bytes(img_id)
+
+                img_bytes = _shrink_jpeg_bytes(raw)
+
+                dd = chatgpt_dialog.describe_or_compare_photo(text, img_bytes)
+
+                if dd and dd.reply:
+                    await message.answer(dd.reply)
+                    return
+
+    except Exception as e:
+        print(f"[img] discuss error: {e}", flush=True)
 
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0

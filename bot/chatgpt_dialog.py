@@ -614,6 +614,69 @@ def meme_should_send(img_bytes: bytes, caption: str = "", src: str = "") -> bool
     except Exception:
         return False
 
+def image_react(chat_id: int, user_id: int, caption: str, img_bytes: bytes) -> Optional[dict]:
+    """
+    Decide reaction for group images:
+    skip | like | comment
+    """
+
+    try:
+
+        if not _has_key():
+            return {"action": "like", "reply": "👍"}
+
+        client = OpenAI()
+
+        b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+        cap = (caption or "").strip().replace("\n", " ")[:200]
+
+        prompt = (
+            "Ты бот в группе Telegram.\n"
+            "Выбери реакцию на изображение.\n"
+            "action: skip | like | comment\n"
+            "reply: короткая строка или emoji\n"
+            "Если мем → comment\n"
+            "Если обычное фото → like\n"
+            "Если реклама → skip\n"
+            'Верни JSON {"action":"...","reply":"..."}'
+        )
+
+        resp = client.responses.create(
+            model=VISION_MODEL,
+            input=[
+                {"role": "system", "content": "Return JSON only"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
+                    ],
+                },
+            ],
+        )
+
+        out = _extract_text(resp)
+
+        data = _parse_json_object(out) or {}
+
+        action = str(data.get("action", "skip")).lower()
+
+        reply = _sanitize_reply(str(data.get("reply", "")))
+
+        if action not in {"skip", "like", "comment"}:
+            action = "skip"
+
+        if action != "skip" and not reply:
+            reply = "🔥"
+
+        return {"action": action, "reply": reply}
+
+    except Exception as e:
+
+        _dbg(f"image_react error: {e}")
+
+        return None
 
 # =============================================================================
 # PHOTO: describe/compare (main.py may call this)
