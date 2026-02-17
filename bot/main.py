@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import random
 import json
 import shutil
 import uuid
@@ -20,6 +21,13 @@ from meme_ranker import rank_memes
 import c_youtube_fetcher
 
 RECENT_MSG_IDS = {}
+# =========================
+# IMAGE REACTION LIMITER (moderate)
+# =========================
+IMG_REACT_LAST_TS = {}  # chat_id -> ts
+IMG_REACT_COOLDOWN_SEC = int(os.getenv("V_IMG_REACT_COOLDOWN_SEC", "20"))
+IMG_REACT_PROB = float(os.getenv("V_IMG_REACT_PROB", "0.45"))
+
 FEEDBACK_PATH = "/data/feedback.tsv"
 def _is_banned(item_id: str) -> bool:
     try:
@@ -152,6 +160,21 @@ def _chat_allowed(message: Message) -> bool:
 def _log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     print(f"[main] {ts} UTC {msg}", flush=True)
+def _img_should_react(chat_id: int) -> bool:
+    now = time.time()
+    last = float(IMG_REACT_LAST_TS.get(int(chat_id), 0.0))
+
+    # cooldown gate
+    if (now - last) < IMG_REACT_COOLDOWN_SEC:
+        return False
+
+    # probability gate
+    if random.random() > IMG_REACT_PROB:
+        return False
+
+    IMG_REACT_LAST_TS[int(chat_id)] = now
+    return True
+
 
 # =========================
 # NEWS RUNNER (calls Telethon inside news_digest)
@@ -329,9 +352,14 @@ async def _download_tg_file_bytes(file_id: str) -> bytes:
 @dp.message(F.photo)
 async def on_photo(message: Message) -> None:
     print("[IMG] photo handler triggered", flush=True)
-    if not _chat_allowed(message):
+
+    if not _img_should_react(int(message.chat.id)):
+        print("[IMG] skipped by limiter", flush=True)
         return
 
+    if not _chat_allowed(message):
+        return
+    
     try:
         ph = message.photo[-1]
 
@@ -376,7 +404,11 @@ async def on_image_document(message: Message) -> None:
 
     if not _chat_allowed(message):
         return
-
+    if not _img_should_react(int(message.chat.id)):
+        print("[IMG] doc skipped by limiter", flush=True)
+        return
+    try:
+        doc = message.document
     try:
 
         doc = message.document
