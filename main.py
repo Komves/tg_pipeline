@@ -21,6 +21,9 @@ from meme_ranker import rank_memes
 import c_youtube_fetcher
 
 RECENT_MSG_IDS = {}
+# last image per (chat_id, user_id) to support "опиши фото" without reply
+LAST_USER_IMAGE_ID = {}  # (chat_id:int, user_id:int) -> file_id:str
+
 # =========================
 # IMAGE REACTION LIMITER (moderate)
 # =========================
@@ -355,25 +358,21 @@ async def on_photo(message: Message) -> None:
 
     if not _chat_allowed(message):
         return
-
-    if not _img_should_react(int(message.chat.id)):
-        print("[IMG] skipped by limiter", flush=True)
-        return
-    
+        
     try:
         ph = message.photo[-1]
+                # save last photo id even if limiter skips reactions
+        uid = int(message.from_user.id) if message.from_user else 0
+        LAST_USER_IMAGE_ID[(int(message.chat.id), uid)] = ph.file_id
+
+        if not _img_should_react(int(message.chat.id)):
+            print("[IMG] skipped by limiter (but saved last file_id)", flush=True)
+            return
 
         raw = await _download_tg_file_bytes(ph.file_id)
 
         img_bytes = _shrink_jpeg_bytes(raw)
-                # save last photo for "опиши фото" without reply
-        chatgpt_dialog.note_last_user_photo(
-            int(message.chat.id),
-            int(message.from_user.id) if message.from_user else 0,
-            img_bytes,
-        )
-
-
+                
         fn = IMG_INBOX / f"{message.chat.id}_{message.message_id}.jpg"
 
         try:
@@ -507,13 +506,12 @@ async def vesya_handler(message: Message) -> None:
                 or "опиши форт" in t
                 or "опиши" in t
             )
-            if wants_photo:
-                last = chatgpt_dialog.pop_last_user_photo(
-                    int(message.chat.id),
-                    int(message.from_user.id) if message.from_user else 0,
-                )
-                if last:
-                    img_bytes = last
+        if wants_photo:
+            uid = int(message.from_user.id) if message.from_user else 0
+            fid = LAST_USER_IMAGE_ID.get((int(message.chat.id), uid))
+            if fid:
+                raw = await _download_tg_file_bytes(fid)
+                img_bytes = _shrink_jpeg_bytes(raw)
 
         # 3) If we have image bytes → call vision describe
         if img_bytes is not None:
@@ -525,42 +523,7 @@ async def vesya_handler(message: Message) -> None:
     except Exception as e:
         print(f"[IMG] photo describe routing error: {type(e).__name__}: {e}", flush=True)
     
-    print(f"[route] text={text!r}", flush=True)
-    if not text:
-        return
-    # =========================
-    # reply to photo → discuss
-    # =========================
-
-    try:
-
-        r = message.reply_to_message
-
-        if r:
-
-            img_id = None
-
-            if getattr(r, "photo", None):
-                img_id = r.photo[-1].file_id
-
-            elif getattr(r, "document", None) and r.document.mime_type.startswith("image/"):
-                img_id = r.document.file_id
-
-            if img_id:
-
-                raw = await _download_tg_file_bytes(img_id)
-
-                img_bytes = _shrink_jpeg_bytes(raw)
-
-                dd = chatgpt_dialog.describe_or_compare_photo(text, img_bytes)
-
-                if dd and dd.reply:
-                    await message.answer(dd.reply)
-                    return
-
-    except Exception as e:
-        print(f"[img] discuss error: {e}", flush=True)
-
+    
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
@@ -583,7 +546,6 @@ async def vesya_handler(message: Message) -> None:
 
         await message.answer(reply or "слушаю")
         return
-
     
     if intent == "news":
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
@@ -856,6 +818,9 @@ async def ingest24_loop(bot: Bot) -> None:
 
                        # отправка пользователю
             if not RECENT_MSG_IDS:
+                # last image per (chat_id, user_id) to support "опиши фото" without reply
+                LAST_USER_IMAGE_ID = {}  # (chat_id:int, user_id:int) -> file_id:str
+
                 print("[ingest24] no recent users, skip sending", flush=True)
                 continue
 
