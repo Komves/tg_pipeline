@@ -68,7 +68,7 @@ def _iso8601_to_seconds(s: str | None) -> int | None:
     return h * 3600 + mnt * 60 + sec
 
 def _build_queries(mode: str = "mix") -> List[str]:
-    neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke -shorts -short"
+    neg = "-karaoke -shorts -short"
 
     en = [
         f"rock metal covers {neg}",
