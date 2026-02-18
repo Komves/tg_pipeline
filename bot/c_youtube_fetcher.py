@@ -595,12 +595,23 @@ def get_batch(
 
     # B-strategy: one MIX pool
     pool = _load_json(POOL_WORK_PATH, {"ts": 0, "items": []})
+
+    # If pool is fresh AND non-empty -> use it
     if _pool_is_fresh(pool) and (pool.get("items") or []):
         got = _consume_from_pool(limit, used)
         got.sort(key=lambda x: x.get("score", 0), reverse=True)
         log(f"returning={len(got)} (from pool)")
         return got
 
+    # If pool is fresh BUT empty -> force refresh (otherwise we get stuck returning=0)
+    if _pool_is_fresh(pool) and not (pool.get("items") or []):
+        log("pool fresh but empty -> force refresh")
+        _refresh_pool_mix()
+        got = _consume_from_pool(limit, used)
+        got.sort(key=lambda x: x.get("score", 0), reverse=True)
+        log(f"returning={len(got)} (after force refresh)")
+        return got
+    
     # refresh pool once (expensive but rare)
     if os.getenv("YT_API_KEY"):
         _refresh_pool_mix()
