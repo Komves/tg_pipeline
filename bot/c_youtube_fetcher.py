@@ -46,6 +46,39 @@ HAS_LAT_RE = re.compile(r"[A-Za-z]")
 EN_HINT_RE = re.compile(r"(?i)\b(the|and|or|to|for|with|from|in|on|of|a|an|this|that|live|official|cover|version|remix)\b")
 
 YT_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_-]{11})")
+def _build_queries(mode: str = "mix") -> List[str]:
+    neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke -shorts -short"
+
+    en = [
+        f"rock metal covers {neg}",
+        f"rock metal cover hit {neg}",
+        f"famous song metal cover {neg}",
+        f"full band metal cover {neg}",
+        f"legendary hit metal cover {neg}",
+    ]
+
+    ru = [
+        f"Русские каверы рок {neg}",
+        f"Русские метал каверы {neg}",
+        f"рок кавер хит {neg}",
+        f"метал кавер популярная песня {neg}",
+    ]
+
+    ai = [
+        f"ai cover rock metal {neg}",
+        f"rvc cover rock metal {neg}",
+    ]
+
+    m = (mode or "mix").strip().lower()
+
+    if m == "en":
+        return en
+    if m == "ru":
+        return ru
+    if m == "ai":
+        return ai
+
+    return en + ru + ai
 
 
 def log(msg: str) -> None:
@@ -103,24 +136,6 @@ def _ydl_opts(flat: bool) -> dict:
 
     return opts
 
-def _build_queries() -> List[str]:
-    neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke -shorts -short"
-
-    return [
-
-        # популярные cover-запросы (самые эффективные)
-        f"rock metal covers {neg}",
-        f"rock metal cover hit {neg}",
-        f"famous song metal cover {neg}",
-        f"full band metal cover {neg}",
-        f"legendary hit metal cover {neg}",
-        f"Русские каверы рок {neg}",
-        f"Русские метал каверы {neg}",
-        
-        # ai only 1-2 queries (optional)
-        f"ai cover rock metal {neg}",
-    ]
-
 def _extract_video_id(url: str) -> str:
     m = YT_ID_RE.search(url or "")
     return m.group(1) if m else ""
@@ -144,8 +159,8 @@ def _search(query: str, max_results: int = 40):
     "maxResults": max_results,
     "key": key,
 
-    "relevanceLanguage": "en",
-    "regionCode": "US",
+    "relevanceLanguage": lang,
+    "regionCode": region,
     "videoCategoryId": "10",
 }
 
@@ -285,7 +300,7 @@ def get_batch(
     out: List[Dict] = []
     used = set(posted_video_ids or set())
 
-    queries = _build_queries()[:MAX_QUERIES]
+    queries = _build_queries(mode)[:MAX_QUERIES]
 
     for qi, query in enumerate(queries, start=1):
         if len(out) >= limit:
