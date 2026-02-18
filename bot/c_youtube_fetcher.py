@@ -467,10 +467,16 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
         used.add(vid)
         log(f"picked vid={vid} views={view_count} score={int(score)} title={title[:80]}")
 
-    new_pool = {"ts": pool.get("ts") or time.time(), "items": kept_rest + rest}
-    _save_json(POOL_WORK_PATH, new_pool)
+    # If we failed to pick anything, DO NOT burn the pool.
+    # Keep original items so we can debug/try again.
+    if not out:
+        log("picked=0 -> keep pool unchanged (no burn)")
+        _save_json(POOL_WORK_PATH, pool)
+        return out
 
-    return out
+        new_pool = {"ts": pool.get("ts") or time.time(), "items": kept_rest + rest}
+        _save_json(POOL_WORK_PATH, new_pool)
+        return out
 
 def get_batch(
     limit: int,
