@@ -653,15 +653,7 @@ async def vesya_handler(message: Message) -> None:
             await message.answer(reply)
         else:
             await message.answer("сек, собираю горячее.")
-
-        # 1) прожиг TG только тут (как раньше)
-        async with TG_LOCK:
-            try:
-                await ingest_hours(12)
-            except Exception as e:
-                print(f"[content] ingest_hours error: {e}", flush=True)
-
-        # 2) отправка контента: видео + мемы + youtube
+               
         await _send_content(message, user_id=user_id, ingest_hours_n=None)
         return
 
