@@ -55,6 +55,19 @@ HAS_LAT_RE = re.compile(r"[A-Za-z]")
 EN_HINT_RE = re.compile(r"(?i)\b(the|and|or|to|for|with|from|in|on|of|a|an|this|that|live|official|cover|version|remix)\b")
 
 YT_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_-]{11})")
+_ISO_DUR_RE = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
+
+def _iso8601_to_seconds(s: str | None) -> int | None:
+    if not s:
+        return None
+    m = _ISO_DUR_RE.match(s.strip())
+    if not m:
+        return None
+    h = int(m.group(1) or 0)
+    mnt = int(m.group(2) or 0)
+    sec = int(m.group(3) or 0)
+    return h * 3600 + mnt * 60 + sec
+
 def _build_queries(mode: str = "mix") -> List[str]:
     neg = "-concert -live -full -playlist -album -mix -stream -lyrics -karaoke -shorts -short"
 
@@ -149,6 +162,57 @@ def _extract_video_id(url: str) -> str:
     m = YT_ID_RE.search(url or "")
     return m.group(1) if m else ""
 
+def _videos_list_meta(video_ids: list[str]) -> dict[str, dict]:
+    """
+    videos.list is cheap (1 quota unit) and returns real viewCount/likeCount and ISO duration.
+    Returns dict: vid -> {views, likes, duration_sec, title, uploader, description}
+    """
+    key = (os.getenv("YT_API_KEY") or "").strip()
+    if not key:
+        return {}
+
+    out: dict[str, dict] = {}
+    url = "https://www.googleapis.com/youtube/v3/videos"
+
+    # API limit: 50 ids per call
+    for i in range(0, len(video_ids), 50):
+        chunk = [x for x in video_ids[i:i+50] if x]
+        if not chunk:
+            continue
+
+        r = requests.get(url, params={
+            "part": "statistics,contentDetails,snippet",
+            "id": ",".join(chunk),
+            "key": key,
+        }, timeout=20)
+
+        if r.status_code != 200:
+            log(f"YT videos.list error {r.status_code}: {r.text[:200]}")
+            continue
+
+        data = r.json() or {}
+        for it in (data.get("items") or []):
+            vid = (it.get("id") or "").strip()
+            if not vid:
+                continue
+            st = it.get("statistics") or {}
+            cd = it.get("contentDetails") or {}
+            sn = it.get("snippet") or {}
+
+            views = int(st.get("viewCount") or 0)
+            likes = int(st.get("likeCount") or 0)
+            duration_sec = _iso8601_to_seconds(cd.get("duration"))
+
+            out[vid] = {
+                "views": views,
+                "likes": likes,
+                "duration_sec": duration_sec,
+                "title": (sn.get("title") or "").strip(),
+                "uploader": (sn.get("channelTitle") or "").strip(),
+                "description": (sn.get("description") or "").strip(),
+            }
+
+    return out
 
 def _search(query: str, max_results: int = 40, *, basic_only: bool = False):
     key = os.getenv("YT_API_KEY")
@@ -370,13 +434,76 @@ def _refresh_pool_mix() -> dict:
     _save_json(raw_path, {"ts": int(time.time()), "queries": queries, "items": raw_items})
     log(f"POOL raw saved: {raw_path} items={len(raw_items)}")
 
-    # keep only top N items (quota-free; just trims what we already fetched)
-    if WORK_TARGET_N > 0 and len(work_items) > WORK_TARGET_N:
-        work_items = work_items[:WORK_TARGET_N]
+    # Enrich candidates with real stats via videos.list (cheap)
+    ids = [(x.get("video_id") or "").strip() for x in work_items]
+    ids = [x for x in ids if x]
+    meta = _videos_list_meta(ids)
 
-    pool = {"ts": time.time(), "items": work_items}
+    enriched: list[dict] = []
+    for x in work_items:
+        vid = (x.get("video_id") or "").strip()
+        url = (x.get("url") or "").strip()
+        if not vid or not url:
+            continue
+
+        m = meta.get(vid)
+        if not m:
+            continue
+
+        title = (m.get("title") or x.get("title") or "").strip()
+        uploader = (m.get("uploader") or "").strip()
+        desc = (m.get("description") or "").strip()
+        views = int(m.get("views") or 0)
+        likes = int(m.get("likes") or 0)
+        duration_sec = m.get("duration_sec")
+
+        text_blob = " ".join([title, uploader, desc]).strip()
+
+        # STRICT EN/RU ONLY
+        if BANNED_SCRIPTS_RE.search(text_blob):
+            continue
+        if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
+            continue
+
+        has_cyr = bool(HAS_CYR_RE.search(text_blob))
+        has_lat = bool(HAS_LAT_RE.search(text_blob))
+        if has_lat and (not has_cyr) and (not EN_HINT_RE.search(text_blob)):
+            continue
+
+        if BAD_TITLE_RE.search(title):
+            continue
+
+        if isinstance(duration_sec, int) and (duration_sec < MIN_DURATION_SEC or duration_sec > MAX_DURATION_SEC):
+            continue
+
+        if views < MIN_VIEW_COUNT:
+            continue
+
+        score = (views * 1.0) + (likes * 30.0)
+        blob_low = text_blob.lower()
+        if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
+            score *= 0.35
+
+        enriched.append({
+            "video_id": vid,
+            "url": url,
+            "title": title,
+            "uploader": uploader,
+            "description": desc,
+            "duration_sec": duration_sec,
+            "views": views,
+            "likes": likes,
+            "score": float(score),
+            "ts": int(time.time()),
+        })
+
+    enriched.sort(key=lambda z: float(z.get("score") or 0.0), reverse=True)
+    if WORK_TARGET_N > 0:
+        enriched = enriched[:WORK_TARGET_N]
+
+    pool = {"ts": time.time(), "items": enriched}
     _save_json(POOL_WORK_PATH, pool)
-    log(f"POOL work saved: {POOL_WORK_PATH} items={len(work_items)} (target={WORK_TARGET_N})")
+    log(f"POOL work saved: {POOL_WORK_PATH} items={len(enriched)} (top via videos.list)")
     return pool
 
 def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
@@ -389,10 +516,7 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
     take_n = min(len(items), max(limit * 12, 40))
     chunk = items[:take_n]
     rest = items[take_n:]
-
-    urls = [x.get("url") or "" for x in chunk if (x.get("url") or "").startswith("http")]
-    infos = _info_many(urls, INFO_WORKERS)
-
+    
     out: List[Dict] = []
     kept_rest: list[dict] = []
 
@@ -410,29 +534,29 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
         if vid in used:
             continue
 
-        full = infos.get(url)
-        if not full:
-            continue
+        full = x  # already enriched in _refresh_pool_mix()
 
-        url2 = (full.get("webpage_url") or url).strip()
+        url2 = url.strip()
         if "/shorts/" in url2:
             continue  # HARD shorts cut
 
-        duration = full.get("duration")
-        if duration and (duration < MIN_DURATION_SEC or duration > MAX_DURATION_SEC):
+        duration = full.get("duration_sec")
+        if isinstance(duration, int) and (duration < MIN_DURATION_SEC or duration > MAX_DURATION_SEC):
             continue
 
-        view_count = int(full.get("view_count") or 0)
-        like_count = int(full.get("like_count") or 0)
+        view_count = int(full.get("views") or 0)
+        like_count = int(full.get("likes") or 0)
         if view_count < MIN_VIEW_COUNT:
             continue
 
         title = (full.get("title") or title0 or "").strip()
-        uploader = (full.get("uploader") or full.get("channel") or "").strip()
+        uploader = (full.get("uploader") or "").strip()
         desc = (full.get("description") or "").strip()
-        text_blob = " ".join([title, uploader, desc]).strip()
+
+        text_blob = f"{title} {uploader} {desc}".strip()
 
         if BANNED_SCRIPTS_RE.search(text_blob):
+
             continue
         if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
             continue
@@ -469,14 +593,17 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
 
     # If we failed to pick anything, DO NOT burn the pool.
     # Keep original items so we can debug/try again.
+    # If we failed to pick anything, DO NOT burn the pool.
+    # Keep original items so we can debug/try again.
     if not out:
         log("picked=0 -> keep pool unchanged (no burn)")
         _save_json(POOL_WORK_PATH, pool)
         return out
 
-        new_pool = {"ts": pool.get("ts") or time.time(), "items": kept_rest + rest}
-        _save_json(POOL_WORK_PATH, new_pool)
-        return out
+    new_pool = {"ts": pool.get("ts") or time.time(), "items": kept_rest + rest}
+    _save_json(POOL_WORK_PATH, new_pool)
+    return out
+
 
 def get_batch(
     limit: int,
@@ -496,7 +623,7 @@ def get_batch(
     out: List[Dict] = []
     used = set(posted_video_ids or set())
 
-        # B-strategy: one MIX pool
+    # B-strategy: one MIX pool
     pool = _load_json(POOL_WORK_PATH, {"ts": 0, "items": []})
     if _pool_is_fresh(pool) and (pool.get("items") or []):
         got = _consume_from_pool(limit, used)
