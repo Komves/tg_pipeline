@@ -62,6 +62,15 @@ def _save_sent(path: Path, sent: set[str], *, keep_last: int = 500) -> None:
     except Exception:
         pass
 
+async def _download_tg_file_bytes(bot, file_path: str) -> bytes:
+    """
+    Скачать файл Telegram по file_path → bytes
+    """
+    from io import BytesIO
+
+    bio = BytesIO()
+    await bot.download_file(file_path, destination=bio)
+    return bio.getvalue()
 
 async def _gpt_meme_ok(abs_path: str, src: str = "") -> bool:
     try:
@@ -357,8 +366,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
     _save_sent(sentm_path, sentm, keep_last=700)
 
-
-    # --- youtube links (MIX pool: 6 links) ---
+    # --- youtube links ---
     try:
         def yt_kb(item_id: str) -> InlineKeyboardMarkup:
             return InlineKeyboardMarkup(inline_keyboard=[[
@@ -386,54 +394,43 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             mode="mix",
         )
 
-        final: list[tuple[str, str, str]] = []  # (title, url, vid)
+        print(f"[yt] pool size={len(pool)}", flush=True)
+
         for x in pool:
             title = (x.get("title") or "").strip()
             url = (x.get("url") or "").strip()
             vid = (x.get("video_id") or "").strip()
-            if not url or (url in sentyt):
+
+            if not url or url in sentyt:
                 continue
+
             item_id = f"yt:{url}"
+
             if _is_banned(item_id):
                 continue
-            final.append((title, url, vid))
-            if len(final) >= 6:
-                break
 
-        for (title, url, vid) in final:
-            item_id = f"yt:{url}"
             text2 = f"🎵 {title}\n{url}" if title else url
+
             await message.answer(text2, reply_markup=yt_kb(item_id))
 
             sentyt.add(url)
+
             if vid:
                 posted_ids.add(vid)
                 last_sent_by_source["c_youtube"] = vid
 
         _save_sent(sentyt_path, sentyt, keep_last=800)
 
-        try:
-            ytstate_path.write_text(
-                json.dumps(
-                    {
-                        "posted_video_ids": list(posted_ids)[-5000:],
-                        "last_sent_by_source": last_sent_by_source,
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
+        ytstate_path.write_text(
+            json.dumps({
+                "posted_video_ids": list(posted_ids)[-5000:],
+                "last_sent_by_source": last_sent_by_source,
+            }),
+            encoding="utf-8",
+        )
 
     except Exception as e:
-        print(f"[content] youtube links error: {type(e).__name__}: {e}", flush=True)
-
-async def _download_tg_file_bytes(file_id: str) -> bytes:
-    f = await bot.get_file(file_id)
-    bio = io.BytesIO()
-    await bot.download_file(f.file_path, destination=bio)
-    return bio.getvalue()
+       print(f"[content] youtube error: {e}", flush=True)
 
 
 @dp.message(F.photo)
@@ -649,7 +646,6 @@ async def vesya_handler(message: Message) -> None:
         await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
         return
 
-
     if intent == "content":
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
@@ -657,22 +653,17 @@ async def vesya_handler(message: Message) -> None:
             await message.answer(reply)
         else:
             await message.answer("сек, собираю горячее.")
-            print("[content] calling ingest_hours(12)...", flush=True)
 
-        # --- Telethon/sqlite только под lock ---
+        # 1) прожиг TG только тут (как раньше)
         async with TG_LOCK:
             try:
                 await ingest_hours(12)
             except Exception as e:
                 print(f"[content] ingest_hours error: {e}", flush=True)
 
-        # --- кнопки фидбека ---
-        def fb_kb(item_id: str) -> InlineKeyboardMarkup:
-            return InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
-                InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
-                InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
-            ]])
+        # 2) отправка контента: видео + мемы + youtube
+        await _send_content(message, user_id=user_id, ingest_hours_n=None)
+        return
 
         # --- мемы ---
         sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
