@@ -758,11 +758,7 @@ def meme_rank_batch(
     - Returns dict with keys: ok (bool), picked_item_ids (list[str]), items (list[dict]).
     Fail-open: if no key or error => pick first top_k in given order.
     """
-    # fail-open if no key
-    if not _has_key():
-        picked = [c.item_id for c in candidates[: max(0, int(top_k))]]
-        return {"ok": True, "picked_item_ids": picked, "items": []}
-
+   
     if not candidates:
         return {"ok": True, "picked_item_ids": [], "items": []}
 
@@ -840,27 +836,11 @@ def meme_rank_batch(
         valid_ids = {c.item_id for c in candidates}
         picked = [str(x) for x in picked if str(x) in valid_ids]
 
-        # If model returned too few (or none), fail-open fallback: pick by score if present else by original order
-        if len(picked) < min(top_k, len(candidates)):
-            # Build idx->score map from items if possible
-            score_by_id: Dict[str, float] = {}
-            for it in items:
-                try:
-                    iid = str(it.get("item_id", ""))
-                    sc = float(it.get("score", 0))
-                    if iid in valid_ids:
-                        score_by_id[iid] = sc
-                except Exception:
-                    pass
-            rest = [c.item_id for c in candidates if c.item_id not in set(picked)]
-            if score_by_id:
-                rest.sort(key=lambda x: score_by_id.get(x, 0.0), reverse=True)
-            picked = (picked + rest)[:top_k]
-
         return {"ok": True, "picked_item_ids": picked[:top_k], "items": items}
 
     except Exception as e:
         _dbg(f"meme_rank_batch EXC: {type(e).__name__}: {e}")
-        # fail-open fallback
-        picked = [c.item_id for c in candidates[:top_k]]
+        # fail-closed: better return none than random images
+        return {"ok": False, "picked_item_ids": [], "items": []}
+   
         return {"ok": True, "picked_item_ids": picked, "items": []}
