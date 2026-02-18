@@ -457,8 +457,9 @@ def _refresh_pool_mix() -> dict:
 
         has_cyr = bool(HAS_CYR_RE.search(text_blob))
         has_lat = bool(HAS_LAT_RE.search(text_blob))
-        if has_lat and (not has_cyr) and (not EN_HINT_RE.search(text_blob)):
-            continue
+        # allow pure English titles
+        # (do not require EN_HINT)
+        pass
 
         if BAD_TITLE_RE.search(title):
             continue
@@ -553,10 +554,7 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
 
         has_cyr = bool(HAS_CYR_RE.search(text_blob))
         has_lat = bool(HAS_LAT_RE.search(text_blob))
-        if has_lat and (not has_cyr):
-            if not EN_HINT_RE.search(text_blob):
-                continue
-
+        
         if BAD_TITLE_RE.search(title):
             continue
 
