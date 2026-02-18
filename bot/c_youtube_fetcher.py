@@ -223,26 +223,16 @@ def _search(query: str, max_results: int = 40, *, basic_only: bool = False):
     if not key:
         log("YT_API_KEY missing")
         return []
-    # определяем язык запроса
-    is_ru = any(ch in query for ch in "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя")
-    lang = "ru" if is_ru else "en"
-    region = "RU" if is_ru else "US"
-
+        # BROAD search: do not pin region/language/category (keeps global hits)
     url = "https://www.googleapis.com/youtube/v3/search"
     params = {
-    "part": "snippet",
-    "q": query,
-    "type": "video",
-    "maxResults": max_results,
-    "key": key,
-
-    "relevanceLanguage": lang,
-    "regionCode": region,
-    "videoCategoryId": "10",
-    "order": "viewCount",
-
-}
-
+        "part": "snippet",
+        "q": query,
+        "type": "video",
+        "maxResults": max_results,
+        "order": "viewCount",
+        "key": key,
+    }
 
     try:
         r = requests.get(url, params=params, timeout=20)
