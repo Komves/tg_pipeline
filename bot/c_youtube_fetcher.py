@@ -52,7 +52,6 @@ BANNED_SCRIPTS_RE = re.compile(r"[\u0600-\u06FF\u0E00-\u0E7F\u3040-\u30FF\u4E00-
 # Разрешаем только если есть кириллица ИЛИ латиница
 HAS_CYR_RE = re.compile(r"[А-Яа-яЁё]")
 HAS_LAT_RE = re.compile(r"[A-Za-z]")
-EN_HINT_RE = re.compile(r"(?i)\b(the|and|or|to|for|with|from|in|on|of|a|an|this|that|live|official|cover|version|remix)\b")
 
 YT_ID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_-]{11})")
 _ISO_DUR_RE = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
@@ -223,7 +222,6 @@ def _search(query: str, max_results: int = 40, *, basic_only: bool = False):
     if not key:
         log("YT_API_KEY missing")
         return []
-        # BROAD search: do not pin region/language/category (keeps global hits)
     url = "https://www.googleapis.com/youtube/v3/search"
     params = {
         "part": "snippet",
@@ -454,19 +452,10 @@ def _refresh_pool_mix() -> dict:
             continue
         if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
             continue
-
-        has_cyr = bool(HAS_CYR_RE.search(text_blob))
-        has_lat = bool(HAS_LAT_RE.search(text_blob))
-        # allow pure English titles
-        # (do not require EN_HINT)
-        pass
-
+        
         if BAD_TITLE_RE.search(title):
             continue
-
-        if isinstance(duration_sec, int) and (duration_sec < MIN_DURATION_SEC or duration_sec > MAX_DURATION_SEC):
-            continue
-
+        
         if views < MIN_VIEW_COUNT:
             continue
 
@@ -530,11 +519,7 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
         url2 = url.strip()
         if "/shorts/" in url2:
             continue  # HARD shorts cut
-
-        duration = full.get("duration_sec")
-        if isinstance(duration, int) and (duration < MIN_DURATION_SEC or duration > MAX_DURATION_SEC):
-            continue
-
+        
         view_count = int(full.get("views") or 0)
         like_count = int(full.get("likes") or 0)
         if view_count < MIN_VIEW_COUNT:
@@ -551,9 +536,6 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
             continue
         if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
             continue
-
-        has_cyr = bool(HAS_CYR_RE.search(text_blob))
-        has_lat = bool(HAS_LAT_RE.search(text_blob))
         
         if BAD_TITLE_RE.search(title):
             continue
