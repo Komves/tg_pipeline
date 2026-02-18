@@ -45,8 +45,6 @@ def _is_banned(item_id: str) -> bool:
         pass
     return False
 
-import json
-
 def _load_sent(path: Path) -> set[str]:
     try:
         if path.exists():
@@ -63,6 +61,7 @@ def _save_sent(path: Path, sent: set[str], *, keep_last: int = 500) -> None:
         path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
+
 
 async def _gpt_meme_ok(abs_path: str, src: str = "") -> bool:
     try:
@@ -98,7 +97,6 @@ from aiogram.filters import Command
 
 import chatgpt_dialog
 import news_digest
-import c_youtube_fetcher
 
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -234,116 +232,204 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
         ]])
 
-    # --- videos ---
+    # --- videos (consume from 24h pool) ---
     sentv_path = DATA_DIR / f"sent_video_{user_id}.json"
     sentv = _load_sent(sentv_path)
 
-    a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
-    a_items = [it for it in a_items if it.item_id not in sentv]
+    pool_path = _pool_path("video", user_id)
+    pool = _load_json(pool_path, {"ts": 0, "items": []})
+    if not _pool_is_fresh(pool):
+        pool = _refresh_video_pool(user_id)
 
-    seen = set()
-    a_items = [it for it in a_items if not (it.item_id in seen or seen.add(it.item_id))]
+    items = list(pool.get("items") or [])
 
-    for it in a_items:
+    SEND_V = int(os.getenv("V_VIDEO_SEND_K", "3"))
+    picked = []
+    for x in items:
+        if len(picked) >= SEND_V:
+            break
+        item_id = (x.get("item_id") or "").strip()
+        abs_path = (x.get("abs_path") or "").strip()
+        if (not item_id) or (item_id in sentv):
+            continue
+        if _is_banned(item_id):
+            continue
+        if abs_path and (not Path(abs_path).exists()):
+            continue
+        picked.append(x)
+
+    for x in picked:
+        item_id = x["item_id"]
+        abs_path = x.get("abs_path") or ""
         tmp_path = f"/tmp/vesya_video_{uuid.uuid4().hex}.mp4"
         try:
-            shutil.copyfile(it.abs_path, tmp_path)
+            shutil.copyfile(abs_path, tmp_path)
             await message.answer_video(
                 FSInputFile(tmp_path),
-                reply_markup=fb_kb(it.item_id),
+                reply_markup=fb_kb(item_id),
             )
-            sentv.add(it.item_id)
+            sentv.add(item_id)
         finally:
             try:
                 Path(tmp_path).unlink(missing_ok=True)
             except Exception:
                 pass
 
+    # remove sent from pool + save
+    sent_ids = set(x["item_id"] for x in picked)
+    pool["items"] = [x for x in items if (x.get("item_id") not in sent_ids)]
+    _save_json(pool_path, pool)
+
     _save_sent(sentv_path, sentv, keep_last=700)
 
-    # --- мемы (GPT BATCH RANKING: Variant A) ---
+    sentv_path = DATA_DIR / f"sent_video_{user_id}.json"
+    sentv = _load_sent(sentv_path)
+
+    
+    # --- мемы (consume from 24h pool + GPT batch ranking) ---
     sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
     sentm = _load_sent(sentm_path)
 
-    POOL_N = int(os.getenv("V_MEME_POOL_N", "30"))
-    SEND_K = int(os.getenv("V_MEME_SEND_K", "6"))
+    pool_path = _pool_path("meme", user_id)
+    pool = _load_json(pool_path, {"ts": 0, "items": []})
+    if not _pool_is_fresh(pool):
+        pool = _refresh_meme_pool(user_id)
 
-    m_items = rank_memes(user_id=user_id, n=POOL_N)
-    m_items = [it for it in m_items if it.item_id not in sentm]
+    items = list(pool.get("items") or [])
 
-    print(f"[meme] pool_after_sent={len(m_items)} pool_n={POOL_N}", flush=True)
+    POOL_N = int(os.getenv("V_MEME_POOL_N", "30"))   # сколько показать GPT за раз
+    SEND_K = int(os.getenv("V_MEME_SEND_K", "6"))    # сколько отправить пользователю
+
+    cand = []
+    for x in items:
+        if len(cand) >= POOL_N:
+            break
+        item_id = (x.get("item_id") or "").strip()
+        abs_path = (x.get("abs_path") or "").strip()
+        if (not item_id) or (item_id in sentm):
+            continue
+        if _is_banned(item_id):
+            continue
+        if abs_path and (not Path(abs_path).exists()):
+            continue
+        cand.append(x)
+
+    print(f"[meme_pool] cand={len(cand)} pool_items={len(items)}", flush=True)
 
     batch: list[chatgpt_dialog.MemeCandidate] = []
-    for it in m_items:
+    for x in cand:
         try:
-            p = Path(it.abs_path)
+            p = Path(x.get("abs_path") or "")
             if not p.exists():
                 continue
-
             img_bytes = p.read_bytes()
-
-            cap = ""
-            src = getattr(it, "src", "") or ""
-
-            mp = Path(str(p) + ".meta.json")
-            if mp.exists():
-                try:
-                    meta = json.loads(mp.read_text(encoding="utf-8"))
-                    cap = (meta.get("caption") or "").strip()
-                    if not src:
-                        src = (meta.get("src") or "").strip()
-                except Exception:
-                    pass
-
             batch.append(
                 chatgpt_dialog.MemeCandidate(
-                    item_id=str(it.item_id),
+                    item_id=x.get("item_id") or "",
                     img_bytes=img_bytes,
-                    caption=cap,
-                    src=src,
+                    caption=(x.get("caption") or "").strip(),
+                    src=(x.get("src") or "").strip(),
                 )
             )
         except Exception:
-            continue
+            pass
 
     picked_ids: list[str] = []
-    try:
-        res = chatgpt_dialog.meme_rank_batch(batch, top_k=SEND_K)
-        picked_ids = list(res.get("picked_item_ids") or [])
-    except Exception as e:
-        print(f"[meme] meme_rank_batch error: {type(e).__name__}: {e}", flush=True)
-        picked_ids = []
+    if batch:
+        r = chatgpt_dialog.meme_rank_batch(batch, top_k=SEND_K)
+        picked_ids = list(r.get("picked_item_ids") or [])
+    picked_ids = [pid for pid in picked_ids if pid]
 
-    picked_set = set(picked_ids)
-    picked_items = [it for it in m_items if it.item_id in picked_set]
+    id2 = {x.get("item_id"): x for x in cand}
+    picked_items = [id2[i] for i in picked_ids if i in id2]
 
-    # preserve GPT order
-    order = {iid: i for i, iid in enumerate(picked_ids)}
-    picked_items.sort(key=lambda it: order.get(it.item_id, 10**9))
+    for x in picked_items:
+        item_id = x["item_id"]
+        abs_path = x.get("abs_path") or ""
+        await message.answer_photo(
+            FSInputFile(abs_path),
+            reply_markup=fb_kb(item_id),
+        )
+        sentm.add(item_id)
 
-    print(f"[meme] picked={len(picked_items)} send_k={SEND_K}", flush=True)
-
-    for it in picked_items[:SEND_K]:
-        try:
-            await message.answer_photo(
-                FSInputFile(it.abs_path),
-                reply_markup=fb_kb(it.item_id),
-            )
-            sentm.add(it.item_id)
-        except Exception as e:
-            print(
-                f"[meme] send error item_id={it.item_id} path={it.abs_path} err={type(e).__name__}: {e}",
-                flush=True,
-            )
+    # remove sent from pool + save
+    sent_ids = set(x["item_id"] for x in picked_items)
+    pool["items"] = [x for x in items if (x.get("item_id") not in sent_ids)]
+    _save_json(pool_path, pool)
 
     _save_sent(sentm_path, sentm, keep_last=700)
-    
-    # --- youtube (оставь твой текущий блок здесь как есть) ---
-    # !!! ВАЖНО: просто перенеси сюда весь текущий try/except youtube из vesya_handler
-    # и НЕ вызывай здесь ingest_hours.
-# =========================
-# IMAGE HANDLERS (group vision react)
-# =========================
+
+
+    # --- youtube links (MIX pool: 6 links) ---
+    try:
+        def yt_kb(item_id: str) -> InlineKeyboardMarkup:
+            return InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
+                InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
+                InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
+            ]])
+
+        sentyt_path = DATA_DIR / f"sent_yt_{user_id}.json"
+        sentyt = _load_sent(sentyt_path)
+
+        ytstate_path = DATA_DIR / f"yt_state_{user_id}.json"
+        try:
+            _st = json.loads(ytstate_path.read_text(encoding="utf-8")) if ytstate_path.exists() else {}
+        except Exception:
+            _st = {}
+
+        posted_ids = set(_st.get("posted_video_ids") or [])
+        last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
+
+        pool = c_youtube_fetcher.get_batch(
+            limit=6,
+            posted_video_ids=posted_ids,
+            last_sent_by_source=last_sent_by_source,
+            mode="mix",
+        )
+
+        final: list[tuple[str, str, str]] = []  # (title, url, vid)
+        for x in pool:
+            title = (x.get("title") or "").strip()
+            url = (x.get("url") or "").strip()
+            vid = (x.get("video_id") or "").strip()
+            if not url or (url in sentyt):
+                continue
+            item_id = f"yt:{url}"
+            if _is_banned(item_id):
+                continue
+            final.append((title, url, vid))
+            if len(final) >= 6:
+                break
+
+        for (title, url, vid) in final:
+            item_id = f"yt:{url}"
+            text2 = f"🎵 {title}\n{url}" if title else url
+            await message.answer(text2, reply_markup=yt_kb(item_id))
+
+            sentyt.add(url)
+            if vid:
+                posted_ids.add(vid)
+                last_sent_by_source["c_youtube"] = vid
+
+        _save_sent(sentyt_path, sentyt, keep_last=800)
+
+        try:
+            ytstate_path.write_text(
+                json.dumps(
+                    {
+                        "posted_video_ids": list(posted_ids)[-5000:],
+                        "last_sent_by_source": last_sent_by_source,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    except Exception as e:
+        print(f"[content] youtube links error: {type(e).__name__}: {e}", flush=True)
 
 async def _download_tg_file_bytes(file_id: str) -> bytes:
     f = await bot.get_file(file_id)
@@ -590,33 +676,6 @@ async def vesya_handler(message: Message) -> None:
                 InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
             ]])
 
-        # --- видео ---
-        sentv_path = DATA_DIR / f"sent_video_{user_id}.json"
-        sentv = _load_sent(sentv_path)
-
-        a_items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=3)
-        a_items = [it for it in a_items if it.item_id not in sentv]
-
-        seen = set()
-        a_items = [it for it in a_items if not (it.item_id in seen or seen.add(it.item_id))]
-
-        for it in a_items:
-            tmp_path = f"/tmp/vesya_video_{uuid.uuid4().hex}.mp4"
-            try:
-                shutil.copyfile(it.abs_path, tmp_path)
-                await message.answer_video(
-                    FSInputFile(tmp_path),
-                    reply_markup=fb_kb(it.item_id),
-                )
-                sentv.add(it.item_id)
-            finally:
-                try:
-                    Path(tmp_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-        _save_sent(sentv_path, sentv, keep_last=700)
-
         # --- мемы ---
         sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
         sentm = _load_sent(sentm_path)
@@ -640,87 +699,113 @@ async def vesya_handler(message: Message) -> None:
 
         _save_sent(sentm_path, sentm, keep_last=700)
 
-         # --- youtube links (MIX pool: 6 links) ---
-        try:
-            def yt_kb(item_id: str) -> InlineKeyboardMarkup:
-                return InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="👍", callback_data=f"fb:up:{item_id}"),
-                    InlineKeyboardButton(text="👎", callback_data=f"fb:down:{item_id}"),
-                    InlineKeyboardButton(text="🚫 BAN", callback_data=f"fb:ban:{item_id}"),
-                ]])
-
-            sentyt_path = DATA_DIR / f"sent_yt_{user_id}.json"
-            sentyt = _load_sent(sentyt_path)
-
-            ytstate_path = DATA_DIR / f"yt_state_{user_id}.json"
-            try:
-                _st = json.loads(ytstate_path.read_text(encoding="utf-8")) if ytstate_path.exists() else {}
-            except Exception:
-                _st = {}
-
-            posted_ids = set(_st.get("posted_video_ids") or [])
-            last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
-
-            pool = c_youtube_fetcher.get_batch(
-                limit=6,
-                posted_video_ids=posted_ids,
-                last_sent_by_source=last_sent_by_source,
-                mode="mix",
-            )
-
-            final: list[tuple[str, str, str]] = []  # (title, url, vid)
-            for x in pool:
-                title = (x.get("title") or "").strip()
-                url = (x.get("url") or "").strip()
-                vid = (x.get("video_id") or "").strip()
-                if not url or (url in sentyt):
-                    continue
-                item_id = f"yt:{url}"
-                if _is_banned(item_id):
-                    continue
-                final.append((title, url, vid))
-                if len(final) >= 6:
-                    break
-
-            for (title, url, vid) in final:
-                item_id = f"yt:{url}"
-                text2 = f"🎵 {title}\n{url}" if title else url
-                await message.answer(text2, reply_markup=yt_kb(item_id))
-
-                sentyt.add(url)
-                if vid:
-                    posted_ids.add(vid)
-                    last_sent_by_source["c_youtube"] = vid
-
-            _save_sent(sentyt_path, sentyt, keep_last=800)
-
-            try:
-                ytstate_path.write_text(
-                    json.dumps(
-                        {
-                            "posted_video_ids": list(posted_ids)[-5000:],
-                            "last_sent_by_source": last_sent_by_source,
-                        },
-                        ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
-
-        except Exception as e:
-            print(f"[content] youtube links error: {type(e).__name__}: {e}", flush=True)
-
-        except Exception as e:
-            print(f"[content] youtube links error: {type(e).__name__}: {e}", flush=True)
-
-        return
 
 # =====================
 # INGEST24 LOOP (06:00 MSK)
 # =====================
 
 from datetime import datetime, timedelta, timezone
+
+# =========================
+# POOLS (24h): memes + videos
+# =========================
+POOL_TTL_SEC = int(os.getenv("V_POOL_TTL_SEC", str(24 * 3600)))
+
+def _pool_path(kind: str, user_id: int) -> Path:
+    return DATA_DIR / f"{kind}_pool_{int(user_id)}.json"
+
+def _pool_raw_path(kind: str) -> Path:
+    d = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return DATA_DIR / f"{kind}_pool_raw_{d}.json"
+
+def _load_json(path: Path, default):
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return default
+
+def _save_json(path: Path, data) -> None:
+    try:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        pass
+
+def _pool_is_fresh(pool: dict) -> bool:
+    try:
+        ts = float(pool.get("ts") or 0)
+        return (time.time() - ts) < POOL_TTL_SEC
+    except Exception:
+        return False
+
+def _refresh_video_pool(user_id: int) -> dict:
+    COLLECT_N = int(os.getenv("V_VIDEO_COLLECT_N", "80"))
+    items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=COLLECT_N)
+
+    out = []
+    seen = set()
+    for it in items:
+        item_id = (getattr(it, "item_id", "") or "").strip()
+        abs_path = (getattr(it, "abs_path", "") or "").strip()
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        if abs_path and (not Path(abs_path).exists()):
+            continue
+        out.append({"item_id": item_id, "abs_path": abs_path, "ts": int(time.time())})
+
+    pool = {"ts": int(time.time()), "items": out}
+    _save_json(_pool_raw_path("video"), pool)           # what was found today (debug)
+    _save_json(_pool_path("video", user_id), pool)      # work pool
+    print(f"[pool] video refreshed items={len(out)}", flush=True)
+    return pool
+
+def _refresh_meme_pool(user_id: int) -> dict:
+    COLLECT_N = int(os.getenv("V_MEME_COLLECT_N", "120"))
+    items = rank_memes(user_id=user_id, n=COLLECT_N)
+
+    out = []
+    seen = set()
+    for it in items:
+        item_id = (getattr(it, "item_id", "") or "").strip()
+        abs_path = (getattr(it, "abs_path", "") or "").strip()
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+
+        p = Path(abs_path) if abs_path else None
+        if not p or (not p.exists()):
+            continue
+
+        cap = ""
+        src = (getattr(it, "src", "") or "").strip()
+
+        mp = Path(str(p) + ".meta.json")
+        if mp.exists():
+            try:
+                meta = json.loads(mp.read_text(encoding="utf-8"))
+                cap = (meta.get("caption") or "").strip()
+                if not src:
+                    src = (meta.get("src") or "").strip()
+            except Exception:
+                pass
+
+        out.append({
+            "item_id": item_id,
+            "abs_path": str(p),
+            "caption": cap,
+            "src": src,
+            "ts": int(time.time()),
+        })
+
+    pool = {"ts": int(time.time()), "items": out}
+    _save_json(_pool_raw_path("meme"), pool)            # what was found today (debug)
+    _save_json(_pool_path("meme", user_id), pool)       # work pool
+    print(f"[pool] meme refreshed items={len(out)}", flush=True)
+    return pool
 
 MSK = timezone(timedelta(hours=3))
 
@@ -745,7 +830,7 @@ async def ingest24_loop(bot: Bot) -> None:
             async with TG_LOCK:
                 await ingest_hours(24)
 
-                       # отправка пользователю
+            # отправка пользователю
             if not RECENT_MSG_IDS:
                 # last image per (chat_id, user_id) to support "опиши фото" without reply
                 LAST_USER_IMAGE_ID = {}  # (chat_id:int, user_id:int) -> file_id:str
@@ -776,7 +861,17 @@ async def ingest24_loop(bot: Bot) -> None:
                     return await self.bot.send_document(self.chat.id, document, **kw)
 
             dummy = Dummy(bot, chat_id, user_id)
+            # refresh 24h pools (memes/videos) once per day
+            try:
+                _refresh_video_pool(user_id)
+            except Exception as e:
+                print(f"[pool] video refresh error: {e}", flush=True)
 
+            try:
+                _refresh_meme_pool(user_id)
+            except Exception as e:
+                print(f"[pool] meme refresh error: {e}", flush=True)
+            
             await _send_content(dummy, user_id=user_id, ingest_hours_n=None)
 
         except Exception as e:
