@@ -202,13 +202,11 @@ async def cmd_news(message: Message) -> None:
     await message.answer("ок. сейчас соберу сводку.")
     await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
 
-@dp.message(Command("get12"))
-
 async def cmd_get12(message: Message) -> None:
     if not _chat_allowed(message):
         return
-    # у тебя content pipeline может быть в другом модуле; тут безопасный stub
-    await vesya_handler(message)
+    user_id = int(message.from_user.id) if message.from_user else 0
+    await _send_content(message, user_id=user_id, ingest_hours_n=None)
 
 # =========================
 # MAIN ROUTER
@@ -740,22 +738,63 @@ def _pool_is_fresh(pool: dict) -> bool:
         return (time.time() - ts) < POOL_TTL_SEC
     except Exception:
         return False
-
 def _refresh_video_pool(user_id: int) -> dict:
     COLLECT_N = int(os.getenv("V_VIDEO_COLLECT_N", "80"))
-    items = rank_top_n(user_id=user_id, category=CAT_A_VIDEO, n=COLLECT_N)
+
+    # scan raw files directly (rank_top_n currently returns 0)
+    # build item_id as: {src}/{msg_id}.mp4  (same as old sent_video ids)
+    raw_dir = DATA_DIR / "raw"
+    exts = {".mp4", ".webm", ".mov", ".mkv"}
+
+    files = []
+    try:
+        for p in raw_dir.rglob("*"):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() in exts:
+                files.append(p)
+    except Exception:
+        files = []
+
+    # newest first
+    try:
+        files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    except Exception:
+        pass
 
     out = []
     seen = set()
-    for it in items:
-        item_id = (getattr(it, "item_id", "") or "").strip()
-        abs_path = (getattr(it, "abs_path", "") or "").strip()
-        if not item_id or item_id in seen:
+    for p in files:
+        if len(out) >= COLLECT_N:
+            break
+
+        meta_path = Path(str(p) + ".meta.json")
+        src = ""
+        msg_id = None
+
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                src = (meta.get("src") or "").strip()
+                msg_id = meta.get("msg_id")
+            except Exception:
+                src = ""
+                msg_id = None
+
+        # fallback: if meta missing, skip (better than wrong ids)
+        if not src or not msg_id:
+            continue
+
+        item_id = f"{src}/{msg_id}{p.suffix.lower()}"
+
+        if item_id in seen:
             continue
         seen.add(item_id)
-        if abs_path and (not Path(abs_path).exists()):
+
+        if not p.exists():
             continue
-        out.append({"item_id": item_id, "abs_path": abs_path, "ts": int(time.time())})
+
+        out.append({"item_id": item_id, "abs_path": str(p), "ts": int(time.time())})
 
     pool = {"ts": int(time.time()), "items": out}
     _save_json(_pool_raw_path("video"), pool)           # what was found today (debug)
