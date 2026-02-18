@@ -640,7 +640,7 @@ async def vesya_handler(message: Message) -> None:
 
         _save_sent(sentm_path, sentm, keep_last=700)
 
-         # --- youtube links (STRICT: 2 EN / 2 RU / 2 AI) ---
+         # --- youtube links (MIX pool: 6 links) ---
         try:
             def yt_kb(item_id: str) -> InlineKeyboardMarkup:
                 return InlineKeyboardMarkup(inline_keyboard=[[
@@ -661,114 +661,33 @@ async def vesya_handler(message: Message) -> None:
             posted_ids = set(_st.get("posted_video_ids") or [])
             last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
 
-            def _pick_from_pool(pool: list[dict], need: int, seen_urls: set[str], url_to_vid: dict[str, str]) -> list[tuple[str, str]]:
-                out: list[tuple[str, str]] = []
-                for x in pool:
-                    if len(out) >= need:
-                        break
+            pool = c_youtube_fetcher.get_batch(
+                limit=6,
+                posted_video_ids=posted_ids,
+                last_sent_by_source=last_sent_by_source,
+                mode="mix",
+            )
 
-                    title = (x.get("title") or "").strip()
-                    url = (x.get("url") or "").strip()
-                    vid = (x.get("video_id") or "").strip()
-
-                    if (not url) or (not url.startswith("http")):
-                        continue
-                    if url in seen_urls:
-                        continue
-                    if url in sentyt:
-                        continue
-
-                    item_id = f"yt:{url}"
-                    if _is_banned(item_id):
-                        continue
-
-                    if vid:
-                        url_to_vid[url] = vid
-
-                    out.append((title, url))
-                    seen_urls.add(url)
-
-                return out
-
-            # STRICT strategy:
-            # - build 3 independent pools: EN, RU, AI
-            # - try to fill exactly 2/2/2
-            attempts = [40, 90, 160]  # increase search depth if not enough new items
-
-            picked_en: list[tuple[str, str]] = []
-            picked_ru: list[tuple[str, str]] = []
-            picked_ai: list[tuple[str, str]] = []
-            seen_urls: set[str] = set()
-            url_to_vid: dict[str, str] = {}
-
-            for lim in attempts:
-                if len(picked_en) < 2:
-                    en_pool = c_youtube_fetcher.get_batch(
-                        limit=lim,
-                        posted_video_ids=posted_ids,
-                        last_sent_by_source=last_sent_by_source,
-                        mode="en",
-                    )
-                    picked_en += _pick_from_pool(en_pool, 2 - len(picked_en), seen_urls, url_to_vid)
-
-                if len(picked_ru) < 2:
-                    ru_pool = c_youtube_fetcher.get_batch(
-                        limit=lim,
-                        posted_video_ids=posted_ids,
-                        last_sent_by_source=last_sent_by_source,
-                        mode="ru",
-                    )
-                    picked_ru += _pick_from_pool(ru_pool, 2 - len(picked_ru), seen_urls, url_to_vid)
-
-                if len(picked_ai) < 2:
-                    ai_pool = c_youtube_fetcher.get_batch(
-                        limit=lim,
-                        posted_video_ids=posted_ids,
-                        last_sent_by_source=last_sent_by_source,
-                        mode="ai",
-                    )
-                    picked_ai += _pick_from_pool(ai_pool, 2 - len(picked_ai), seen_urls, url_to_vid)
-
-                if len(picked_en) >= 2 and len(picked_ru) >= 2 and len(picked_ai) >= 2:
+            final: list[tuple[str, str, str]] = []  # (title, url, vid)
+            for x in pool:
+                title = (x.get("title") or "").strip()
+                url = (x.get("url") or "").strip()
+                vid = (x.get("video_id") or "").strip()
+                if not url or (url in sentyt):
+                    continue
+                item_id = f"yt:{url}"
+                if _is_banned(item_id):
+                    continue
+                final.append((title, url, vid))
+                if len(final) >= 6:
                     break
 
-            if len(picked_en) < 2 or len(picked_ru) < 2 or len(picked_ai) < 2:
-                print(
-                    f"[content] youtube STRICT not enough: en={len(picked_en)}/2 ru={len(picked_ru)}/2 ai={len(picked_ai)}/2",
-                    flush=True,
-                )
-
-            final = picked_en[:2] + picked_ru[:2] + picked_ai[:2]
-            if len(final) < 6:
-                # добиваем чем есть, чтобы хоть что-то отправлять
-                pool = (picked_en + picked_ru + picked_ai)
-                seen = set(u for _, u in final)
-                for t, u in pool:
-                    if len(final) >= 6:
-                        break
-                    if u in seen:
-                        continue
-                    final.append((t, u))
-                    seen.add(u)
-
-
-            # send + write sent/state
-            for (title, url) in final:
+            for (title, url, vid) in final:
                 item_id = f"yt:{url}"
                 text2 = f"🎵 {title}\n{url}" if title else url
-
-                for _attempt in range(3):
-                    try:
-                        await message.answer(text2, reply_markup=yt_kb(item_id))
-                        break
-                    except Exception:
-                        if _attempt == 2:
-                            raise
-                        await asyncio.sleep(1.5)
+                await message.answer(text2, reply_markup=yt_kb(item_id))
 
                 sentyt.add(url)
-
-                vid = url_to_vid.get(url)
                 if vid:
                     posted_ids.add(vid)
                     last_sent_by_source["c_youtube"] = vid
@@ -788,6 +707,9 @@ async def vesya_handler(message: Message) -> None:
                 )
             except Exception:
                 pass
+
+        except Exception as e:
+            print(f"[content] youtube links error: {type(e).__name__}: {e}", flush=True)
 
         except Exception as e:
             print(f"[content] youtube links error: {type(e).__name__}: {e}", flush=True)

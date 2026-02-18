@@ -4,15 +4,23 @@ from __future__ import annotations
 import os
 import re
 import time
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
+
 import requests
 import yt_dlp
 
-
 COOKIES_PATH = os.getenv("YT_COOKIES_PATH", "/data/cookies.txt").strip()
+DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+POOL_TTL_SEC = int(os.getenv("YT_POOL_TTL_SEC", str(24 * 3600)))  # 24h
+POOL_WORK_PATH = DATA_DIR / "yt_pool_work.json"
+
+# when quota is dead, don't hammer API
+API_DISABLED_UNTIL_TS = 0.0
 
 MAX_QUERIES = int(os.getenv("YT_MAX_QUERIES", "8"))
 SEARCH_PER_QUERY = int(os.getenv("YT_SEARCH_PER_QUERY", "6"))
@@ -141,8 +149,12 @@ def _extract_video_id(url: str) -> str:
     return m.group(1) if m else ""
 
 
-def _search(query: str, max_results: int = 40):
+def _search(query: str, max_results: int = 40, *, basic_only: bool = False):
     key = os.getenv("YT_API_KEY")
+    global API_DISABLED_UNTIL_TS
+    now = time.time()
+    if now < API_DISABLED_UNTIL_TS:
+        return []
     if not key:
         log("YT_API_KEY missing")
         return []
@@ -169,6 +181,9 @@ def _search(query: str, max_results: int = 40):
         r = requests.get(url, params=params, timeout=20)
         if r.status_code != 200:
             log(f"YT API error {r.status_code}: {r.text[:200]}")
+            if r.status_code in (403, 429):
+                # quota/limit -> stop touching API for a while
+                API_DISABLED_UNTIL_TS = time.time() + 6 * 3600
             return []
 
         data = r.json()
@@ -187,6 +202,8 @@ def _search(query: str, max_results: int = 40):
             })
 
         log(f"YT API search ok query='{query}' results={len(out)}")
+        if basic_only:
+            return out
 
         # --- добираем статистику и фильтруем ---
         vids = [x["id"] for x in out]
@@ -272,7 +289,7 @@ def _info_many(urls: List[str], max_workers: int) -> Dict[str, Optional[dict]]:
         return {}
     mw = max(1, int(max_workers or 1))
     out: Dict[str, Optional[dict]] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+    with ThreadPoolExecutor(max_workers=mw) as ex:
         fut_map = {ex.submit(_info, u): u for u in urls}
         for fut in as_completed(fut_map):
             u = fut_map[fut]
@@ -280,6 +297,173 @@ def _info_many(urls: List[str], max_workers: int) -> Dict[str, Optional[dict]]:
                 out[u] = fut.result()
             except Exception:
                 out[u] = None
+    return out
+
+
+def _pool_raw_path_for_today() -> Path:
+    # UTC day
+    d = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return DATA_DIR / f"yt_pool_raw_{d}.json"
+
+
+def _load_json(path: Path, default):
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return default
+
+
+def _save_json(path: Path, data) -> None:
+    try:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        pass
+
+
+def _pool_is_fresh(pool: dict) -> bool:
+    try:
+        ts = float(pool.get("ts") or 0)
+        return (time.time() - ts) < POOL_TTL_SEC
+    except Exception:
+        return False
+
+
+def _refresh_pool_mix() -> dict:
+    queries = _build_queries("mix")[:MAX_QUERIES]
+
+    raw_items: list[dict] = []
+    work_items: list[dict] = []
+    seen_vid: set[str] = set()
+
+    for qi, q in enumerate(queries, start=1):
+        log(f"POOL refresh query[{qi}/{len(queries)}]: {q}")
+        cand = _search(q, SEARCH_PER_QUERY, basic_only=True)  # search.list only
+
+        for c in cand:
+            raw_items.append(
+                {
+                    "q": q,
+                    "id": c.get("id"),
+                    "title": c.get("title"),
+                    "uploader": c.get("uploader"),
+                    "url": c.get("url"),
+                }
+            )
+
+        for c in cand:
+            vid = (c.get("id") or "").strip()
+            url = (c.get("url") or "").strip()
+            title = (c.get("title") or "").strip()
+            if (not vid) or (vid in seen_vid) or (not url):
+                continue
+            seen_vid.add(vid)
+            work_items.append({"video_id": vid, "url": url, "title": title, "ts": int(time.time())})
+
+    raw_path = _pool_raw_path_for_today()
+    _save_json(raw_path, {"ts": int(time.time()), "queries": queries, "items": raw_items})
+    log(f"POOL raw saved: {raw_path} items={len(raw_items)}")
+
+    pool = {"ts": time.time(), "items": work_items}
+    _save_json(POOL_WORK_PATH, pool)
+    log(f"POOL work saved: {POOL_WORK_PATH} items={len(work_items)}")
+    return pool
+
+
+def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
+    pool = _load_json(POOL_WORK_PATH, {"ts": 0, "items": []})
+    items: list[dict] = list(pool.get("items") or [])
+
+    if not items:
+        return []
+
+    take_n = min(len(items), max(limit * 12, 40))
+    chunk = items[:take_n]
+    rest = items[take_n:]
+
+    urls = [x.get("url") or "" for x in chunk if (x.get("url") or "").startswith("http")]
+    infos = _info_many(urls, INFO_WORKERS)
+
+    out: List[Dict] = []
+    kept_rest: list[dict] = []
+
+    for x in chunk:
+        if len(out) >= limit:
+            kept_rest.append(x)
+            continue
+
+        vid = (x.get("video_id") or "").strip()
+        url = (x.get("url") or "").strip()
+        title0 = (x.get("title") or "").strip()
+
+        if not vid or not url:
+            continue
+        if vid in used:
+            continue
+
+        full = infos.get(url)
+        if not full:
+            continue
+
+        url2 = (full.get("webpage_url") or url).strip()
+        if "/shorts/" in url2:
+            continue  # HARD shorts cut
+
+        duration = full.get("duration")
+        if duration and (duration < MIN_DURATION_SEC or duration > MAX_DURATION_SEC):
+            continue
+
+        view_count = int(full.get("view_count") or 0)
+        like_count = int(full.get("like_count") or 0)
+        if view_count < MIN_VIEW_COUNT:
+            continue
+
+        title = (full.get("title") or title0 or "").strip()
+        uploader = (full.get("uploader") or full.get("channel") or "").strip()
+        desc = (full.get("description") or "").strip()
+        text_blob = " ".join([title, uploader, desc]).strip()
+
+        if BANNED_SCRIPTS_RE.search(text_blob):
+            continue
+        if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
+            continue
+
+        has_cyr = bool(HAS_CYR_RE.search(text_blob))
+        has_lat = bool(HAS_LAT_RE.search(text_blob))
+        if has_lat and (not has_cyr):
+            if not EN_HINT_RE.search(text_blob):
+                continue
+
+        if BAD_TITLE_RE.search(title):
+            continue
+
+        score = (view_count * 1.0) + (like_count * 30.0)
+        blob_low = text_blob.lower()
+        if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
+            score *= 0.35
+
+        out.append(
+            {
+                "feed": "c_youtube",
+                "url": url2,
+                "video_id": vid,
+                "source": f"yt:{vid}",
+                "title": title,
+                "ts": int(time.time()),
+                "score": float(score),
+                "views": view_count,
+                "likes": like_count,
+            }
+        )
+        used.add(vid)
+        log(f"picked vid={vid} views={view_count} score={int(score)} title={title[:80]}")
+
+    new_pool = {"ts": pool.get("ts") or time.time(), "items": kept_rest + rest}
+    _save_json(POOL_WORK_PATH, new_pool)
+
     return out
 
 def get_batch(
@@ -300,137 +484,21 @@ def get_batch(
     out: List[Dict] = []
     used = set(posted_video_ids or set())
 
-    queries = _build_queries(mode)[:MAX_QUERIES]
+        # B-strategy: one MIX pool
+    pool = _load_json(POOL_WORK_PATH, {"ts": 0, "items": []})
+    if _pool_is_fresh(pool) and (pool.get("items") or []):
+        got = _consume_from_pool(limit, used)
+        got.sort(key=lambda x: x.get("score", 0), reverse=True)
+        log(f"returning={len(got)} (from pool)")
+        return got
 
-    for qi, query in enumerate(queries, start=1):
-        if len(out) >= limit:
-            break
+    # refresh pool once (expensive but rare)
+    if os.getenv("YT_API_KEY"):
+        _refresh_pool_mix()
 
-        t0 = time.time()
-        log(f"query[{qi}/{len(queries)}]: {query}")
+    got = _consume_from_pool(limit, used)
+    got.sort(key=lambda x: x.get("score", 0), reverse=True)
+    log(f"returning={len(got)} (after refresh)")
+    return got
 
-        candidates = _search(query, SEARCH_PER_QUERY)
-        log(f"query[{qi}] candidates={len(candidates)}")
-
-        # pick up to MAX_CHECK_PER_QUERY unique urls to probe
-        probe: List[tuple[str, str, str]] = []  # (vid, url, title)
-        for c in candidates:
-            if len(probe) >= MAX_CHECK_PER_QUERY:
-                break
-
-            vid = (c.get("id") or "").strip()
-            url = (c.get("url") or "").strip()
-            title = (c.get("title") or "").strip()
-
-            if not vid:
-                vid = _extract_video_id(url)
-            if not vid:
-                continue
-            if vid in used:
-                continue
-            if not url:
-                continue
-
-            probe.append((vid, url, title))
-
-        urls = [u for (_, u, _) in probe]
-        infos = _info_many(urls, INFO_WORKERS)
-
-        accepted_in_query = 0
-
-        for (vid, url, title0) in probe:
-            if len(out) >= limit:
-                break
-            if vid in used:
-                continue
-
-            full = infos.get(url)
-            if not full:
-                # FALLBACK: если YouTube блокирует player response — всё равно отдаём ссылку
-                title = (title0 or "").strip()
-                if not title or BAD_TITLE_RE.search(title):
-                    continue
-
-                out.append(     
-                    {
-                        "feed": "c_youtube",
-                        "url": url,
-                        "video_id": vid,
-                        "source": f"yt:{vid}",
-                        "title": title,
-                        "ts": int(time.time()),
-                        "score": 0.0,
-                        "views": 0,
-                        "likes": 0,
-                    }
-                )
-                used.add(vid)
-                continue
-
-            duration = full.get("duration")
-            if duration:
-                if duration < MIN_DURATION_SEC or duration > MAX_DURATION_SEC:
-                    continue
-
-            view_count = int(full.get("view_count") or 0)
-            like_count = int(full.get("like_count") or 0)
-
-            # hard popularity gate
-            if view_count < MIN_VIEW_COUNT:
-                continue
-
-            title = (full.get("title") or title0 or "").strip()
-            uploader = (full.get("uploader") or full.get("channel") or "").strip()
-            desc = (full.get("description") or "").strip()
-
-            text_blob = " ".join([title, uploader, desc]).strip()
-
-            score = (view_count * 1.0) + (like_count * 30.0)
-
-            blob_low = text_blob.lower()
-            if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
-                score *= 0.35
-
-            if BANNED_SCRIPTS_RE.search(text_blob):
-                continue
-
-            if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
-                continue
-            has_cyr = bool(HAS_CYR_RE.search(text_blob))
-            has_lat = bool(HAS_LAT_RE.search(text_blob))
-            if has_lat and (not has_cyr):
-                if not EN_HINT_RE.search(text_blob):
-                    continue
-
-            if BAD_TITLE_RE.search(title):
-                continue
-
-            # пропускаем, если это либо кавер, либо официальный/топовый трек
-            
-            url2 = full.get("webpage_url") or url
-
-            out.append(
-                {
-                    "feed": "c_youtube",
-                    "url": url2,
-                    "video_id": vid,
-                    "source": f"yt:{vid}",
-                    "title": title,
-                    "ts": int(time.time()),
-                    "score": float(score),
-                    "views": view_count,
-                    "likes": like_count,
-                }
-            )
-
-            used.add(vid)
-            accepted_in_query += 1
-            log(f"picked vid={vid} views={view_count} score={int(score)} title={title[:80]}")
-
-        dt = time.time() - t0
-        log(f"query[{qi}] accepted={accepted_in_query} out={len(out)}/{limit} dt={dt:.1f}s")
-    
-    out.sort(key=lambda x: x.get("score", 0), reverse=True)
-    log(f"returning={len(out)}")
-    return out
 
