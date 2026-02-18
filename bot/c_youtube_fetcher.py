@@ -24,6 +24,7 @@ API_DISABLED_UNTIL_TS = 0.0
 
 MAX_QUERIES = int(os.getenv("YT_MAX_QUERIES", "8"))
 SEARCH_PER_QUERY = int(os.getenv("YT_SEARCH_PER_QUERY", "6"))
+WORK_TARGET_N = int(os.getenv("YT_WORK_TARGET_N", "30"))  # how many items keep in yt_pool_work per refresh
 MAX_CHECK_PER_QUERY = int(os.getenv("YT_MAX_CHECK_PER_QUERY", "10"))
 INFO_WORKERS = int(os.getenv("YT_INFO_WORKERS", "6"))
 
@@ -174,6 +175,8 @@ def _search(query: str, max_results: int = 40, *, basic_only: bool = False):
     "relevanceLanguage": lang,
     "regionCode": region,
     "videoCategoryId": "10",
+    "order": "viewCount",
+
 }
 
 
@@ -367,11 +370,14 @@ def _refresh_pool_mix() -> dict:
     _save_json(raw_path, {"ts": int(time.time()), "queries": queries, "items": raw_items})
     log(f"POOL raw saved: {raw_path} items={len(raw_items)}")
 
+    # keep only top N items (quota-free; just trims what we already fetched)
+    if WORK_TARGET_N > 0 and len(work_items) > WORK_TARGET_N:
+        work_items = work_items[:WORK_TARGET_N]
+
     pool = {"ts": time.time(), "items": work_items}
     _save_json(POOL_WORK_PATH, pool)
-    log(f"POOL work saved: {POOL_WORK_PATH} items={len(work_items)}")
+    log(f"POOL work saved: {POOL_WORK_PATH} items={len(work_items)} (target={WORK_TARGET_N})")
     return pool
-
 
 def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
     pool = _load_json(POOL_WORK_PATH, {"ts": 0, "items": []})
