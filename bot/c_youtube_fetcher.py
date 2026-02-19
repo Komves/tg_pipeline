@@ -18,6 +18,7 @@ COOKIES_PATH = os.getenv("YT_COOKIES_PATH", "/data/cookies.txt").strip()
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 POOL_TTL_SEC = int(os.getenv("YT_POOL_TTL_SEC", str(24 * 3600)))  # 24h
 POOL_WORK_PATH = DATA_DIR / "yt_pool_work.json"
+MASTER_PATH = DATA_DIR / "yt_master_channels.json"
 
 # when quota is dead, don't hammer API
 API_DISABLED_UNTIL_TS = 0.0
@@ -487,6 +488,58 @@ def _refresh_pool_mix() -> dict:
     _save_json(POOL_WORK_PATH, pool)
     log(f"POOL work saved: {POOL_WORK_PATH} items={len(enriched)} (top via videos.list)")
     return pool
+def _refresh_pool_from_master() -> dict:
+    """
+    Refresh yt_pool_work.json ONLY from local /data/yt_master_channels.json
+    No YouTube API calls at all.
+    """
+    master = _load_json(MASTER_PATH, [])
+    items: list[dict] = []
+
+    now_ts = int(time.time())
+
+    for x in master:
+        vid = (x.get("video_id") or "").strip()
+        if not vid:
+            continue
+
+        title = (x.get("title") or "").strip()
+        channel_id = (x.get("channel_id") or "").strip()
+        channel_title = (x.get("channel_title") or "").strip()
+        views = int(x.get("views") or 0)
+        likes = int(x.get("likes") or 0)
+
+        # строгий URL
+        url = f"https://www.youtube.com/watch?v={vid}"
+
+        # score как раньше (примерно)
+        score = (views * 1.0) + (likes * 30.0)
+
+        items.append({
+            "video_id": vid,
+            "url": url,
+            "title": title,
+            "uploader": channel_title,
+            "channel_id": channel_id,
+            "channel_title": channel_title,
+            "views": views,
+            "likes": likes,
+            "score": float(score),
+            "ts": now_ts,
+        })
+
+    # сортируем, чтобы пул был сразу “жирный”
+    items.sort(key=lambda z: float(z.get("score") or 0.0), reverse=True)
+
+    # ограничим размер work-пула (чтобы файл не разрастался)
+    # WORK_TARGET_N у тебя = 30, но можно сделать запас побольше:
+    keep_n = max(int(WORK_TARGET_N or 30) * 50, 1000)   # например 1500
+    items = items[:keep_n]
+
+    pool = {"ts": time.time(), "items": items}
+    _save_json(POOL_WORK_PATH, pool)
+    log(f"POOL work saved from MASTER: {POOL_WORK_PATH} items={len(items)}")
+    return pool
 
 def _consume_from_pool(
     limit: int,
@@ -642,7 +695,7 @@ def get_batch(
     # If pool is fresh BUT empty -> force refresh (otherwise we get stuck returning=0)
     if _pool_is_fresh(pool) and not (pool.get("items") or []):
         log("pool fresh but empty -> force refresh")
-        _refresh_pool_mix()
+        _refresh_pool_from_master()
         got = _consume_from_pool(
             limit,
             used,
@@ -655,9 +708,8 @@ def get_batch(
         log(f"returning={len(got)} (after force refresh)")
         return got
     
-    # refresh pool once (expensive but rare)
-    if os.getenv("YT_API_KEY"):
-        _refresh_pool_mix()
+    # refresh pool from local MASTER (NO API)
+    _refresh_pool_from_master()
 
     got = _consume_from_pool(
         limit,
