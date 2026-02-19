@@ -461,11 +461,7 @@ async def on_photo(message: Message) -> None:
         uid = int(message.from_user.id) if message.from_user else 0
         LAST_USER_IMAGE_ID[(int(message.chat.id), uid)] = ph.file_id
 
-        if not _img_should_react(int(message.chat.id)):
-            print("[IMG] skipped by limiter (but saved last file_id)", flush=True)
-            return
-
-        raw = await _download_tg_file_bytes(ph.file_id)
+        raw = await _download_tg_file_bytes(message.bot, ph.file_id)
 
         img_bytes = _shrink_jpeg_bytes(raw)
         
@@ -495,6 +491,10 @@ async def on_photo(message: Message) -> None:
         action = (res.get("action") or "skip").lower()
 
         reply = (res.get("reply") or "").strip()
+        kind = (res.get("kind") or "photo").lower()
+        if kind == "meme" and action != "skip" and (not _img_should_react(int(message.chat.id))):
+            print("[IMG] meme skipped by limiter", flush=True)
+            return
 
         if action == "like":
             await message.reply(reply or "🔥")
@@ -512,16 +512,13 @@ async def on_image_document(message: Message) -> None:
 
     if not _chat_allowed(message):
         return
-    if not _img_should_react(int(message.chat.id)):
-        print("[IMG] doc skipped by limiter", flush=True)
-        return
     try:
         doc = message.document
     
         if not doc.mime_type.startswith("image/"):
             return
 
-        raw = await _download_tg_file_bytes(doc.file_id)
+        raw = await _download_tg_file_bytes(message.bot, doc.file_id)
 
         img_bytes = _shrink_jpeg_bytes(raw)
                 # save last image-document for "опиши фото" without reply
@@ -544,7 +541,10 @@ async def on_image_document(message: Message) -> None:
         action = (res.get("action") or "skip").lower()
 
         reply = (res.get("reply") or "").strip()
-
+        kind = (res.get("kind") or "photo").lower()
+        if kind == "meme" and action != "skip" and (not _img_should_react(int(message.chat.id))):
+            print("[IMG] meme skipped by limiter", flush=True)
+            return
         if action == "like":
             await message.reply(reply or "👍")
 
@@ -594,7 +594,7 @@ async def vesya_handler(message: Message) -> None:
                 img_id = r.document.file_id
 
             if img_id:
-                raw = await _download_tg_file_bytes(img_id)
+                raw = await _download_tg_file_bytes(message.bot, img_id)
                 img_bytes = _shrink_jpeg_bytes(raw)
 
         # 2) If not reply, but text asks to describe → use last saved photo
@@ -613,7 +613,7 @@ async def vesya_handler(message: Message) -> None:
             uid = int(message.from_user.id) if message.from_user else 0
             fid = LAST_USER_IMAGE_ID.get((int(message.chat.id), uid))
             if fid:
-                raw = await _download_tg_file_bytes(fid)
+                raw = await _download_tg_file_bytes(message.bot, fid)
                 img_bytes = _shrink_jpeg_bytes(raw)
 
         # 3) If we have image bytes → call vision describe

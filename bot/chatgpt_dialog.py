@@ -318,7 +318,7 @@ _ACTION_ACKS_NEWS = [
     "ок, уже ищу свежее...",
     "поняла, собираю дайджест...",
     "сейчас проверю, что нового...",
-    "вот там все те же на арене... оно тебе надо?",
+    "вот там все те же на манеже... оно тебе надо?",
     "Думаешь война закночилась?... Не угадал...",
     "Новости... новости... а депутаты п.доры!",
     "Вот вообще там ничего умного... Ну ладно, ожидайте...",
@@ -633,13 +633,16 @@ def image_react(chat_id: int, user_id: int, caption: str, img_bytes: bytes) -> O
 
         prompt = (
             "Ты бот в группе Telegram.\n"
-            "Выбери реакцию на изображение.\n"
+            "Определи тип изображения:\n"
+            "kind: photo | meme | ad\n"
+            "Выбери реакцию:\n"
             "action: skip | like | comment\n"
             "reply: короткая строка или emoji\n"
-            "Если мем → comment\n"
-            "Если обычное фото → like\n"
-            "Если реклама → skip\n"
-            'Верни JSON {"action":"...","reply":"..."}'
+            "Правила:\n"
+            "- ad: action=skip\n"
+            "- meme: обычно comment\n"
+            "- photo: обычно like\n"
+            'Верни JSON {"kind":"...","action":"...","reply":"..."}'
         )
 
         resp = client.responses.create(
@@ -660,17 +663,26 @@ def image_react(chat_id: int, user_id: int, caption: str, img_bytes: bytes) -> O
 
         data = _parse_json_object(out) or {}
 
-        action = str(data.get("action", "skip")).lower()
-
+        kind = str(data.get("kind", "")).lower().strip()
+        action = str(data.get("action", "skip")).lower().strip()
         reply = _sanitize_reply(str(data.get("reply", "")))
 
         if action not in {"skip", "like", "comment"}:
             action = "skip"
 
+        if kind not in {"photo", "meme", "ad"}:
+            # fallback эвристика
+            if action == "comment":
+                kind = "meme"
+            elif action == "skip":
+                kind = "ad"
+            else:
+                kind = "photo"
+
         if action != "skip" and not reply:
             reply = "🔥"
 
-        return {"action": action, "reply": reply}
+        return {"kind": kind, "action": action, "reply": reply}
 
     except Exception as e:
 
@@ -781,10 +793,11 @@ def meme_rank_batch(
         "- личное фото/селфи/частная фотография без мемного смысла",
         "- пейзаж/еда/товар/скрин витрины/инфографика/объявление",
         "- просто картинка без шутки/мемного посыла",
+        "- новости/политика/официальный портрет/пресс-фото/гос-символика/флаги/гербы/скрин новостей/заявления чиновников",
         "",
         "Разрешай (ok=true), если это мем/шутка/ирония/сарказм/узнаваемая мемная подача.",
-        "ВАЖНО: даже если сомневаешься, всё равно выбери top_k лучших из набора (они могут быть 'наименее плохими').",
-        "",
+        "ВАЖНО: если в наборе нет нормальных мемов — это нормально. В таком случае верни пустой picked_item_ids [].",
+
         f"Нужно вернуть JSON СТРОГО такого вида:",
         "{",
         '  "items": [',
@@ -795,7 +808,9 @@ def meme_rank_batch(
         "}",
         "",
         "Правила:",
-        f"- picked_item_ids: ровно {top_k} штук, если в наборе >= {top_k}.",
+        f"- picked_item_ids: от 0 до {top_k} штук.",
+        "- добавляй в picked_item_ids только те item_id, у которых ok=true и score высокий.",
+        "- если мемов нет (или почти всё мусор) — picked_item_ids может быть [].",
         "- score: 0..100 (чем мемнее/смешнее/релевантнее, тем выше).",
         "- reason: 2–8 слов (например: 'реклама', 'скрин без шутки', 'мем с текстом', 'реакция').",
         "- tags: 0–5 тегов (например: 'text', 'reaction', 'screenshot', 'ad-like', 'personal').",
