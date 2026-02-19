@@ -62,14 +62,15 @@ def _save_sent(path: Path, sent: set[str], *, keep_last: int = 500) -> None:
     except Exception:
         pass
 
-async def _download_tg_file_bytes(bot, file_path: str) -> bytes:
+async def _download_tg_file_bytes(file_id: str) -> bytes:
     """
-    Скачать файл Telegram по file_path → bytes
+    Скачать файл Telegram по file_id → bytes
     """
     from io import BytesIO
 
+    tg_file = await bot.get_file(file_id)
     bio = BytesIO()
-    await bot.download_file(file_path, destination=bio)
+    await bot.download_file(tg_file.file_path, destination=bio)
     return bio.getvalue()
 
 async def _gpt_meme_ok(abs_path: str, src: str = "") -> bool:
