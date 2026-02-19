@@ -62,7 +62,7 @@ def _save_sent(path: Path, sent: set[str], *, keep_last: int = 500) -> None:
     except Exception:
         pass
 
-async def _download_tg_file_bytes(file_id: str) -> bytes:
+async def _download_tg_file_bytes(bot: Bot, file_id: str) -> bytes:
     """
     Скачать файл Telegram по file_id → bytes
     """
