@@ -335,11 +335,18 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     for x in cand:
         try:
             p = Path(x.get("abs_path") or "")
-            if (not p.exists()) or (not p.suffix):
+            
+            if (not p.exists()):
                 continue
+
             suf = p.suffix.lower()
             if suf not in {".jpg", ".jpeg", ".png", ".webp"}:
                 continue
+
+            # защита от mp4 под видом jpg
+            if p.stat().st_size < 5000:
+                continue
+            
             img_bytes = p.read_bytes()
 
             batch.append(
@@ -356,8 +363,15 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     picked_ids: list[str] = []
     if batch:
         r = chatgpt_dialog.meme_rank_batch(batch, top_k=SEND_K)
-        picked_ids = list(r.get("picked_item_ids") or [])
+        picked_ids = list((r or {}).get("picked_item_ids") or [])
+
+    # dedup preserving order (GPT can repeat same id)
+
+    picked_ids = list(dict.fromkeys(picked_ids))
     picked_ids = [pid for pid in picked_ids if pid]
+
+    # жестко убираем уже отправленные
+    picked_ids = [pid for pid in picked_ids if pid not in sentm]
 
     id2 = {x.get("item_id"): x for x in cand}
     picked_items = [id2[i] for i in picked_ids if i in id2]
@@ -399,8 +413,8 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         posted_ids = set(_st.get("posted_video_ids") or [])
         last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
         last_sent_by_channel = dict(_st.get("last_sent_by_channel") or {})
-        CHANNEL_COOLDOWN_SEC = 7 * 24 * 3600
         now_ts = int(time.time())
+        CHANNEL_COOLDOWN_SEC = int(os.getenv("V_YT_CHANNEL_COOLDOWN_DAYS", "7")) * 86400
 
         pool = c_youtube_fetcher.get_batch(
             limit=6,
@@ -415,7 +429,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             title = (x.get("title") or "").strip()
             url = (x.get("url") or "").strip()
             vid = (x.get("video_id") or "").strip()
-
+            
             if not url or url in sentyt:
                 continue
 
@@ -446,11 +460,11 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         _save_sent(sentyt_path, sentyt, keep_last=800)
 
         ytstate_path.write_text(
-            json.dumps({
-                "posted_video_ids": list(posted_ids)[-5000:],
-                "last_sent_by_source": last_sent_by_source,
-                "last_sent_by_channel": last_sent_by_channel,
-            }),
+             json.dumps({
+                 "posted_video_ids": list(posted_ids)[-5000:],
+                 "last_sent_by_source": last_sent_by_source,
+                 "last_sent_by_channel": last_sent_by_channel,
+             }),
 
             encoding="utf-8",
         )
