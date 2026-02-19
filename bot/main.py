@@ -386,6 +386,9 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
         posted_ids = set(_st.get("posted_video_ids") or [])
         last_sent_by_source = dict(_st.get("last_sent_by_source") or {})
+        last_sent_by_channel = dict(_st.get("last_sent_by_channel") or {})
+        CHANNEL_COOLDOWN_SEC = 7 * 24 * 3600
+        now_ts = int(time.time())
 
         pool = c_youtube_fetcher.get_batch(
             limit=6,
@@ -411,6 +414,12 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
             text2 = f"🎵 {title}\n{url}" if title else url
 
+            cid = (x.get("channel_id") or "").strip()
+            if cid:
+                last_ts = int(last_sent_by_channel.get(cid) or 0)
+                if now_ts - last_ts < CHANNEL_COOLDOWN_SEC:
+                    continue
+
             await message.answer(text2, reply_markup=yt_kb(item_id))
 
             sentyt.add(url)
@@ -418,6 +427,9 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             if vid:
                 posted_ids.add(vid)
                 last_sent_by_source["c_youtube"] = vid
+                cid = (x.get("channel_id") or "").strip()
+                if cid:
+                    last_sent_by_channel[cid] = now_ts
 
         _save_sent(sentyt_path, sentyt, keep_last=800)
 
@@ -425,7 +437,9 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             json.dumps({
                 "posted_video_ids": list(posted_ids)[-5000:],
                 "last_sent_by_source": last_sent_by_source,
+                "last_sent_by_channel": last_sent_by_channel,
             }),
+
             encoding="utf-8",
         )
 

@@ -464,8 +464,11 @@ def _refresh_pool_mix() -> dict:
         if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
             score *= 0.35
 
+        channel_id = (meta.get(vid, {}).get("snippet", {}) or {}).get("channelId") or ""
+
         enriched.append({
             "video_id": vid,
+            "channel_id": channel_id,
             "url": url,
             "title": title,
             "uploader": uploader,
@@ -476,6 +479,7 @@ def _refresh_pool_mix() -> dict:
             "score": float(score),
             "ts": int(time.time()),
         })
+        
 
     enriched.sort(key=lambda z: float(z.get("score") or 0.0), reverse=True)
     if WORK_TARGET_N > 0:
@@ -546,18 +550,20 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
             score *= 0.35
 
         out.append(
-            {
-                "feed": "c_youtube",
-                "url": url2,
-                "video_id": vid,
-                "source": f"yt:{vid}",
-                "title": title,
-                "ts": int(time.time()),
-                "score": float(score),
-                "views": view_count,
-                "likes": like_count,
-            }
+        {
+            "feed": "c_youtube",
+            "url": url2,
+            "video_id": vid,
+            "channel_id": full.get("channel_id") or "",
+            "source": f"yt:{vid}",
+            "title": title,
+            "ts": int(time.time()),
+            "score": float(score),
+            "views": view_count,
+            "likes": like_count,
+        }
         )
+
         used.add(vid)
         log(f"picked vid={vid} views={view_count} score={int(score)} title={title[:80]}")
 
