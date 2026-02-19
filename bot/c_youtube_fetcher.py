@@ -208,6 +208,7 @@ def _videos_list_meta(video_ids: list[str]) -> dict[str, dict]:
                 "duration_sec": duration_sec,
                 "title": (sn.get("title") or "").strip(),
                 "uploader": (sn.get("channelTitle") or "").strip(),
+                "channel_id": (sn.get("channelId") or "").strip(),
                 "description": (sn.get("description") or "").strip(),
             }
 
@@ -464,14 +465,12 @@ def _refresh_pool_mix() -> dict:
         if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
             score *= 0.35
 
-        channel_id = (meta.get(vid, {}).get("snippet", {}) or {}).get("channelId") or ""
-
         enriched.append({
             "video_id": vid,
-            "channel_id": channel_id,
             "url": url,
             "title": title,
             "uploader": uploader,
+            "channel_id": (m.get("channel_id") or "").strip(),
             "description": desc,
             "duration_sec": duration_sec,
             "views": views,
@@ -479,7 +478,6 @@ def _refresh_pool_mix() -> dict:
             "score": float(score),
             "ts": int(time.time()),
         })
-        
 
     enriched.sort(key=lambda z: float(z.get("score") or 0.0), reverse=True)
     if WORK_TARGET_N > 0:
@@ -490,17 +488,27 @@ def _refresh_pool_mix() -> dict:
     log(f"POOL work saved: {POOL_WORK_PATH} items={len(enriched)} (top via videos.list)")
     return pool
 
-def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
+def _consume_from_pool(
+    limit: int,
+    used: set[str],
+    *,
+    last_sent_by_channel: Dict[str, int] | None = None,
+    channel_cooldown_sec: int = 7 * 86400,
+    require_channel_id: bool = True,
+) -> List[Dict]:
     pool = _load_json(POOL_WORK_PATH, {"ts": 0, "items": []})
     items: list[dict] = list(pool.get("items") or [])
 
     if not items:
         return []
 
+    now_ts = int(time.time())
+    seen_channels: set[str] = set()
+
     take_n = min(len(items), max(limit * 12, 40))
     chunk = items[:take_n]
     rest = items[take_n:]
-    
+
     out: List[Dict] = []
     kept_rest: list[dict] = []
 
@@ -523,7 +531,20 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
         url2 = url.strip()
         if "/shorts/" in url2:
             continue  # HARD shorts cut
-        
+
+        # --- channel guards (cooldown + one-per-batch) ---
+        cid = (full.get("channel_id") or "").strip()
+        if require_channel_id and not cid:
+            continue
+
+        if cid:
+            if cid in seen_channels:
+                continue
+            if last_sent_by_channel:
+                last_ts = int(last_sent_by_channel.get(cid) or 0)
+                if last_ts and (now_ts - last_ts) < int(channel_cooldown_sec):
+                    continue
+
         view_count = int(full.get("views") or 0)
         like_count = int(full.get("likes") or 0)
         if view_count < MIN_VIEW_COUNT:
@@ -536,11 +557,9 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
         text_blob = f"{title} {uploader} {desc}".strip()
 
         if BANNED_SCRIPTS_RE.search(text_blob):
-
             continue
         if not (HAS_CYR_RE.search(text_blob) or HAS_LAT_RE.search(text_blob)):
             continue
-        
         if BAD_TITLE_RE.search(title):
             continue
 
@@ -549,28 +568,31 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
         if ("ai cover" in blob_low) or ("a.i. cover" in blob_low) or ("rvc" in blob_low) or ("voice model" in blob_low):
             score *= 0.35
 
+        channel_title = (full.get("channel_title") or uploader or "").strip()
+
         out.append(
-        {
-            "feed": "c_youtube",
-            "url": url2,
-            "video_id": vid,
-            "channel_id": full.get("channel_id") or "",
-            "source": f"yt:{vid}",
-            "title": title,
-            "ts": int(time.time()),
-            "score": float(score),
-            "views": view_count,
-            "likes": like_count,
-        }
+            {
+                "feed": "c_youtube",
+                "url": url2,
+                "video_id": vid,
+                "source": f"yt:{vid}",
+                "title": title,
+                "channel_id": cid,
+                "channel_title": channel_title,
+                "ts": now_ts,
+                "score": float(score),
+                "views": view_count,
+                "likes": like_count,
+            }
         )
 
         used.add(vid)
-        log(f"picked vid={vid} views={view_count} score={int(score)} title={title[:80]}")
+        if cid:
+            seen_channels.add(cid)
+
+        log(f"picked vid={vid} cid={cid} views={view_count} score={int(score)} title={title[:80]}")
 
     # If we failed to pick anything, DO NOT burn the pool.
-    # Keep original items so we can debug/try again.
-    # If we failed to pick anything, DO NOT burn the pool.
-    # Keep original items so we can debug/try again.
     if not out:
         log("picked=0 -> keep pool unchanged (no burn)")
         _save_json(POOL_WORK_PATH, pool)
@@ -580,11 +602,12 @@ def _consume_from_pool(limit: int, used: set[str]) -> List[Dict]:
     _save_json(POOL_WORK_PATH, new_pool)
     return out
 
-
 def get_batch(
     limit: int,
     posted_video_ids: Set[str],
-    last_sent_by_source: Dict[str, str],
+    last_sent_by_channel: Dict[str, int],
+    *,
+    channel_cooldown_sec: int = 7 * 86400,
     mode: str = "mix",
 ) -> List[Dict]:
 
@@ -604,7 +627,14 @@ def get_batch(
 
     # If pool is fresh AND non-empty -> use it
     if _pool_is_fresh(pool) and (pool.get("items") or []):
-        got = _consume_from_pool(limit, used)
+        got = _consume_from_pool(
+            limit,
+            used,
+            last_sent_by_channel=last_sent_by_channel,
+            channel_cooldown_sec=channel_cooldown_sec,
+            require_channel_id=True,
+        )
+
         got.sort(key=lambda x: x.get("score", 0), reverse=True)
         log(f"returning={len(got)} (from pool)")
         return got
@@ -613,7 +643,14 @@ def get_batch(
     if _pool_is_fresh(pool) and not (pool.get("items") or []):
         log("pool fresh but empty -> force refresh")
         _refresh_pool_mix()
-        got = _consume_from_pool(limit, used)
+        got = _consume_from_pool(
+            limit,
+            used,
+            last_sent_by_channel=last_sent_by_channel,
+            channel_cooldown_sec=channel_cooldown_sec,
+            require_channel_id=True,
+        )
+
         got.sort(key=lambda x: x.get("score", 0), reverse=True)
         log(f"returning={len(got)} (after force refresh)")
         return got
@@ -622,7 +659,14 @@ def get_batch(
     if os.getenv("YT_API_KEY"):
         _refresh_pool_mix()
 
-    got = _consume_from_pool(limit, used)
+    got = _consume_from_pool(
+        limit,
+        used,
+        last_sent_by_channel=last_sent_by_channel,
+        channel_cooldown_sec=channel_cooldown_sec,
+        require_channel_id=True,
+    )
+
     got.sort(key=lambda x: x.get("score", 0), reverse=True)
     log(f"returning={len(got)} (after refresh)")
     return got

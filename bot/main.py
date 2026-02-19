@@ -419,7 +419,8 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         pool = c_youtube_fetcher.get_batch(
             limit=6,
             posted_video_ids=posted_ids,
-            last_sent_by_source=last_sent_by_source,
+            last_sent_by_channel=last_sent_by_channel,
+            channel_cooldown_sec=CHANNEL_COOLDOWN_SEC,
             mode="mix",
         )
 
@@ -441,6 +442,8 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             text2 = f"🎵 {title}\n{url}" if title else url
 
             cid = (x.get("channel_id") or "").strip()
+            if not cid:
+                continue
             if cid:
                 last_ts = int(last_sent_by_channel.get(cid) or 0)
                 if now_ts - last_ts < CHANNEL_COOLDOWN_SEC:
