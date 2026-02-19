@@ -320,6 +320,13 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             continue
         if abs_path and (not Path(abs_path).exists()):
             continue
+
+        # MEME candidates must be images only (skip mp4 etc.)
+        if abs_path:
+            suf = Path(abs_path).suffix.lower()
+            if suf not in {".jpg", ".jpeg", ".png", ".webp"}:
+                continue
+
         cand.append(x)
 
     print(f"[meme_pool] cand={len(cand)} pool_items={len(items)}", flush=True)
@@ -328,9 +335,13 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     for x in cand:
         try:
             p = Path(x.get("abs_path") or "")
-            if not p.exists():
+            if (not p.exists()) or (not p.suffix):
+                continue
+            suf = p.suffix.lower()
+            if suf not in {".jpg", ".jpeg", ".png", ".webp"}:
                 continue
             img_bytes = p.read_bytes()
+
             batch.append(
                 chatgpt_dialog.MemeCandidate(
                     item_id=x.get("item_id") or "",
