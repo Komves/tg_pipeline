@@ -397,7 +397,7 @@ def _refresh_pool_mix() -> dict:
 
     for qi, q in enumerate(queries, start=1):
         log(f"POOL refresh query[{qi}/{len(queries)}]: {q}")
-        cand = _search(q, SEARCH_PER_QUERY, basic_only=True)  # search.list only
+        cand = _search(q, SEARCH_PER_QUERY, basic_only=False)
 
         for c in cand:
             raw_items.append(
