@@ -868,3 +868,28 @@ def meme_rank_batch(
         return {"ok": False, "picked_item_ids": [], "items": []}
    
         return {"ok": True, "picked_item_ids": picked, "items": []}
+import random
+
+SARCASM_QUOTES = [
+    # Beckett
+    ("Samuel Beckett", "Nothing is funnier than unhappiness."),
+    # Kafka
+    ("Franz Kafka", "A cage went in search of a bird."),
+    # Sartre
+    ("Jean-Paul Sartre", "Hell is other people."),
+    # Schopenhauer
+    ("Arthur Schopenhauer", "Life swings like a pendulum backward and forward between pain and boredom."),
+    # Nietzsche
+    ("Friedrich Nietzsche", "He who has a why to live for can bear almost any how."),
+    # Cioran
+    ("Emil Cioran", "It is not worth the bother of killing yourself, since you always kill yourself too late."),
+]
+
+def pick_sarcastic_quote_ru(seed: int | None = None) -> str:
+    """
+    Returns one real quote (EN) + author.
+    Optional: later we can add RU translations carefully.
+    """
+    rnd = random.Random(seed)
+    author, q = rnd.choice(SARCASM_QUOTES)
+    return f"“{q}” — {author}"

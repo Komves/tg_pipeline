@@ -879,7 +879,7 @@ async def ingest24_loop(bot: Bot) -> None:
 
     while True:
         now = datetime.now(MSK)
-        next_run = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        next_run = now.replace(hour=5, minute=0, second=0, microsecond=0)
 
         if now >= next_run:
             next_run += timedelta(days=1)
@@ -890,6 +890,16 @@ async def ingest24_loop(bot: Bot) -> None:
         await asyncio.sleep(wait_sec)
 
         print("[ingest24] starting ingest_hours(24)", flush=True)
+
+        # send quote-greeting before ingest (if we have a recent user)
+        try:
+            if RECENT_MSG_IDS:
+                chat_id = list(RECENT_MSG_IDS.keys())[-1][0]
+                user_id = list(RECENT_MSG_IDS.keys())[-1][1]
+                quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=int(time.time()) // 86400)
+                await bot.send_message(chat_id, quote_text)
+        except Exception as e:
+            print(f"[ingest24] quote send error: {e}", flush=True)
 
         try:
             async with TG_LOCK:
