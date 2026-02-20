@@ -329,8 +329,17 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             if suf not in {".jpg", ".jpeg", ".png", ".webp"}:
                 continue
 
-        cand.append(x)
+        # hard pre-filter before GPT ranking (NSFW / personal / ads / trash)
+        if abs_path:
+            try:
+                src = (x.get("src") or "").strip()
+                ok = await _gpt_meme_ok(abs_path, src=src)
+                if not ok:
+                    continue
+            except Exception:
+                continue
 
+        cand.append(x)
     print(f"[meme_pool] cand={len(cand)} pool_items={len(items)}", flush=True)
 
     batch: list[chatgpt_dialog.MemeCandidate] = []
