@@ -375,6 +375,13 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     if batch:
         r = chatgpt_dialog.meme_rank_batch(batch, top_k=SEND_K)
         picked_ids = list((r or {}).get("picked_item_ids") or [])
+        # --- DEBUG: what GPT rejected ---
+        cand_ids = [c.item_id for c in batch if getattr(c, "item_id", None)]
+        picked_set = set(picked_ids)
+        rejected = [cid for cid in cand_ids if cid not in picked_set]
+        print(f"[MEME_GPT] ok={bool((r or {}).get('ok', True))} batch={len(cand_ids)} picked={len(picked_ids)} rejected={len(rejected)}", flush=True)
+        print(f"[MEME_GPT] picked_ids={picked_ids}", flush=True)
+        print(f"[MEME_GPT] rejected_ids={rejected}", flush=True)
 
     # dedup preserving order (GPT can repeat same id)
 
