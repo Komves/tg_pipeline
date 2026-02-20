@@ -7,6 +7,7 @@ import random
 import json
 import shutil
 import uuid
+import html
 from pathlib import Path
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatAction
@@ -124,6 +125,9 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is empty (set Render env var BOT_TOKEN).")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+def _format_morning_quote(text_ru: str) -> str:
+    q = html.escape((text_ru or "").strip())
+    return f"🌅 <b>Утренняя цитата</b>\n<blockquote>{q}</blockquote>"
 # =========================
 # IMAGE INBOX / SHRINK (vision economy)
 # =========================
@@ -221,7 +225,7 @@ async def cmd_get12(message: Message) -> None:
 # =========================
 # MAIN ROUTER
 # =========================
-async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int | None) -> None:
+async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int | None, send_mode: str = "get12") -> None:
     chat_id = int(message.chat.id)
 
     # --- Telethon ingest (optional) ---
@@ -251,7 +255,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
     items = list(pool.get("items") or [])
 
-    SEND_V = int(os.getenv("V_VIDEO_SEND_K", "3"))
+    SEND_V = 4 if send_mode == "get24" else 2
     picked = []
     for x in items:
         if len(picked) >= SEND_V:
@@ -299,14 +303,12 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     sentm = _load_sent(sentm_path)
 
     pool_path = _pool_path("meme", user_id)
-    pool = _load_json(pool_path, {"ts": 0, "items": []})
-    if not _pool_is_fresh(pool):
-        pool = _refresh_meme_pool(user_id)
+    pool = _refresh_meme_pool(user_id)
 
     items = list(pool.get("items") or [])
 
     POOL_N = int(os.getenv("V_MEME_POOL_N", "30"))   # сколько показать GPT за раз
-    SEND_K = int(os.getenv("V_MEME_SEND_K", "6"))    # сколько отправить пользователю
+    SEND_K = 8 if send_mode == "get24" else 4        # сколько отправить пользователю
 
     cand = []
     for x in items:
@@ -403,6 +405,8 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
         sentyt_path = DATA_DIR / f"sent_yt_{user_id}.json"
         sentyt = _load_sent(sentyt_path)
+        SEND_YT = 2 if send_mode == "get24" else 1
+        yt_sent = 0
 
         ytstate_path = DATA_DIR / f"yt_state_{user_id}.json"
         try:
@@ -450,6 +454,9 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
                     continue
 
             await message.answer(text2, reply_markup=yt_kb(item_id))
+            yt_sent += 1
+            if yt_sent >= SEND_YT:
+                break
 
             sentyt.add(url)
 
@@ -897,7 +904,8 @@ async def ingest24_loop(bot: Bot) -> None:
                 chat_id = list(RECENT_MSG_IDS.keys())[-1][0]
                 user_id = list(RECENT_MSG_IDS.keys())[-1][1]
                 quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=int(time.time()) // 86400)
-                await bot.send_message(chat_id, quote_text)
+                quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
+                await bot.send_message(chat_id, _format_morning_quote(quote_ru), parse_mode="html")
         except Exception as e:
             print(f"[ingest24] quote send error: {e}", flush=True)
 
@@ -947,7 +955,7 @@ async def ingest24_loop(bot: Bot) -> None:
             except Exception as e:
                 print(f"[pool] meme refresh error: {e}", flush=True)
             
-            await _send_content(dummy, user_id=user_id, ingest_hours_n=None)
+            await _send_content(dummy, user_id=user_id, ingest_hours_n=None, send_mode="get24")
 
         except Exception as e:
             print(f"[ingest24] error: {e}", flush=True)

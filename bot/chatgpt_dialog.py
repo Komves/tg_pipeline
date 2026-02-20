@@ -85,7 +85,35 @@ def _dbg(msg: str) -> None:
 
 def _has_key() -> bool:
     return bool((os.getenv("OPENAI_API_KEY") or "").strip())
+def translate_to_ru(text: str) -> str:
+    """
+    Translate EN→RU. If already contains Cyrillic or no API key — return as-is.
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
 
+    # already russian-ish
+    if any(("а" <= ch <= "я") or ("А" <= ch <= "Я") for ch in t):
+        return t
+
+    if not _has_key():
+        return t
+
+    try:
+        client = OpenAI()
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {"role": "system", "content": "Переведи на русский естественно. Верни только перевод, без пояснений."},
+                {"role": "user", "content": t},
+            ],
+        )
+        out = _extract_text(resp)
+        out = _sanitize_reply(out)
+        return out or t
+    except Exception:
+        return t
 
 def _gc() -> None:
     now = _now()
