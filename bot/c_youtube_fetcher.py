@@ -563,9 +563,15 @@ def _consume_from_pool(
     rest = items[take_n:]
 
     out: List[Dict] = []
+
+    # то, что точно надо оставить в пуле (не дошли до него из-за лимита)
     kept_rest: list[dict] = []
 
+    # то, что мы посмотрели, но НЕ отдали (временные причины) -> вернуть в пул
+    kept_chunk: list[dict] = []
+
     for x in chunk:
+        # если лимит уже набран — оставляем нерассмотренное на потом
         if len(out) >= limit:
             kept_rest.append(x)
             continue
@@ -574,30 +580,42 @@ def _consume_from_pool(
         url = (x.get("url") or "").strip()
         title0 = (x.get("title") or "").strip()
 
+        # --- перманентный брак: можно сжигать ---
         if not vid or not url:
             continue
+
+        url2 = url.strip()
+
+        # shorts режем навсегда
+        if "/shorts/" in url2:
+            continue
+
+        full = x  # already enriched in _refresh_pool_mix() / _refresh_pool_from_master()
+
+        # --- временные причины: НЕ сжигать, вернуть в пул ---
+        # уже использован (posted ids) -> смысла возвращать нет, но это тоже "перманентно" для этого пользователя
+        # поэтому можно сжечь
         if vid in used:
             continue
 
-        full = x  # already enriched in _refresh_pool_mix()
-
-        url2 = url.strip()
-        if "/shorts/" in url2:
-            continue  # HARD shorts cut
-
-        # --- channel guards (cooldown + one-per-batch) ---
         cid = (full.get("channel_id") or "").strip()
         if require_channel_id and not cid:
+            # обычно перманентно (в мастер-пуле не появится), сжигаем
             continue
 
-        if cid:
-            if cid in seen_channels:
-                continue
-            if last_sent_by_channel:
-                last_ts = int(last_sent_by_channel.get(cid) or 0)
-                if last_ts and (now_ts - last_ts) < int(channel_cooldown_sec):
-                    continue
+        # one-per-batch по каналу — это ВРЕМЕННО, возвращаем в пул
+        if cid and (cid in seen_channels):
+            kept_chunk.append(x)
+            continue
 
+        # cooldown по каналу — это ВРЕМЕННО, возвращаем в пул
+        if cid and last_sent_by_channel:
+            last_ts = int(last_sent_by_channel.get(cid) or 0)
+            if last_ts and (now_ts - last_ts) < int(channel_cooldown_sec):
+                kept_chunk.append(x)
+                continue
+
+        # --- перманентные фильтры качества/языка: можно сжигать ---
         view_count = int(full.get("views") or 0)
         like_count = int(full.get("likes") or 0)
         if view_count < MIN_VIEW_COUNT:
@@ -639,6 +657,7 @@ def _consume_from_pool(
             }
         )
 
+        # помечаем использованным только то, что реально отдали наружу
         used.add(vid)
         if cid:
             seen_channels.add(cid)
@@ -651,6 +670,11 @@ def _consume_from_pool(
         _save_json(POOL_WORK_PATH, pool)
         return out
 
+    # ВАЖНО: возвращаем обратно просмотренное, но НЕ отданное (kept_chunk)
+    # чтобы оно могло попасть в будущий батч, когда cooldown/one-per-batch условия изменятся.
+    new_pool = {"ts": pool.get("ts") or time.time(), "items": kept_rest + kept_chunk + rest}
+    _save_json(POOL_WORK_PATH, new_pool)
+    return out
     new_pool = {"ts": pool.get("ts") or time.time(), "items": kept_rest + rest}
     _save_json(POOL_WORK_PATH, new_pool)
     return out
