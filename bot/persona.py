@@ -130,9 +130,22 @@ def postprocess_text(reply: str, user_text: str = "") -> str:
         has_swear = bool(_PROF_TRIG.search(out))
         if not has_swear:
             out = _maybe_swear(out, allow=True, force=True)
+    allow_swear = not NO_SWEAR_RE.search(user_text or "")
+    out = _force_feminine(reply or "")
+
+    force = _should_force_swear(user_text, allow_swear)
+    if force:
+        has_swear = bool(_PROF_TRIG.search(out))
+        if not has_swear:
+            out = _maybe_swear(out, allow=True, force=True)
+
+    # --- Ограничение вопросов (редко) ---
+    import random
+    if "?" in out and random.random() > 0.2:
+        out = out.replace("?", ".")
 
     return out.strip()
-
+    
 def _answer_first_rule(system_prompt: str) -> str:
     return (
         system_prompt
@@ -159,10 +172,10 @@ ALIVE_ANSWERS = [
 ]
 
 BOT_Q_ANSWERS = [
-    "а ты как думаешь?",
-    "это тебя правда волнует?",
-    "люди тоже иногда звучат как скрипты. продолжай.",
-    "вопрос не про меня. вопрос — зачем тебе ответ.",
+    "может быть.",
+    "бывает.",
+    "понятно.",
+    "не факт.",
 ]
 
 CHOICE_PROMPTS = [
@@ -310,7 +323,7 @@ def answer_chat(text: str) -> str:
     force = _should_force_swear(t, allow_swear)
 
     if re.search(r"\b(как сама|как ты|как дела)\b", t, re.IGNORECASE):
-        base = "нормально. собрана. голова холодная. ты по делу или просто скучаешь?"
+        base = "нормально. собрана. голова холодная..."
         return postprocess_text(_maybe_swear(base, allow=allow_swear, force=force), t)
 
     if re.search(r"\b(о тебе|про тебя)\b", t, re.IGNORECASE):
