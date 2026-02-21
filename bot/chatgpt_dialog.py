@@ -519,6 +519,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     if ir and ir.addressed and ir.intent in {"bot_q"}:
         # Never "я просто бот" — keep Vesya ambiguity
         reply = random.choice(getattr(persona, "BOT_Q_ANSWERS", ["а ты?"]))
+        reply = _dequestionize(reply)
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="chat", reply=reply)
 
@@ -535,6 +536,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
     if ir and ir.addressed and ir.intent == "unclear":
         reply = _pick_clarify(chat_id, user_id, user_text)
+        reply = _dequestionize(reply)
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="chat", reply=reply)
 
@@ -542,6 +544,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         reply = persona.answer_info_fast(ir.question)
         reply = _sanitize_reply(reply)
         reply = persona.postprocess_text(reply, user_text)
+        reply = _dequestionize(reply)
         if not reply:
             reply = _pick_clarify(chat_id, user_id, user_text)
         add_assistant(chat_id, user_id, reply)
@@ -551,6 +554,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         reply = persona.answer_chat(ir.question or "")
         reply = _sanitize_reply(reply)
         reply = persona.postprocess_text(reply, user_text)
+        reply = _dequestionize(reply)
         if not reply:
             reply = _pick_clarify(chat_id, user_id, user_text)
         add_assistant(chat_id, user_id, reply)
@@ -588,6 +592,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         if intent not in {"chat", "news", "content", "end"}:
             intent = "chat"
 
+        reply = _sanitize_reply(str(data.get("reply", "")))
         reply = _sanitize_reply(str(data.get("reply", "")))
 
         # Guardrails for action intents
