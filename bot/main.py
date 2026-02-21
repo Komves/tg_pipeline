@@ -47,19 +47,46 @@ def _is_banned(item_id: str) -> bool:
     return False
 
 def _load_sent(path: Path) -> set[str]:
+    """
+    Load "sent" ids from disk.
+    Stored as list (order preserved), returned as set for fast membership checks.
+    """
     try:
         if path.exists():
-            return set(json.loads(path.read_text(encoding="utf-8")))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return set(str(x) for x in data if x)
     except Exception:
         pass
     return set()
 
 def _save_sent(path: Path, sent: set[str], *, keep_last: int = 500) -> None:
+    """
+    Save with stable order:
+    - read existing list
+    - append new ids in deterministic order (sorted)
+    - trim from the left (keep last N)
+    """
     try:
-        data = list(sent)
-        if len(data) > keep_last:
-            data = data[-keep_last:]
-        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        existing = []
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    existing = [str(x) for x in data if x]
+            except Exception:
+                existing = []
+
+        exist_set = set(existing)
+
+        # deterministic append (so we don't "forget" randomly)
+        new_ids = sorted([x for x in sent if x and x not in exist_set])
+
+        merged = existing + new_ids
+        if len(merged) > keep_last:
+            merged = merged[-keep_last:]
+
+        path.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 
@@ -470,19 +497,21 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
                     continue
 
             await message.answer(text2, reply_markup=yt_kb(item_id))
-            yt_sent += 1
-            if yt_sent >= SEND_YT:
-                break
 
+            # фиксируем отправку СРАЗУ (иначе при SEND_YT=1 break съедает запись state)
             sentyt.add(url)
 
             if vid:
                 posted_ids.add(vid)
                 last_sent_by_source["c_youtube"] = vid
-                cid = (x.get("channel_id") or "").strip()
-                if cid:
-                    last_sent_by_channel[cid] = now_ts
 
+            if cid:
+                last_sent_by_channel[cid] = now_ts
+
+            yt_sent += 1
+            if yt_sent >= SEND_YT:
+                break
+            
         _save_sent(sentyt_path, sentyt, keep_last=800)
 
         ytstate_path.write_text(

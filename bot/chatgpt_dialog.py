@@ -417,6 +417,25 @@ def _sanitize_reply(text: str) -> str:
         t = t[:700].rstrip() + "…"
     return t
 
+def _dequestionize(text: str) -> str:
+    """
+    Vesya shouldn't end every line with a question.
+    Convert trailing '?' to '.' and remove pushy clarifying questions.
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+
+    # if ends with question marks -> make it a statement
+    if t.endswith("?") or t.endswith("?!") or t.endswith("!?"):
+        t = t.rstrip("?! ").rstrip()
+        if t:
+            t += "."
+
+    # also remove common "clarify" style endings
+    # (keep short, reluctant vibe)
+    t = re.sub(r"\s+(ну\s*)?а\s+ты\?\s*$", ".", t, flags=re.I)
+    return t.strip()
 
 def _parse_json_object(s: str) -> Optional[dict]:
     if not s:
@@ -449,6 +468,8 @@ _SYSTEM_PROMPT = (
 
 Правила:
 - Ответ 1–3 строки.
+- Не задавай вопросы. Почти никогда. Если можешь ответить утверждением — отвечай утверждением.
+- Манера: неохотно, сухо, с лёгким раздражением/сарказмом. Без «а ты как думаешь?» и без допроса.
 - Если intent = news или content, ответ должен быть подтверждением действия (ack), НЕ уточняющим вопросом и НЕ мета-комментарием про код/пайплайны/файлы.
 - Если пользователь просит закончить или явно говорит "стоп/пока", intent=end.
 - Если запрос — обычный разговор, intent=chat.
