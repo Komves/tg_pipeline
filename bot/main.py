@@ -556,9 +556,10 @@ async def on_photo(message: Message) -> None:
             fn.write_bytes(img_bytes)
         except Exception:
             pass
-        # In groups: don't auto-react to photos (store only for "опиши фото")
+        # In groups: react rarely (cooldown + probability)
         if message.chat.type in ("group", "supergroup"):
-            return
+            if not _img_should_react(int(message.chat.id)):
+                return
         res = chatgpt_dialog.image_react(
             chat_id=int(message.chat.id),
             user_id=int(message.from_user.id) if message.from_user else 0,
@@ -573,6 +574,10 @@ async def on_photo(message: Message) -> None:
 
         reply = (res.get("reply") or "").strip()
         kind = (res.get("kind") or "photo").lower()
+        # In groups: for non-meme photos do only "like" (no comments)
+        if message.chat.type in ("group", "supergroup") and kind != "meme":
+            if action == "comment":
+                action = "like"
         if kind == "meme" and action != "skip" and (not _img_should_react(int(message.chat.id))):
             print("[IMG] meme skipped by limiter", flush=True)
             return
@@ -611,9 +616,10 @@ async def on_image_document(message: Message) -> None:
             img_bytes,
         )
 
-        # In groups: don't auto-react to images
+        # In groups: react rarely (cooldown + probability)
         if message.chat.type in ("group", "supergroup"):
-            return
+            if not _img_should_react(int(message.chat.id)):
+                return
         res = chatgpt_dialog.image_react(
             chat_id=int(message.chat.id),
             user_id=int(message.from_user.id) if message.from_user else 0,
@@ -628,6 +634,10 @@ async def on_image_document(message: Message) -> None:
 
         reply = (res.get("reply") or "").strip()
         kind = (res.get("kind") or "photo").lower()
+        # In groups: for non-meme images do only "like" (no comments)
+        if message.chat.type in ("group", "supergroup") and kind != "meme":
+            if action == "comment":
+                action = "like"
         if kind == "meme" and action != "skip" and (not _img_should_react(int(message.chat.id))):
             print("[IMG] meme skipped by limiter", flush=True)
             return
