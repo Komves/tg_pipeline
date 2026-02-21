@@ -537,12 +537,11 @@ async def on_photo(message: Message) -> None:
         
     try:
         ph = message.photo[-1]
-                # save last photo id even if limiter skips reactions
+        # save last photo id even if limiter skips reactions
         uid = int(message.from_user.id) if message.from_user else 0
         LAST_USER_IMAGE_ID[(int(message.chat.id), uid)] = ph.file_id
 
         raw = await _download_tg_file_bytes(message.bot, ph.file_id)
-
         img_bytes = _shrink_jpeg_bytes(raw)
         
         chatgpt_dialog.note_last_user_photo(
@@ -557,7 +556,9 @@ async def on_photo(message: Message) -> None:
             fn.write_bytes(img_bytes)
         except Exception:
             pass
-
+        # In groups: don't auto-react to photos (store only for "опиши фото")
+        if message.chat.type in ("group", "supergroup"):
+            return
         res = chatgpt_dialog.image_react(
             chat_id=int(message.chat.id),
             user_id=int(message.from_user.id) if message.from_user else 0,
@@ -585,8 +586,6 @@ async def on_photo(message: Message) -> None:
     except Exception as e:
         print(f"[img] photo error: {e}", flush=True)
 
-
-
 @dp.message(F.document)
 async def on_image_document(message: Message) -> None:
 
@@ -601,13 +600,20 @@ async def on_image_document(message: Message) -> None:
         raw = await _download_tg_file_bytes(message.bot, doc.file_id)
 
         img_bytes = _shrink_jpeg_bytes(raw)
-                # save last image-document for "опиши фото" without reply
+
+        # save last image-document for "опиши фото"
+        uid = int(message.from_user.id) if message.from_user else 0
+        LAST_USER_IMAGE_ID[(int(message.chat.id), uid)] = doc.file_id
+
         chatgpt_dialog.note_last_user_photo(
             int(message.chat.id),
             int(message.from_user.id) if message.from_user else 0,
             img_bytes,
         )
 
+        # In groups: don't auto-react to images
+        if message.chat.type in ("group", "supergroup"):
+            return
         res = chatgpt_dialog.image_react(
             chat_id=int(message.chat.id),
             user_id=int(message.from_user.id) if message.from_user else 0,
@@ -653,50 +659,73 @@ async def vesya_handler(message: Message) -> None:
         return
 
     text = (message.text or "").strip()
-        # =========================
+
+    # In groups: react only when bot is addressed (name/command/reply)
+    if message.chat.type in ("group", "supergroup"):
+        t = text.lower()
+
+        is_cmd = t.startswith("/")
+        is_name = t.startswith("веся") or " веся" in t
+        is_reply_to_bot = (
+            message.reply_to_message
+            and message.reply_to_message.from_user
+            and message.reply_to_message.from_user.is_bot
+        )
+
+        if not (is_cmd or is_name or is_reply_to_bot):
+            return
+
+        # optional: remove name prefix "Веся, ..."
+        if is_name and not is_cmd:
+            text = text.replace("Веся", "").replace("веся", "").lstrip(" ,:.-").strip()
+            if not text:
+                return
+
     print(f"[route] text={text!r}", flush=True)
+    
     if not text:
         return
 
     # =========================
-    # PHOTO CONTEXT: reply OR last saved photo
+    # PHOTO CONTEXT: describe only when user asked
     # =========================
     try:
         img_bytes = None
 
-        # 1) If user replied to a photo/document → use that
-        r = message.reply_to_message
-        if r:
-            img_id = None
-            if getattr(r, "photo", None):
-                img_id = r.photo[-1].file_id
-            elif getattr(r, "document", None) and (getattr(r.document, "mime_type", "") or "").startswith("image/"):
-                img_id = r.document.file_id
+        # detect "user asked to describe photo"
+        t = text.lower()
+        wants_photo = (
+            "что на фото" in t
+            or "что ты видишь" in t
+            or t.startswith("опиши фото")
+            or t.startswith("опиши картин")
+            or t.startswith("опиши изображ")
+            or "опиши фото" in t
+        )
 
-            if img_id:
-                raw = await _download_tg_file_bytes(message.bot, img_id)
-                img_bytes = _shrink_jpeg_bytes(raw)
-
-        # 2) If not reply, but text asks to describe → use last saved photo
-        wants_photo = False
-        if img_bytes is None:
-            t = text.lower()
-            wants_photo = (
-                "что на фото" in t
-                or "что ты видишь" in t
-                or t.startswith("опиши")
-                or "опиши фото" in t
-                or "опиши форт" in t
-                or "опиши" in t
-            )
         if wants_photo:
-            uid = int(message.from_user.id) if message.from_user else 0
-            fid = LAST_USER_IMAGE_ID.get((int(message.chat.id), uid))
-            if fid:
-                raw = await _download_tg_file_bytes(message.bot, fid)
-                img_bytes = _shrink_jpeg_bytes(raw)
+            # 1) If user replied to a photo/document → use that
+            r = message.reply_to_message
+            if r:
+                img_id = None
+                if getattr(r, "photo", None):
+                    img_id = r.photo[-1].file_id
+                elif getattr(r, "document", None) and (getattr(r.document, "mime_type", "") or "").startswith("image/"):
+                    img_id = r.document.file_id
 
-        # 3) If we have image bytes → call vision describe
+                if img_id:
+                    raw = await _download_tg_file_bytes(message.bot, img_id)
+                    img_bytes = _shrink_jpeg_bytes(raw)
+
+            # 2) If still none → use last saved photo for this user
+            if img_bytes is None:
+                uid = int(message.from_user.id) if message.from_user else 0
+                fid = LAST_USER_IMAGE_ID.get((int(message.chat.id), uid))
+                if fid:
+                    raw = await _download_tg_file_bytes(message.bot, fid)
+                    img_bytes = _shrink_jpeg_bytes(raw)
+
+        # If we have image bytes → call vision describe
         if img_bytes is not None:
             dd = chatgpt_dialog.describe_or_compare_photo(text, img_bytes)
             if dd and (dd.reply or "").strip():
@@ -704,9 +733,7 @@ async def vesya_handler(message: Message) -> None:
                 return
 
     except Exception as e:
-        print(f"[IMG] photo describe routing error: {type(e).__name__}: {e}", flush=True)
-    
-    
+        print(f"[IMG] photo describe routing error: {type(e).__name__}: {e}", flush=True)    
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
