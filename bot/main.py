@@ -669,6 +669,7 @@ async def vesya_handler(message: Message) -> None:
         return
 
     text = (message.text or "").strip()
+    orig_text = text  # keep original text for routing
 
     # In groups: react only when bot is addressed (name/command/reply)
     if message.chat.type in ("group", "supergroup"):
@@ -750,7 +751,7 @@ async def vesya_handler(message: Message) -> None:
 
     reply = ""
     intent = "chat"
-    decision = chatgpt_dialog.decide(chat_id, user_id, text)
+    decision = chatgpt_dialog.decide(chat_id, user_id, orig_text)
     print(f"[route] intent={decision.intent} reply={decision.reply!r}", flush=True)
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
