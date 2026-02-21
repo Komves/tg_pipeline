@@ -679,8 +679,9 @@ async def vesya_handler(message: Message) -> None:
         if is_name and not is_cmd:
             text = text.replace("Веся", "").replace("веся", "").lstrip(" ,:.-").strip()
             if not text:
+                await message.answer("да?")
                 return
-
+            
     print(f"[route] text={text!r}", flush=True)
     
     if not text:
