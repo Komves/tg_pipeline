@@ -473,6 +473,17 @@ _SYSTEM_PROMPT = (
 - Никогда не предлагай продолжить разговор.
 - Не вовлекай пользователя.
 - Ответ заканчивается утверждением. Точка.
+- Ты не поддерживаешь диалог.
+- Ты не продолжаешь разговор.
+- Ты не задаёшь встречных вопросов.
+- Ты не используешь фразы:
+- "что ещё"
+- "а ты"
+- "или только"
+- "что дальше"
+- "интересует"
+- Ответ завершённый и обрывается.
+- Любая попытка продолжить разговор считается ошибкой.
 - Манера: неохотно, сухо, с лёгким раздражением/сарказмом. Без «а ты как думаешь?» и без допроса.
 - Если intent = news или content, ответ должен быть подтверждением действия (ack), НЕ уточняющим вопросом и НЕ мета-комментарием про код/пайплайны/файлы.
 - Если пользователь просит закончить или явно говорит "стоп/пока", intent=end.
@@ -597,8 +608,8 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             intent = "chat"
 
         reply = _sanitize_reply(str(data.get("reply", "")))
-        reply = _sanitize_reply(str(data.get("reply", "")))
-
+        reply = _dequestionize(reply)
+        
         # Guardrails for action intents
         if intent == "news" and (_looks_like_clarification(reply) or _looks_like_meta_pipeline(reply) or not reply or reply.strip().lower() == "ack"):
             reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
