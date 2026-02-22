@@ -700,7 +700,7 @@ async def vesya_handler(message: Message) -> None:
         t = text.lower()
 
         is_cmd = t.startswith("/")
-        is_name = t.startswith("веся") or " веся" in t
+        is_name = chatgpt_dialog.persona.is_addressed(t)
         is_reply_to_bot = (
             message.reply_to_message
             and message.reply_to_message.from_user
@@ -712,7 +712,7 @@ async def vesya_handler(message: Message) -> None:
 
         # optional: remove name prefix "Веся, ..."
         if is_name and not is_cmd:
-            text = text.replace("Веся", "").replace("веся", "").lstrip(" ,:.-").strip()
+            text = chatgpt_dialog.persona.strip_name_prefix(text).lstrip(" ,:.-").strip()
             if not text:
                 await message.answer("да?")
                 return
