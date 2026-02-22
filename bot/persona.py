@@ -13,10 +13,11 @@ from openai import OpenAI
 # =========================
 NAME_RE = re.compile(
     r"(^|\s)("
-    r"веся|веська|веслава|вес(?:ь|я)|vesya|"                         # безопасные варианты
+    r"веся|веська|веслава|вес(?:ь|я)|vesya|"
     r"комаи|"
+    r"сергеевн(?:а|ы)|"                       # ← добавили отклик на отчество
     r"веслава\s+сергеевн(?:а|ы)|"
-    r"в\.?\s*с\.?"                                                   # В.С. / В С / В.С
+    r"в\.?\s*с\.?"
     r")([\s,!.?:;]|$)",
     re.IGNORECASE,
 )
@@ -55,7 +56,7 @@ CHOICE_STRIP_RE = re.compile(r"\b(стриптиз|разденься|нюд|nud
 # STYLE CONTROL (HARD MODE)
 # =========================
 # Мат должен реально “идти” — ставлю высокий дефолт.
-PROFANITY_P = float(os.getenv("V_PROFANITY_P", "0.85"))
+PROFANITY_P = float(os.getenv("V_PROFANITY_P", "0.15"))
 
 NO_SWEAR_RE = re.compile(r"\b(без мата|не матерись|без ругани)\b", re.IGNORECASE)
 
@@ -110,9 +111,11 @@ def _should_force_swear(user_text: str, allow: bool) -> bool:
     return bool(_PROF_TRIG.search(user_text or ""))
 
 def _maybe_swear(text: str, allow: bool = True, force: bool = False) -> str:
+    # Мат только если force (пользователь хамит/матерится),
+    # иначе возвращаем текст как есть.
     if not allow:
         return text
-    if (not force) and random.random() > PROFANITY_P:
+    if not force:
         return text
     w = random.choice(SWEAR_SOFT if random.random() < 0.8 else SWEAR_EDGE)
     variants = [
@@ -143,11 +146,6 @@ def postprocess_text(reply: str, user_text: str = "") -> str:
         has_swear = bool(_PROF_TRIG.search(out))
         if not has_swear:
             out = _maybe_swear(out, allow=True, force=True)
-
-    # --- Ограничение вопросов (редко) ---
-    import random
-    if "?" in out and random.random() > 0.2:
-        out = out.replace("?", ".")
 
     return out.strip()
     
