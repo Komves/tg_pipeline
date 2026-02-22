@@ -152,6 +152,25 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is empty (set Render env var BOT_TOKEN).")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+# === PRIVATE USERS REGISTRY ===
+PRIVATE_USERS_PATH = DATA_DIR / "private_users.json"
+
+def _load_private_users() -> set[int]:
+    try:
+        if PRIVATE_USERS_PATH.exists():
+            return set(json.loads(PRIVATE_USERS_PATH.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    return set()
+
+def _save_private_users(users: set[int]) -> None:
+    try:
+        PRIVATE_USERS_PATH.write_text(
+            json.dumps(list(users), ensure_ascii=False),
+            encoding="utf-8"
+        )
+    except Exception:
+        pass
 def _format_morning_quote(text_ru: str) -> str:
     q = html.escape((text_ru or "").strip())
     return f"🌅 <b>Утренняя цитата</b>\n<blockquote>{q}</blockquote>"
@@ -667,6 +686,11 @@ async def vesya_handler(message: Message) -> None:
 
     if not _chat_allowed(message):
         return
+    # === SAVE PRIVATE USERS ===
+    if message.chat.type == "private" and message.from_user:
+        users = _load_private_users()
+        users.add(int(message.from_user.id))
+        _save_private_users(users)
 
     text = (message.text or "").strip()
     orig_text = text  # keep original text for routing
@@ -982,32 +1006,43 @@ async def ingest24_loop(bot: Bot) -> None:
 
         print("[ingest24] starting ingest_hours(24)", flush=True)
 
-        # send quote-greeting before ingest (if we have a recent user)
+       # === BROADCAST TARGETS ===
+        targets = []
+
+        # 1. Группа
+        _MORNING_CHAT_ENV = (os.getenv("MORNING_CHAT_ID") or "").strip()
+        if _MORNING_CHAT_ENV:
+            targets.append(int(_MORNING_CHAT_ENV))
+
+        # 2. Все личные пользователи
+        targets.extend(list(_load_private_users()))
+
+        if not targets:
+            print("[ingest24] no targets, skip sending", flush=True)
+            continue
+
+        # === MORNING QUOTE TO ALL TARGETS ===
         try:
-            if RECENT_MSG_IDS:
-                chat_id = list(RECENT_MSG_IDS.keys())[-1][0]
-                user_id = list(RECENT_MSG_IDS.keys())[-1][1]
-                quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=int(time.time()) // 86400)
-                quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
-                await bot.send_message(chat_id, _format_morning_quote(quote_ru), parse_mode="html")
+            quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=int(time.time()) // 86400)
+            quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
+
+            for target_chat_id in targets:
+                try:
+                    await bot.send_message(
+                        target_chat_id,
+                        _format_morning_quote(quote_ru),
+                        parse_mode="html"
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[ingest24] quote send error: {e}", flush=True)
-
         try:
             async with TG_LOCK:
                 await ingest_hours(24)
 
             # отправка пользователю
-            if not RECENT_MSG_IDS:
-                # last image per (chat_id, user_id) to support "опиши фото" without reply
-                LAST_USER_IMAGE_ID = {}  # (chat_id:int, user_id:int) -> file_id:str
-
-                print("[ingest24] no recent users, skip sending", flush=True)
-                continue
-
-            chat_id = list(RECENT_MSG_IDS.keys())[-1][0]
-            user_id = list(RECENT_MSG_IDS.keys())[-1][1]
-
+          
             class Dummy:
                 def __init__(self, bot, chat_id, user_id):
                     self.bot = bot
@@ -1027,20 +1062,30 @@ async def ingest24_loop(bot: Bot) -> None:
                 async def answer_document(self, document, **kw):
                     return await self.bot.send_document(self.chat.id, document, **kw)
 
-            dummy = Dummy(bot, chat_id, user_id)
-            # refresh 24h pools (memes/videos) once per day
-            try:
-                _refresh_video_pool(user_id)
-            except Exception as e:
-                print(f"[pool] video refresh error: {e}", flush=True)
+            for target_chat_id in targets:
 
-            try:
-                _refresh_meme_pool(user_id)
-            except Exception as e:
-                print(f"[pool] meme refresh error: {e}", flush=True)
+                dummy = Dummy(bot, target_chat_id, target_chat_id)
+
+                try:
+                    _refresh_video_pool(target_chat_id)
+                except Exception as e:
+                    print(f"[pool] video refresh error: {e}", flush=True)
+
+                try:
+                    _refresh_meme_pool(target_chat_id)
+                except Exception as e:
+                    print(f"[pool] meme refresh error: {e}", flush=True)
+
+                try:
+                    await _send_content(dummy, user_id=target_chat_id, ingest_hours_n=None, send_mode="get24")
+                except Exception as e:
+                    print(f"[ingest24] send error to {target_chat_id}: {e}", flush=True)
+
+                users = _load_private_users()
+                if target_chat_id in users:
+                    users.discard(target_chat_id)
+                    _save_private_users(users)
             
-            await _send_content(dummy, user_id=user_id, ingest_hours_n=None, send_mode="get24")
-
         except Exception as e:
             print(f"[ingest24] error: {e}", flush=True)
 async def heartbeat_loop() -> None:
