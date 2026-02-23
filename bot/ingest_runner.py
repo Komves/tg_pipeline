@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +16,38 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 RAW_DIR = DATA_DIR / "raw"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
+# =========================
+# AUTO CLEANUP /data/raw (every N days)
+# =========================
+RAW_CLEANUP_DAYS = int(os.getenv("RAW_CLEANUP_DAYS", "7"))
+RAW_CLEANUP_MARK = DATA_DIR / ".raw_cleanup_ts"
+
+def _maybe_cleanup_raw() -> None:
+    try:
+        if RAW_CLEANUP_DAYS <= 0:
+            return
+
+        now_ts = datetime.now(timezone.utc).timestamp()
+
+        last_ts = 0.0
+        if RAW_CLEANUP_MARK.exists():
+            try:
+                last_ts = float((RAW_CLEANUP_MARK.read_text(encoding="utf-8") or "0").strip() or "0")
+            except Exception:
+                last_ts = 0.0
+
+        if (now_ts - last_ts) < (RAW_CLEANUP_DAYS * 86400):
+            return
+
+        if RAW_DIR.exists():
+            shutil.rmtree(RAW_DIR, ignore_errors=True)
+        RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+        RAW_CLEANUP_MARK.write_text(str(now_ts), encoding="utf-8")
+        log(f"[cleanup] RAW_DIR cleaned (every {RAW_CLEANUP_DAYS} days)")
+
+    except Exception as e:
+        log(f"[cleanup] error: {e}")
 
 SOURCES_FILE = REPO_ROOT / "tg_pipeline" / "sources.txt"
 
@@ -120,6 +153,7 @@ async def download_media(client: TelegramClient, src: str, msg, channel_dir: Pat
 
 async def ingest_hours(hours: int) -> None:
     log("START ingest")
+    _maybe_cleanup_raw()
 
     sources = load_sources()
     cutoff = cutoff_utc(hours)
