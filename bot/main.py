@@ -1009,10 +1009,13 @@ async def ingest24_loop(bot: Bot) -> None:
        # === BROADCAST TARGETS ===
         targets = []
 
-        # 1. Группа
-        _MORNING_CHAT_ENV = (os.getenv("MORNING_CHAT_ID") or "").strip()
-        if _MORNING_CHAT_ENV:
-            targets.append(int(_MORNING_CHAT_ENV))
+        # 1. Группы (список или один id)
+        _ids_env = (os.getenv("MORNING_CHAT_IDS") or os.getenv("MORNING_CHAT_ID") or "").strip()
+        if _ids_env:
+            for part in _ids_env.split(","):
+                part = part.strip()
+                if part:
+                    targets.append(int(part))
 
         # 2. Все личные пользователи
         targets.extend(list(_load_private_users()))
@@ -1033,8 +1036,8 @@ async def ingest24_loop(bot: Bot) -> None:
                         _format_morning_quote(quote_ru),
                         parse_mode="html"
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[ingest24] quote send error to {target_chat_id}: {e}", flush=True)
         except Exception as e:
             print(f"[ingest24] quote send error: {e}", flush=True)
         try:
