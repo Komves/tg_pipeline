@@ -36,7 +36,7 @@ AD_SRC_HINTS = {
 }
 
 # diversity: максимум мемов с одного src за выдачу
-MAX_PER_SRC = 1
+MAX_PER_SRC = int(os.getenv("V_MEME_MAX_PER_SRC", "6"))
 
 # дедуп по содержимому (берём первые 256KB + размер)
 HASH_READ_BYTES = 256 * 1024
