@@ -124,7 +124,8 @@ def ensure_meta_clip_emb(video_path: str) -> bool:
 
     meta_path = Path(str(p) + ".meta.json")
     if not meta_path.exists():
-        return False
+        # create empty meta so we can write clip_emb
+        _save_meta(meta_path, {"src": "", "msg_id": None})
 
     j = _load_meta(meta_path)
     if isinstance(j.get("clip_emb"), list) and len(j["clip_emb"]) > 0:

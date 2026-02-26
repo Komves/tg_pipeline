@@ -8,6 +8,7 @@ import json
 import shutil
 import uuid
 import html
+import clip_embedder
 from pathlib import Path
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatAction
@@ -305,6 +306,39 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
     SEND_V = 4 if send_mode == "get24" else 2
     picked = []
+    used_src_v: set[str] = set()
+    used_embs: list[list[float]] = []
+
+    def _cos(a: list[float], b: list[float]) -> float:
+        # cosine similarity
+        import math
+        if not a or not b or len(a) != len(b):
+            return -1.0
+        dot = 0.0
+        na = 0.0
+        nb = 0.0
+        for i in range(len(a)):
+            x = float(a[i]); y = float(b[i])
+            dot += x * y
+            na += x * x
+            nb += y * y
+        if na <= 0 or nb <= 0:
+            return -1.0
+        return dot / (math.sqrt(na) * math.sqrt(nb))
+
+    def _get_clip_emb(abs_path: str) -> list[float] | None:
+        try:
+            mp = Path(abs_path + ".meta.json")
+            if not mp.exists():
+                return None
+            j = json.loads(mp.read_text(encoding="utf-8"))
+            emb = j.get("clip_emb")
+            if isinstance(emb, list) and emb:
+                return [float(v) for v in emb]
+        except Exception:
+            return None
+        return None
+
     for x in items:
         if len(picked) >= SEND_V:
             break
@@ -316,7 +350,35 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             continue
         if abs_path and (not Path(abs_path).exists()):
             continue
+        # diversity: не повторять источник в одной рассылке
+        src = (x.get("src") or "").strip()
+        if src and src in used_src_v:
+            continue
+
+        # CLIP embedding (best-effort): пишет clip_emb в meta.json если может
+        # если deps (torch/open_clip) не стоят — просто вернёт False и идём дальше без дедупа
+        if abs_path:
+            try:
+                clip_embedder.ensure_meta_clip_emb(abs_path)
+            except Exception:
+                pass
+
+        emb = _get_clip_emb(abs_path) if abs_path else None
+        if emb:
+            # дедуп по визуальной похожести
+            too_similar = False
+            for e2 in used_embs:
+                if _cos(emb, e2) >= float(os.getenv("V_VIDEO_CLIP_SIM_THR", "0.88")):
+                    too_similar = True
+                    break
+            if too_similar:
+                continue
         picked.append(x)
+
+        if src:
+            used_src_v.add(src)
+        if emb:
+            used_embs.append(emb)
 
     for x in picked:
         item_id = x["item_id"]
