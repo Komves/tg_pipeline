@@ -526,12 +526,17 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     actually_sent_ids: set[str] = set()
     sent_count = 0
 
+    used_src: set[str] = set()
+
     for pid in picked_ids:
         if sent_count >= SEND_K:
             break
 
         x = id2.get(pid)
         if not x:
+            continue
+        src = (x.get("src") or "").strip()
+        if src and src in used_src:
             continue
 
         item_id = (x.get("item_id") or "").strip()
@@ -555,6 +560,9 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         sentm.add(item_id)
         actually_sent_ids.add(item_id)
         sent_count += 1
+
+        if src:
+            used_src.add(src)
 
     print(f"[MEME_SEND] want={SEND_K} sent={sent_count} picked_total={len(picked_ids)} cand={len(cand)} rankable={len(cand_rankable)}", flush=True)
 
