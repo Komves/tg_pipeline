@@ -364,6 +364,39 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
     POOL_N = int(os.getenv("V_MEME_POOL_N", "30"))   # сколько показать GPT за раз
     SEND_K = 8 if send_mode == "get24" else 4        # сколько отправить пользователю
+    def _size_ok(x: dict) -> bool:
+        abs_path = (x.get("abs_path") or "").strip()
+        if not abs_path:
+            return False
+        try:
+            return os.path.getsize(abs_path) <= MAX_UPLOAD_BYTES
+        except Exception:
+            return False
+
+    def _mk_batch(cand_items: list[dict]) -> list[chatgpt_dialog.MemeCandidate]:
+        out: list[chatgpt_dialog.MemeCandidate] = []
+        for x in cand_items:
+            try:
+                p = Path(x.get("abs_path") or "")
+                if not p.exists():
+                    continue
+                suf = p.suffix.lower()
+                if suf not in {".jpg", ".jpeg", ".png", ".webp"}:
+                    continue
+                if p.stat().st_size < 5000:
+                    continue
+                img_bytes = p.read_bytes()
+                out.append(
+                    chatgpt_dialog.MemeCandidate(
+                        item_id=(x.get("item_id") or "").strip(),
+                        img_bytes=img_bytes,
+                        caption=(x.get("caption") or "").strip(),
+                        src=(x.get("src") or "").strip(),
+                    )
+                )
+            except Exception:
+                continue
+        return out
 
     cand = []
     for x in items:
@@ -426,11 +459,23 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         except Exception:
             pass
 
+    # -------------------------
+    # GPT RANK WITH GPT FILL-UP (NO NON-GPT FALLBACK)
+    # -------------------------
+
+    # GPT should not waste picks on too-large files -> prefilter by size for ranking pool
+    cand_rankable = [x for x in cand if _size_ok(x)]
+    print(f"[meme_pool] rankable={len(cand_rankable)} (size_ok) out of cand={len(cand)}", flush=True)
+
     picked_ids: list[str] = []
+    picked_set: set[str] = set()
+
+    # 1) first GPT pass (up to SEND_K)
+    batch = _mk_batch(cand_rankable)
     if batch:
         r = chatgpt_dialog.meme_rank_batch(batch, top_k=SEND_K)
         picked_ids = list((r or {}).get("picked_item_ids") or [])
-        # --- DEBUG: what GPT rejected ---
+
         cand_ids = [c.item_id for c in batch if getattr(c, "item_id", None)]
         picked_set = set(picked_ids)
         rejected = [cid for cid in cand_ids if cid not in picked_set]
@@ -438,36 +483,86 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         print(f"[MEME_GPT] picked_ids={picked_ids}", flush=True)
         print(f"[MEME_GPT] rejected_ids={rejected}", flush=True)
 
-    # dedup preserving order (GPT can repeat same id)
+    # normalize
+    picked_ids = list(dict.fromkeys([pid for pid in picked_ids if pid]))  # dedup keep order
+    picked_ids = [pid for pid in picked_ids if pid not in sentm]          # drop already sent
+    picked_set = set(picked_ids)
 
-    picked_ids = list(dict.fromkeys(picked_ids))
-    picked_ids = [pid for pid in picked_ids if pid]
+    # 2) GPT fill-up: re-rank on remaining candidates until we have SEND_K or no progress
+    # IMPORTANT: still only GPT; no "send top by pool" fallback.
+    max_rounds = 4  # guardrail
+    round_i = 0
 
-    # жестко убираем уже отправленные
-    picked_ids = [pid for pid in picked_ids if pid not in sentm]
+    # map for quick access later
+    id2 = { (x.get("item_id") or "").strip(): x for x in cand_rankable if (x.get("item_id") or "").strip() }
 
-    id2 = {x.get("item_id"): x for x in cand}
-    picked_items = [id2[i] for i in picked_ids if i in id2]
+    while len(picked_ids) < SEND_K and round_i < max_rounds:
+        need = SEND_K - len(picked_ids)
+        remaining_items = [x for x in cand_rankable if (x.get("item_id") or "").strip() and (x.get("item_id") or "").strip() not in picked_set and (x.get("item_id") or "").strip() not in sentm]
 
-    for x in picked_items:
-        item_id = x["item_id"]
-        abs_path = x.get("abs_path") or ""
+        if not remaining_items:
+            break
+
+        rem_batch = _mk_batch(remaining_items)
+        if not rem_batch:
+            break
+
+        r2 = chatgpt_dialog.meme_rank_batch(rem_batch, top_k=need)
+        add_ids = list((r2 or {}).get("picked_item_ids") or [])
+        add_ids = [pid for pid in add_ids if pid and pid not in picked_set and pid not in sentm]
+
+        # dedup keep order
+        add_ids = list(dict.fromkeys(add_ids))
+
+        if not add_ids:
+            print(f"[MEME_GPT_FILL] round={round_i+1} need={need} added=0 (stop)", flush=True)
+            break
+
+        picked_ids.extend(add_ids[:need])
+        for pid in add_ids[:need]:
+            picked_set.add(pid)
+
+        print(f"[MEME_GPT_FILL] round={round_i+1} need={need} added={len(add_ids[:need])} total={len(picked_ids)}", flush=True)
+        round_i += 1
+
+    # 3) send up to SEND_K реально отправленных
+    actually_sent_ids: set[str] = set()
+    sent_count = 0
+
+    for pid in picked_ids:
+        if sent_count >= SEND_K:
+            break
+
+        x = id2.get(pid)
+        if not x:
+            continue
+
+        item_id = (x.get("item_id") or "").strip()
+        abs_path = (x.get("abs_path") or "").strip()
+        if not item_id or item_id in sentm:
+            continue
+
+        # (size already ok in cand_rankable, but keep extra safety)
         try:
             if os.path.getsize(abs_path) > MAX_UPLOAD_BYTES:
-                print(f"[send] skip too large meme: {abs_path} size={os.path.getsize(abs_path)}", flush=True)
+                print(f"[send] skip too large meme (post-rank): {abs_path} size={os.path.getsize(abs_path)}", flush=True)
                 continue
         except Exception as e:
             print(f"[send] size check failed meme: {abs_path}: {e}", flush=True)
-            continue        
+            continue
+
         await message.answer_photo(
             FSInputFile(abs_path),
             reply_markup=fb_kb(item_id),
         )
         sentm.add(item_id)
+        actually_sent_ids.add(item_id)
+        sent_count += 1
 
-    # remove sent from pool + save
-    sent_ids = set(x["item_id"] for x in picked_items)
-    pool["items"] = [x for x in items if (x.get("item_id") not in sent_ids)]
+    print(f"[MEME_SEND] want={SEND_K} sent={sent_count} picked_total={len(picked_ids)} cand={len(cand)} rankable={len(cand_rankable)}", flush=True)
+
+    # 4) remove from pool ONLY реально отправленные
+    pool["items"] = [x for x in items if (x.get("item_id") not in actually_sent_ids)]
     _save_json(pool_path, pool)
 
     _save_sent(sentm_path, sentm, keep_last=700)
