@@ -97,6 +97,19 @@ def write_meta(media_path: Path, src: str, msg) -> None:
         "msg_id": getattr(msg, "id", None),
         "src": src,
         "caption": getattr(msg, "message", None),
+
+        # metrics (for ranking)
+        "views": int(getattr(msg, "views", 0) or 0),
+        "forwards": int(getattr(msg, "forwards", 0) or 0),
+        "replies": int(
+            getattr(getattr(msg, "replies", None), "replies", 0) or 0
+        ),
+        "reactions_total": int(
+            sum(r.count for r in msg.reactions.results)
+            if getattr(msg, "reactions", None)
+            and getattr(msg.reactions, "results", None)
+            else 0
+        ),
     }
     try:
         meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

@@ -1090,15 +1090,30 @@ def _refresh_video_pool(user_id: int) -> dict:
         meta_path = Path(str(p) + ".meta.json")
         src = ""
         msg_id = None
+        views = 0
+        forwards = 0
+        replies = 0
+        reactions_total = 0
+        score = 0.0
 
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 src = (meta.get("src") or "").strip()
                 msg_id = meta.get("msg_id")
+
+                views = int(meta.get("views", 0) or 0)
+                forwards = int(meta.get("forwards", 0) or 0)
+                replies = int(meta.get("replies", 0) or 0)
+                reactions_total = int(meta.get("reactions_total", 0) or 0)
+
+                # simple quality score
+                score = (views * 0.15) + (forwards * 4.0) + (replies * 3.0) + (reactions_total * 5.0)
             except Exception:
                 src = ""
                 msg_id = None
+                views = forwards = replies = reactions_total = 0
+                score = 0.0
 
         # fallback: if meta missing, skip (better than wrong ids)
         if not src or not msg_id:
@@ -1113,7 +1128,23 @@ def _refresh_video_pool(user_id: int) -> dict:
         if not p.exists():
             continue
 
-        out.append({"item_id": item_id, "abs_path": str(p), "ts": int(time.time())})
+        out.append({
+            "item_id": item_id,
+            "abs_path": str(p),
+            "ts": int(time.time()),
+            "src": src,
+            "msg_id": msg_id,
+            "views": views,
+            "forwards": forwards,
+            "replies": replies,
+            "reactions_total": reactions_total,
+            "score": score,
+        })
+    # best first: by engagement score, tie-breaker by recency already in file order
+    try:
+        out.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+    except Exception:
+        pass
 
     pool = {"ts": int(time.time()), "items": out}
     _save_json(_pool_raw_path("video"), pool)           # what was found today (debug)
