@@ -470,60 +470,57 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     picked_ids: list[str] = []
     picked_set: set[str] = set()
 
-    # 1) first GPT pass (up to SEND_K)
-    batch = _mk_batch(cand_rankable)
-    if batch:
-        r = chatgpt_dialog.meme_rank_batch(batch, top_k=SEND_K)
-        picked_ids = list((r or {}).get("picked_item_ids") or [])
+    # -------------------------
+    # CASCADE GPT BATCHES (18 → next 18 → ...)
+    # -------------------------
 
-        cand_ids = [c.item_id for c in batch if getattr(c, "item_id", None)]
-        picked_set = set(picked_ids)
-        rejected = [cid for cid in cand_ids if cid not in picked_set]
-        print(f"[MEME_GPT] ok={bool((r or {}).get('ok', True))} batch={len(cand_ids)} picked={len(picked_ids)} rejected={len(rejected)}", flush=True)
-        print(f"[MEME_GPT] picked_ids={picked_ids}", flush=True)
-        print(f"[MEME_GPT] rejected_ids={rejected}", flush=True)
+    batch_size = 18
+    picked_ids: list[str] = []
+    picked_set: set[str] = set()
 
-    # normalize
-    picked_ids = list(dict.fromkeys([pid for pid in picked_ids if pid]))  # dedup keep order
-    picked_ids = [pid for pid in picked_ids if pid not in sentm]          # drop already sent
-    picked_set = set(picked_ids)
+    start = 0
+    total = len(cand_rankable)
 
-    # 2) GPT fill-up: re-rank on remaining candidates until we have SEND_K or no progress
-    # IMPORTANT: still only GPT; no "send top by pool" fallback.
-    max_rounds = 4  # guardrail
-    round_i = 0
+    # map for send phase
+    id2 = {
+        (x.get("item_id") or "").strip(): x
+        for x in cand_rankable
+        if (x.get("item_id") or "").strip()
+    }
 
-    # map for quick access later
-    id2 = { (x.get("item_id") or "").strip(): x for x in cand_rankable if (x.get("item_id") or "").strip() }
+    while start < total and len(picked_ids) < SEND_K:
+        slice_items = cand_rankable[start:start + batch_size]
 
-    while len(picked_ids) < SEND_K and round_i < max_rounds:
+        if not slice_items:
+            break
+
+        batch = _mk_batch(slice_items)
+        if not batch:
+            start += batch_size
+            continue
+
         need = SEND_K - len(picked_ids)
-        remaining_items = [x for x in cand_rankable if (x.get("item_id") or "").strip() and (x.get("item_id") or "").strip() not in picked_set and (x.get("item_id") or "").strip() not in sentm]
 
-        if not remaining_items:
-            break
+        r = chatgpt_dialog.meme_rank_batch(batch, top_k=need)
+        new_ids = list((r or {}).get("picked_item_ids") or [])
 
-        rem_batch = _mk_batch(remaining_items)
-        if not rem_batch:
-            break
+        # очистка
+        new_ids = [
+            pid for pid in new_ids
+            if pid and pid not in picked_set and pid not in sentm
+        ]
 
-        r2 = chatgpt_dialog.meme_rank_batch(rem_batch, top_k=need)
-        add_ids = list((r2 or {}).get("picked_item_ids") or [])
-        add_ids = [pid for pid in add_ids if pid and pid not in picked_set and pid not in sentm]
-
-        # dedup keep order
-        add_ids = list(dict.fromkeys(add_ids))
-
-        if not add_ids:
-            print(f"[MEME_GPT_FILL] round={round_i+1} need={need} added=0 (stop)", flush=True)
-            break
-
-        picked_ids.extend(add_ids[:need])
-        for pid in add_ids[:need]:
+        for pid in new_ids:
+            picked_ids.append(pid)
             picked_set.add(pid)
 
-        print(f"[MEME_GPT_FILL] round={round_i+1} need={need} added={len(add_ids[:need])} total={len(picked_ids)}", flush=True)
-        round_i += 1
+        print(
+            f"[MEME_GPT_CASCADE] slice={start}-{start+batch_size} "
+            f"picked_now={len(new_ids)} total={len(picked_ids)}",
+            flush=True
+        )
+
+        start += batch_size
 
     # 3) send up to SEND_K реально отправленных
     actually_sent_ids: set[str] = set()
