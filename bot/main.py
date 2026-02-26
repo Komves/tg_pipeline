@@ -543,6 +543,9 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     start = 0
     total = len(cand_rankable)
 
+    PICK_BUFFER = int(os.getenv("V_MEME_PICK_BUFFER", "6"))  # запас на скипы при отправке
+    target_pick = SEND_K + PICK_BUFFER
+
     # map for send phase
     id2 = {
         (x.get("item_id") or "").strip(): x
@@ -550,7 +553,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         if (x.get("item_id") or "").strip()
     }
 
-    while start < total and len(picked_ids) < SEND_K:
+    while start < total and len(picked_ids) < target_pick:
         slice_items = cand_rankable[start:start + batch_size]
 
         if not slice_items:
@@ -561,7 +564,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             start += batch_size
             continue
 
-        need = SEND_K - len(picked_ids)
+        need = min(batch_size, target_pick - len(picked_ids))
 
         r = chatgpt_dialog.meme_rank_batch(batch, top_k=need)
         new_ids = list((r or {}).get("picked_item_ids") or [])
