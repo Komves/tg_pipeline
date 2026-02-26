@@ -147,6 +147,8 @@ from meme_ranker import rank_memes
 # =========================
 # ENV / CONFIG
 # =========================
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "45"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is empty (set Render env var BOT_TOKEN).")
@@ -321,6 +323,13 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         abs_path = x.get("abs_path") or ""
         tmp_path = f"/tmp/vesya_video_{uuid.uuid4().hex}.mp4"
         try:
+            if os.path.getsize(abs_path) > MAX_UPLOAD_BYTES:
+                print(f"[send] skip too large video: {abs_path} size={os.path.getsize(abs_path)}", flush=True)
+                continue
+        except Exception as e:
+            print(f"[send] size check failed video: {abs_path}: {e}", flush=True)
+            continue
+        try:
             shutil.copyfile(abs_path, tmp_path)
             await message.answer_video(
                 FSInputFile(tmp_path),
@@ -443,6 +452,13 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     for x in picked_items:
         item_id = x["item_id"]
         abs_path = x.get("abs_path") or ""
+        try:
+            if os.path.getsize(abs_path) > MAX_UPLOAD_BYTES:
+                print(f"[send] skip too large meme: {abs_path} size={os.path.getsize(abs_path)}", flush=True)
+                continue
+        except Exception as e:
+            print(f"[send] size check failed meme: {abs_path}: {e}", flush=True)
+            continue        
         await message.answer_photo(
             FSInputFile(abs_path),
             reply_markup=fb_kb(item_id),
@@ -1031,6 +1047,9 @@ async def ingest24_loop(bot: Bot) -> None:
             quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
 
             for target_chat_id in targets:
+                seed = int(time.time()) ^ (abs(int(target_chat_id)) & 0xFFFF)
+                quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)
+                quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
                 try:
                     await bot.send_message(
                         target_chat_id,
