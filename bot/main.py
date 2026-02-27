@@ -244,13 +244,48 @@ def _img_should_react(chat_id: int) -> bool:
 # =========================
 # NEWS RUNNER (calls Telethon inside news_digest)
 # =========================
+
 async def _run_news_for_message(message: Message, *, hours: int, limit: int) -> None:
-    async with TG_LOCK:
-        items = await news_digest.get_news_digest(
-            news_sources_path=NEWS_SOURCES,
-            hours=hours,
-            limit=limit,
-        )
+    try:
+        async with TG_LOCK:
+            print(f"[news] start hours={hours} limit={limit} sources={NEWS_SOURCES}", flush=True)
+
+            items = await news_digest.get_news_digest(
+                news_sources_path=NEWS_SOURCES,
+                hours=hours,
+                limit=limit,
+            )
+
+            print(f"[news] digest_items={len(items)}", flush=True)
+
+            text = news_digest.build_html_message(items, hours=hours)
+
+            # Telegram limit ~4096 chars; keep safe margin
+            if len(text) > 3800:
+                # уменьшаем количество пунктов, пока не влезет
+                shrink = list(items)
+                while shrink and len(text) > 3800:
+                    shrink = shrink[:-1]
+                    text = news_digest.build_html_message(shrink, hours=hours)
+                items = shrink
+
+            try:
+                await message.answer(text, parse_mode="html")
+            except Exception as e:
+                # fallback: plain text (на случай битого html)
+                print(f"[news] send html failed: {type(e).__name__}: {e}", flush=True)
+                plain = text.replace("<b>", "").replace("</b>", "").replace("<blockquote>", "").replace("</blockquote>", "")
+                await message.answer(plain)
+
+            try:
+                news_digest.mark_digest_as_seen(items)
+            except Exception as e:
+                print(f"[news] mark_seen failed: {type(e).__name__}: {e}", flush=True)
+
+    except Exception as e:
+        # Главное: больше не молчим
+        print(f"[news] FAILED: {type(e).__name__}: {e}", flush=True)
+        await message.answer("Новости сейчас не отдались (ошибка). Смотри логи [news].")
 
         text = news_digest.build_html_message(items, hours=hours)
         await message.answer(text, parse_mode="html")
