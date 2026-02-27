@@ -199,7 +199,8 @@ def _shrink_jpeg_bytes(src_bytes: bytes, max_side: int = 1024, quality: int = 70
     except Exception:
         return src_bytes
 
-NEWS_SOURCES = Path("news_sources.txt")  # лежит рядом с main.py в /opt/render/project/src/bot
+BASE_DIR = Path(__file__).resolve().parent
+NEWS_SOURCES = BASE_DIR / "news_sources.txt"
 
 DEFAULT_NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
 DEFAULT_NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
@@ -1237,11 +1238,7 @@ async def ingest24_loop(bot: Bot) -> None:
             continue
 
         # === MORNING QUOTE TO ALL TARGETS ===
-        try:
-            seed = int(time.time()) ^ (abs(int(target_chat_id)) & 0xFFFF)
-            quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)  
-            quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
-
+        try:            
             for target_chat_id in targets:
                 seed = int(time.time()) ^ (abs(int(target_chat_id)) & 0xFFFF)
                 quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)
