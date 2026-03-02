@@ -1273,24 +1273,28 @@ async def ingest24_loop(bot: Bot) -> None:
             continue
 
         # === MORNING QUOTE TO ALL TARGETS ===
-        try:            
+        try:
+            # фиксируем seed на день (чтобы не повторялось из-за time.time())
+            day_seed = int(datetime.now(MSK).strftime("%Y%m%d"))
+
             for target_chat_id in targets:
-                seed = int(time.time()) ^ (abs(int(target_chat_id)) & 0xFFFF)
-                quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)
-                quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
                 try:
+                    # seed зависит от дня и конкретного получателя → в личке будет разное по дням
+                    seed = ((day_seed << 16) ^ (abs(int(target_chat_id)) & 0xFFFFFFFF)) & 0xFFFFFFFF
+
+                    quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)
+                    quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
+
                     await bot.send_message(
                         target_chat_id,
                         _format_morning_quote(quote_ru),
-                        parse_mode="html"
+                        parse_mode="html",
                     )
                 except Exception as e:
-                    print(f"[ingest24] quote send error to {target_chat_id}: {e}", flush=True)
+                    print(f"[ingest24] quote send error to {target_chat_id}: {type(e).__name__}: {e}", flush=True)
+
         except Exception as e:
-            print(f"[ingest24] quote send error: {e}", flush=True)
-        try:
-            async with TG_LOCK:
-                await ingest_hours(24)
+            print(f"[ingest24] quote error: {type(e).__name__}: {e}", flush=True)
 
             # отправка пользователю
           
