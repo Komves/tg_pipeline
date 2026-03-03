@@ -1249,15 +1249,13 @@ async def ingest24_loop(bot: Bot) -> None:
 
         wait_sec = (next_run - now).total_seconds()
         print(f"[ingest24] next run in {int(wait_sec)} sec", flush=True)
-
         await asyncio.sleep(wait_sec)
 
         print("[ingest24] starting ingest_hours(24)", flush=True)
 
-       # === BROADCAST TARGETS ===
-        targets = []
+        # === BROADCAST TARGETS ===
+        targets: list[int] = []
 
-        # 1. Группы (список или один id)
         _ids_env = (os.getenv("MORNING_CHAT_IDS") or os.getenv("MORNING_CHAT_ID") or "").strip()
         if _ids_env:
             for part in _ids_env.split(","):
@@ -1265,8 +1263,8 @@ async def ingest24_loop(bot: Bot) -> None:
                 if part:
                     targets.append(int(part))
 
-        # 2. Все личные пользователи
         targets.extend(list(_load_private_users()))
+        targets = list(dict.fromkeys(targets))  # uniq
 
         if not targets:
             print("[ingest24] no targets, skip sending", flush=True)
@@ -1274,14 +1272,10 @@ async def ingest24_loop(bot: Bot) -> None:
 
         # === MORNING QUOTE TO ALL TARGETS ===
         try:
-            # фиксируем seed на день (чтобы не повторялось из-за time.time())
             day_seed = int(datetime.now(MSK).strftime("%Y%m%d"))
-
             for target_chat_id in targets:
                 try:
-                    # seed зависит от дня и конкретного получателя → в личке будет разное по дням
                     seed = ((day_seed << 16) ^ (abs(int(target_chat_id)) & 0xFFFFFFFF)) & 0xFFFFFFFF
-
                     quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)
                     quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
 
@@ -1292,57 +1286,62 @@ async def ingest24_loop(bot: Bot) -> None:
                     )
                 except Exception as e:
                     print(f"[ingest24] quote send error to {target_chat_id}: {type(e).__name__}: {e}", flush=True)
-
         except Exception as e:
             print(f"[ingest24] quote error: {type(e).__name__}: {e}", flush=True)
 
-            # отправка пользователю
-          
-            class Dummy:
-                def __init__(self, bot, chat_id, user_id):
-                    self.bot = bot
-                    self.chat = type("c", (), {"id": chat_id})
-                    self.message_id = 0
-                    self.from_user = type("u", (), {"id": user_id})
-
-                async def answer(self, text, **kw):
-                    return await self.bot.send_message(self.chat.id, text, **kw)
-
-                async def answer_photo(self, photo, **kw):
-                    return await self.bot.send_photo(self.chat.id, photo, **kw)
-
-                async def answer_video(self, video, **kw):
-                    return await self.bot.send_video(self.chat.id, video, **kw)
-
-                async def answer_document(self, document, **kw):
-                    return await self.bot.send_document(self.chat.id, document, **kw)
-
-            for target_chat_id in targets:
-
-                dummy = Dummy(bot, target_chat_id, target_chat_id)
-
-                try:
-                    _refresh_video_pool(target_chat_id)
-                except Exception as e:
-                    print(f"[pool] video refresh error: {e}", flush=True)
-
-                try:
-                    _refresh_meme_pool(target_chat_id)
-                except Exception as e:
-                    print(f"[pool] meme refresh error: {e}", flush=True)
-
-                try:
-                    await _send_content(dummy, user_id=target_chat_id, ingest_hours_n=None, send_mode="get24")
-                except Exception as e:
-                    print(f"[ingest24] send error to {target_chat_id}: {e}", flush=True)
-
-                users = _load_private_users()
-                if target_chat_id in users:
-                    users.discard(target_chat_id)
-                    _save_private_users(users)
-            
+        # === INGEST (Telethon) ===
+        try:
+            async with TG_LOCK:
+                await ingest_hours(24)
         except Exception as e:
-            print(f"[ingest24] error: {e}", flush=True)
+            print(f"[ingest24] ingest_hours error: {type(e).__name__}: {e}", flush=True)
+            # ВАЖНО: не выходим. Контент всё равно попробуем отправить из того, что есть.
+
+        # === SEND CONTENT ===
+        class Dummy:
+            def __init__(self, bot, chat_id, user_id):
+                self.bot = bot
+                self.chat = type("c", (), {"id": chat_id})
+                self.message_id = 0
+                self.from_user = type("u", (), {"id": user_id})
+
+            async def answer(self, text, **kw):
+                return await self.bot.send_message(self.chat.id, text, **kw)
+
+            async def answer_photo(self, photo, **kw):
+                return await self.bot.send_photo(self.chat.id, photo, **kw)
+
+            async def answer_video(self, video, **kw):
+                return await self.bot.send_video(self.chat.id, video, **kw)
+
+            async def answer_document(self, document, **kw):
+                return await self.bot.send_document(self.chat.id, document, **kw)
+
+        for target_chat_id in targets:
+            print(f"[ingest24] send_content -> {target_chat_id}", flush=True)
+
+            try:
+                _refresh_video_pool(target_chat_id)
+            except Exception as e:
+                print(f"[pool] video refresh error: {type(e).__name__}: {e}", flush=True)
+
+            try:
+                _refresh_meme_pool(target_chat_id)
+            except Exception as e:
+                print(f"[pool] meme refresh error: {type(e).__name__}: {e}", flush=True)
+
+            dummy = Dummy(bot, target_chat_id, target_chat_id)
+            try:
+                await _send_content(dummy, user_id=target_chat_id, ingest_hours_n=None, send_mode="get24")
+            except Exception as e:
+                print(f"[ingest24] send error to {target_chat_id}: {type(e).__name__}: {e}", flush=True)
+
+            # оставить твою логику как есть
+            users = _load_private_users()
+            if target_chat_id in users:
+                users.discard(target_chat_id)
+                _save_private_users(users)
+
 async def heartbeat_loop() -> None:
     while True:
         _log("heartbeat")

@@ -772,55 +772,106 @@ async def ingest24_loop(bot: Bot) -> None:
 
     while True:
         now = datetime.now(MSK)
-        next_run = now.replace(hour=6, minute=0, second=0, microsecond=0)
-
+        next_run = now.replace(hour=5, minute=0, second=0, microsecond=0)
         if now >= next_run:
             next_run += timedelta(days=1)
 
         wait_sec = (next_run - now).total_seconds()
         print(f"[ingest24] next run in {int(wait_sec)} sec", flush=True)
-
         await asyncio.sleep(wait_sec)
 
         print("[ingest24] starting ingest_hours(24)", flush=True)
 
+        # === BROADCAST TARGETS ===
+        targets: list[int] = []
+
+        _ids_env = (os.getenv("MORNING_CHAT_IDS") or os.getenv("MORNING_CHAT_ID") or "").strip()
+        if _ids_env:
+            for part in _ids_env.split(","):
+                part = part.strip()
+                if part:
+                    targets.append(int(part))
+
+        targets.extend(list(_load_private_users()))
+        targets = list(dict.fromkeys(targets))  # uniq
+
+        if not targets:
+            print("[ingest24] no targets, skip sending", flush=True)
+            continue
+
+        # === MORNING QUOTE TO ALL TARGETS ===
+        try:
+            day_seed = int(datetime.now(MSK).strftime("%Y%m%d"))
+            for target_chat_id in targets:
+                try:
+                    seed = ((day_seed << 16) ^ (abs(int(target_chat_id)) & 0xFFFFFFFF)) & 0xFFFFFFFF
+                    quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)
+                    quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
+
+                    await bot.send_message(
+                        target_chat_id,
+                        _format_morning_quote(quote_ru),
+                        parse_mode="html",
+                    )
+                except Exception as e:
+                    print(
+                        f"[ingest24] quote send error to {target_chat_id}: {type(e).__name__}: {e}",
+                        flush=True,
+                    )
+        except Exception as e:
+            print(f"[ingest24] quote error: {type(e).__name__}: {e}", flush=True)
+
+        # === INGEST (Telethon) ===
         try:
             async with TG_LOCK:
                 await ingest_hours(24)
-
-                       # отправка пользователю
-            if not RECENT_MSG_IDS:
-                print("[ingest24] no recent users, skip sending", flush=True)
-                continue
-
-            chat_id = list(RECENT_MSG_IDS.keys())[-1][0]
-            user_id = list(RECENT_MSG_IDS.keys())[-1][1]
-
-            class Dummy:
-                def __init__(self, bot, chat_id, user_id):
-                    self.bot = bot
-                    self.chat = type("c", (), {"id": chat_id})
-                    self.message_id = 0
-                    self.from_user = type("u", (), {"id": user_id})
-
-                async def answer(self, text, **kw):
-                    return await self.bot.send_message(self.chat.id, text, **kw)
-
-                async def answer_photo(self, photo, **kw):
-                    return await self.bot.send_photo(self.chat.id, photo, **kw)
-
-                async def answer_video(self, video, **kw):
-                    return await self.bot.send_video(self.chat.id, video, **kw)
-
-                async def answer_document(self, document, **kw):
-                    return await self.bot.send_document(self.chat.id, document, **kw)
-
-            dummy = Dummy(bot, chat_id, user_id)
-
-            await _send_content(dummy, user_id=user_id, ingest_hours_n=None)
-
         except Exception as e:
-            print(f"[ingest24] error: {e}", flush=True)
+            print(f"[ingest24] ingest_hours error: {type(e).__name__}: {e}", flush=True)
+
+        # === SEND CONTENT ===
+        class Dummy:
+            def __init__(self, bot, chat_id, user_id):
+                self.bot = bot
+                self.chat = type("c", (), {"id": chat_id})
+                self.message_id = 0
+                self.from_user = type("u", (), {"id": user_id})
+
+            async def answer(self, text, **kw):
+                return await self.bot.send_message(self.chat.id, text, **kw)
+
+            async def answer_photo(self, photo, **kw):
+                return await self.bot.send_photo(self.chat.id, photo, **kw)
+
+            async def answer_video(self, video, **kw):
+                return await self.bot.send_video(self.chat.id, video, **kw)
+
+            async def answer_document(self, document, **kw):
+                return await self.bot.send_document(self.chat.id, document, **kw)
+
+        for target_chat_id in targets:
+            print(f"[ingest24] send_content -> {target_chat_id}", flush=True)
+
+            try:
+                _refresh_video_pool(target_chat_id)
+            except Exception as e:
+                print(f"[pool] video refresh error: {type(e).__name__}: {e}", flush=True)
+
+            try:
+                _refresh_meme_pool(target_chat_id)
+            except Exception as e:
+                print(f"[pool] meme refresh error: {type(e).__name__}: {e}", flush=True)
+
+            dummy = Dummy(bot, target_chat_id, target_chat_id)
+            try:
+                await _send_content(dummy, user_id=target_chat_id, ingest_hours_n=None, send_mode="get24")
+            except Exception as e:
+                print(f"[ingest24] send error to {target_chat_id}: {type(e).__name__}: {e}", flush=True)
+
+            # твоя логика: убрать юзера из private_users после рассылки
+            users = _load_private_users()
+            if target_chat_id in users:
+                users.discard(target_chat_id)
+                _save_private_users(users)
 async def heartbeat_loop() -> None:
     while True:
         _log("heartbeat")
