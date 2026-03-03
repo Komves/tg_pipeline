@@ -422,10 +422,17 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         if emb:
             used_embs.append(emb)
 
+        actually_sent_ids: set[str] = set()
+
+   
     for x in picked:
-        item_id = x["item_id"]
+        item_id = x.get("item_id") or ""
         abs_path = x.get("abs_path") or ""
         tmp_path = f"/tmp/vesya_video_{uuid.uuid4().hex}.mp4"
+
+        if not item_id or not abs_path:
+            continue
+
         try:
             if os.path.getsize(abs_path) > MAX_UPLOAD_BYTES:
                 print(f"[send] skip too large video: {abs_path} size={os.path.getsize(abs_path)}", flush=True)
@@ -433,13 +440,20 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         except Exception as e:
             print(f"[send] size check failed video: {abs_path}: {e}", flush=True)
             continue
+
         try:
             shutil.copyfile(abs_path, tmp_path)
-            await message.answer_video(
-                FSInputFile(tmp_path),
-                reply_markup=fb_kb(item_id),
-            )
-            sentv.add(item_id)
+            try:
+                await message.answer_video(
+                    FSInputFile(tmp_path),
+                    reply_markup=fb_kb(item_id),
+                    request_timeout=int(os.getenv("V_VIDEO_SEND_TIMEOUT", "180")),
+                )
+                sentv.add(item_id)
+                actually_sent_ids.add(item_id)
+            except Exception as e:
+                print(f"[send][video] FAILED item_id={item_id} path={abs_path}: {type(e).__name__}: {e}", flush=True)
+                continue
         finally:
             try:
                 Path(tmp_path).unlink(missing_ok=True)
@@ -447,8 +461,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
                 pass
 
     # remove sent from pool + save
-    sent_ids = set(x["item_id"] for x in picked)
-    pool["items"] = [x for x in items if (x.get("item_id") not in sent_ids)]
+    pool["items"] = [x for x in items if (x.get("item_id") not in actually_sent_ids)]
     _save_json(pool_path, pool)
 
     _save_sent(sentv_path, sentv, keep_last=700)
