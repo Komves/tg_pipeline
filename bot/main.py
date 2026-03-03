@@ -341,7 +341,8 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
     pool_path = _pool_path("video", user_id)
     pool = _load_json(pool_path, {"ts": 0, "items": []})
-    if not _pool_is_fresh(pool):
+    items0 = list(pool.get("items") or [])
+    if (not _pool_is_fresh(pool)) or (not items0) or (not any(Path((x.get("abs_path") or "")).exists() for x in items0)):
         pool = _refresh_video_pool(user_id)
 
     items = list(pool.get("items") or [])
