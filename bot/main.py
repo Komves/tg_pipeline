@@ -246,6 +246,12 @@ def _img_should_react(chat_id: int) -> bool:
 # =========================
 
 async def _run_news_for_message(message: Message, *, hours: int, limit: int) -> None:
+    async with TG_LOCK:
+        items = await news_digest.get_news_digest(
+            news_sources_path=NEWS_SOURCES,
+            hours=hours,
+            limit=limit,
+        )
     try:
         async with TG_LOCK:
             print(f"[news] start hours={hours} limit={limit} sources={NEWS_SOURCES}", flush=True)
@@ -416,8 +422,6 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         if emb:
             used_embs.append(emb)
 
-    actually_sent_ids: set[str] = set()
-
     for x in picked:
         item_id = x["item_id"]
         abs_path = x.get("abs_path") or ""
@@ -429,20 +433,13 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         except Exception as e:
             print(f"[send] size check failed video: {abs_path}: {e}", flush=True)
             continue
-
         try:
             shutil.copyfile(abs_path, tmp_path)
-            try:
-                await message.answer_video(
-                    FSInputFile(tmp_path),
-                    reply_markup=fb_kb(item_id),
-                    request_timeout=int(os.getenv("V_VIDEO_SEND_TIMEOUT", "180")),
-                )
-                sentv.add(item_id)
-                actually_sent_ids.add(item_id)
-            except Exception as e:
-                print(f"[send][video] FAILED item_id={item_id} path={abs_path}: {type(e).__name__}: {e}", flush=True)
-                continue
+            await message.answer_video(
+                FSInputFile(tmp_path),
+                reply_markup=fb_kb(item_id),
+            )
+            sentv.add(item_id)
         finally:
             try:
                 Path(tmp_path).unlink(missing_ok=True)
@@ -450,7 +447,8 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
                 pass
 
     # remove sent from pool + save
-    pool["items"] = [x for x in items if (x.get("item_id") not in actually_sent_ids)]
+    sent_ids = set(x["item_id"] for x in picked)
+    pool["items"] = [x for x in items if (x.get("item_id") not in sent_ids)]
     _save_json(pool_path, pool)
 
     _save_sent(sentv_path, sentv, keep_last=700)
@@ -458,7 +456,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     sentv_path = DATA_DIR / f"sent_video_{user_id}.json"
     sentv = _load_sent(sentv_path)
 
-    
+
     # --- мемы (consume from 24h pool + GPT batch ranking) ---
     sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
     sentm = _load_sent(sentm_path)
@@ -540,7 +538,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     for x in cand:
         try:
             p = Path(x.get("abs_path") or "")
-            
+
             if (not p.exists()):
                 continue
 
@@ -551,7 +549,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             # защита от mp4 под видом jpg
             if p.stat().st_size < 5000:
                 continue
-            
+
             img_bytes = p.read_bytes()
 
             batch.append(
@@ -721,7 +719,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             title = (x.get("title") or "").strip()
             url = (x.get("url") or "").strip()
             vid = (x.get("video_id") or "").strip()
-            
+
             if not url or url in sentyt:
                 continue
 
@@ -755,7 +753,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             yt_sent += 1
             if yt_sent >= SEND_YT:
                 break
-            
+
         _save_sent(sentyt_path, sentyt, keep_last=800)
 
         ytstate_path.write_text(
@@ -778,7 +776,7 @@ async def on_photo(message: Message) -> None:
 
     if not _chat_allowed(message):
         return
-        
+
     try:
         ph = message.photo[-1]
         # save last photo id even if limiter skips reactions
@@ -787,13 +785,13 @@ async def on_photo(message: Message) -> None:
 
         raw = await _download_tg_file_bytes(message.bot, ph.file_id)
         img_bytes = _shrink_jpeg_bytes(raw)
-        
+
         chatgpt_dialog.note_last_user_photo(
             int(message.chat.id),
             int(message.from_user.id) if message.from_user else 0,
             img_bytes,
         )
-                
+
         fn = IMG_INBOX / f"{message.chat.id}_{message.message_id}.jpg"
 
         try:
@@ -842,7 +840,7 @@ async def on_image_document(message: Message) -> None:
         return
     try:
         doc = message.document
-    
+
         if not doc.mime_type.startswith("image/"):
             return
 
@@ -941,9 +939,9 @@ async def vesya_handler(message: Message) -> None:
             if not text:
                 await message.answer("да?")
                 return
-            
+
     print(f"[route] text={text!r}", flush=True)
-    
+
     if not text:
         return
 
@@ -1017,7 +1015,7 @@ async def vesya_handler(message: Message) -> None:
 
         await message.answer(reply or "слушаю")
         return
-    
+
     if intent == "news":
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
@@ -1036,7 +1034,7 @@ async def vesya_handler(message: Message) -> None:
             await message.answer(reply)
         else:
             await message.answer("сек, собираю горячее.")
-               
+
         await _send_content(message, user_id=user_id, ingest_hours_n=None)
         return
 
@@ -1257,13 +1255,15 @@ async def ingest24_loop(bot: Bot) -> None:
 
         wait_sec = (next_run - now).total_seconds()
         print(f"[ingest24] next run in {int(wait_sec)} sec", flush=True)
+
         await asyncio.sleep(wait_sec)
 
         print("[ingest24] starting ingest_hours(24)", flush=True)
 
-        # === BROADCAST TARGETS ===
-        targets: list[int] = []
+       # === BROADCAST TARGETS ===
+        targets = []
 
+        # 1. Группы (список или один id)
         _ids_env = (os.getenv("MORNING_CHAT_IDS") or os.getenv("MORNING_CHAT_ID") or "").strip()
         if _ids_env:
             for part in _ids_env.split(","):
@@ -1271,85 +1271,80 @@ async def ingest24_loop(bot: Bot) -> None:
                 if part:
                     targets.append(int(part))
 
+        # 2. Все личные пользователи
         targets.extend(list(_load_private_users()))
-        targets = list(dict.fromkeys(targets))  # uniq
 
         if not targets:
             print("[ingest24] no targets, skip sending", flush=True)
             continue
 
         # === MORNING QUOTE TO ALL TARGETS ===
-        try:
-            day_seed = int(datetime.now(MSK).strftime("%Y%m%d"))
+        try:            
             for target_chat_id in targets:
+                seed = int(time.time()) ^ (abs(int(target_chat_id)) & 0xFFFF)
+                quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)
+                quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
                 try:
-                    seed = ((day_seed << 16) ^ (abs(int(target_chat_id)) & 0xFFFFFFFF)) & 0xFFFFFFFF
-                    quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)
-                    quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
-
                     await bot.send_message(
                         target_chat_id,
                         _format_morning_quote(quote_ru),
-                        parse_mode="html",
+                        parse_mode="html"
                     )
                 except Exception as e:
-                    print(f"[ingest24] quote send error to {target_chat_id}: {type(e).__name__}: {e}", flush=True)
+                    print(f"[ingest24] quote send error to {target_chat_id}: {e}", flush=True)
         except Exception as e:
-            print(f"[ingest24] quote error: {type(e).__name__}: {e}", flush=True)
-
-        # === INGEST (Telethon) ===
+            print(f"[ingest24] quote send error: {e}", flush=True)
         try:
             async with TG_LOCK:
                 await ingest_hours(24)
+
+            # отправка пользователю
+
+            class Dummy:
+                def __init__(self, bot, chat_id, user_id):
+                    self.bot = bot
+                    self.chat = type("c", (), {"id": chat_id})
+                    self.message_id = 0
+                    self.from_user = type("u", (), {"id": user_id})
+
+                async def answer(self, text, **kw):
+                    return await self.bot.send_message(self.chat.id, text, **kw)
+
+                async def answer_photo(self, photo, **kw):
+                    return await self.bot.send_photo(self.chat.id, photo, **kw)
+
+                async def answer_video(self, video, **kw):
+                    return await self.bot.send_video(self.chat.id, video, **kw)
+
+                async def answer_document(self, document, **kw):
+                    return await self.bot.send_document(self.chat.id, document, **kw)
+
+            for target_chat_id in targets:
+
+                dummy = Dummy(bot, target_chat_id, target_chat_id)
+
+                try:
+                    _refresh_video_pool(target_chat_id)
+                except Exception as e:
+                    print(f"[pool] video refresh error: {e}", flush=True)
+
+                try:
+                    _refresh_meme_pool(target_chat_id)
+                except Exception as e:
+                    print(f"[pool] meme refresh error: {e}", flush=True)
+
+                try:
+                    await _send_content(dummy, user_id=target_chat_id, ingest_hours_n=None, send_mode="get24")
+                except Exception as e:
+                    print(f"[ingest24] send error to {target_chat_id}: {e}", flush=True)
+
+                users = _load_private_users()
+                if target_chat_id in users:
+                    users.discard(target_chat_id)
+                    _save_private_users(users)
+
         except Exception as e:
-            print(f"[ingest24] ingest_hours error: {type(e).__name__}: {e}", flush=True)
-            # ВАЖНО: не выходим. Контент всё равно попробуем отправить из того, что есть.
-
-        # === SEND CONTENT ===
-        class Dummy:
-            def __init__(self, bot, chat_id, user_id):
-                self.bot = bot
-                self.chat = type("c", (), {"id": chat_id})
-                self.message_id = 0
-                self.from_user = type("u", (), {"id": user_id})
-
-            async def answer(self, text, **kw):
-                return await self.bot.send_message(self.chat.id, text, **kw)
-
-            async def answer_photo(self, photo, **kw):
-                return await self.bot.send_photo(self.chat.id, photo, **kw)
-
-            async def answer_video(self, video, **kw):
-                return await self.bot.send_video(self.chat.id, video, **kw)
-
-            async def answer_document(self, document, **kw):
-                return await self.bot.send_document(self.chat.id, document, **kw)
-
-        for target_chat_id in targets:
-            print(f"[ingest24] send_content -> {target_chat_id}", flush=True)
-
-            try:
-                _refresh_video_pool(target_chat_id)
-            except Exception as e:
-                print(f"[pool] video refresh error: {type(e).__name__}: {e}", flush=True)
-
-            try:
-                _refresh_meme_pool(target_chat_id)
-            except Exception as e:
-                print(f"[pool] meme refresh error: {type(e).__name__}: {e}", flush=True)
-
-            dummy = Dummy(bot, target_chat_id, target_chat_id)
-            try:
-                await _send_content(dummy, user_id=target_chat_id, ingest_hours_n=None, send_mode="get24")
-            except Exception as e:
-                print(f"[ingest24] send error to {target_chat_id}: {type(e).__name__}: {e}", flush=True)
-
-            # оставить твою логику как есть
-            users = _load_private_users()
-            if target_chat_id in users:
-                users.discard(target_chat_id)
-                _save_private_users(users)
-
+            print(f"[ingest24] error: {e}", flush=True)
 async def heartbeat_loop() -> None:
     while True:
         _log("heartbeat")
@@ -1363,7 +1358,7 @@ async def main() -> None:
     asyncio.create_task(heartbeat_loop())
     asyncio.create_task(ingest24_loop(bot))
     await dp.start_polling(bot)
-    
+
 @dp.callback_query(F.data.startswith("fb:"))
 async def on_feedback(cb):
     parts = cb.data.split(":")
