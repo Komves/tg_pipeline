@@ -422,9 +422,8 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         if emb:
             used_embs.append(emb)
 
-        actually_sent_ids: set[str] = set()
+    actually_sent_ids = set()
 
-   
     for x in picked:
         item_id = x.get("item_id") or ""
         abs_path = x.get("abs_path") or ""
