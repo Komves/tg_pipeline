@@ -920,26 +920,171 @@ def meme_rank_batch(
    
 import random
 
-SARCASM_QUOTES = [
-    # Beckett
+_QUOTES_POOL_PATH = DATA_DIR / "quotes_pool.json"
+_QUOTES_SENT_PREFIX = "sent_quote_"
+
+_FALLBACK_QUOTES = [
     ("Samuel Beckett", "Nothing is funnier than unhappiness."),
-    # Kafka
     ("Franz Kafka", "A cage went in search of a bird."),
-    # Sartre
     ("Jean-Paul Sartre", "Hell is other people."),
-    # Schopenhauer
     ("Arthur Schopenhauer", "Life swings like a pendulum backward and forward between pain and boredom."),
-    # Nietzsche
     ("Friedrich Nietzsche", "He who has a why to live for can bear almost any how."),
-    # Cioran
     ("Emil Cioran", "It is not worth the bother of killing yourself, since you always kill yourself too late."),
+    ("Oscar Wilde", "If you want to tell people the truth, make them laugh, otherwise they'll kill you."),
+    ("Mark Twain", "The secret source of humor itself is not joy but sorrow."),
+    ("Woody Allen", "Life is full of misery, loneliness, and suffering — and it's all over much too soon."),
+    ("Albert Camus", "Should I kill myself, or have a cup of coffee?"),
+    ("George Orwell", "At fifty, everyone has the face he deserves."),
+    ("Ambrose Bierce", "The covers of this book are too far apart."),
+    ("Jules Renard", "It’s not how old you are, it’s how you are old."),
+    ("Mikhail Bulgakov", "Yes, man is mortal, but that would be only half the trouble. The worst of it is that he’s sometimes unexpectedly mortal."),
+    ("Stanisław Jerzy Lec", "People find life entirely too time-consuming."),
+    ("Fran Lebowitz", "Life is something to do when you can't get to sleep."),
+    ("Eugene Ionesco", "Ideologies separate us. Dreams and anguish bring us together."),
+    ("Dorothy Parker", "The first thing I do in the morning is brush my teeth and sharpen my tongue."),
+    ("Dorothy Parker", "If you want to know what God thinks of money, just look at the people he gave it to."),
+    ("H. L. Mencken", "Conscience is the inner voice that warns us somebody may be looking."),
+    ("W. Somerset Maugham", "People ask for criticism, but they only want praise."),
+    ("Karl Kraus", "Psychoanalysis is the disease of which it purports to be the cure."),
+    ("E. M. Cioran", "We are all deep in a hell each moment of which is a miracle."),
+    ("La Rochefoucauld", "We all have strength enough to bear the misfortunes of others."),
+    ("Groucho Marx", "I refuse to join any club that would have me as a member."),
+    ("Groucho Marx", "Behind every successful man is a woman, behind her is his wife."),
+    ("Oscar Wilde", "In this world there are only two tragedies. One is not getting what one wants, and the other is getting it."),
+    ("Fernando Pessoa", "I have no ambitions and no desires. To be a poet is not my ambition. It is my way of being alone."),
+    ("Jaroslav Hašek", "A modest man often acquires a reputation for smugness."),
+    ("Elias Canetti", "The fear of being touched seems to govern all our lives."),
 ]
 
-def pick_sarcastic_quote_ru(seed: int | None = None) -> str:
-    """
-    Returns one real quote (EN) + author.
-    Optional: later we can add RU translations carefully.
-    """
+def _quotes_sent_path(chat_id: int) -> Path:
+    return DATA_DIR / f"{_QUOTES_SENT_PREFIX}{int(chat_id)}.json"
+
+def _load_json_list(path: Path) -> list:
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+def _save_json_list(path: Path, items: list) -> None:
+    try:
+        path.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+def _quote_id(author: str, text: str) -> str:
+    s = f"{author}||{text}"
+    import hashlib
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
+def _normalize_quotes(raw: list) -> list[dict]:
+    out = []
+    seen = set()
+
+    for x in raw:
+        author = ""
+        text = ""
+
+        if isinstance(x, dict):
+            author = str(x.get("author") or "").strip()
+            text = str(x.get("text") or "").strip()
+        elif isinstance(x, (list, tuple)) and len(x) >= 2:
+            author = str(x[0] or "").strip()
+            text = str(x[1] or "").strip()
+
+        if not author or not text:
+            continue
+
+        qid = _quote_id(author, text)
+        if qid in seen:
+            continue
+        seen.add(qid)
+
+        out.append({
+            "id": qid,
+            "author": author,
+            "text": text,
+        })
+
+    return out
+
+def _load_quote_pool() -> list[dict]:
+    pool = _normalize_quotes(_load_json_list(_QUOTES_POOL_PATH))
+    if pool:
+        return pool
+
+    pool = _normalize_quotes(_FALLBACK_QUOTES)
+    _save_json_list(_QUOTES_POOL_PATH, pool)
+    return pool
+
+def _generate_quotes_batch_ru(n: int = 60) -> list[dict]:
+    if not _has_key():
+        return []
+
+    try:
+        client = OpenAI()
+        prompt = (
+            f"Сгенерируй {int(n)} разных коротких саркастичных, мрачноватых, умных цитат для утренней рассылки. "
+            "Не копируй известных авторов дословно. "
+            "Формат ответа строго JSON-массив объектов вида "
+            '[{"author":"Имя или псевдоним","text":"Текст цитаты"}]. '
+            "Все цитаты только на русском. Без пояснений."
+        )
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {"role": "system", "content": "Верни только валидный JSON."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        out = _extract_text(resp).strip()
+        data = json.loads(out)
+        if not isinstance(data, list):
+            return []
+        return _normalize_quotes(data)
+    except Exception:
+        return []
+
+def _ensure_quote_pool(min_size: int = 80) -> list[dict]:
+    pool = _load_quote_pool()
+    if len(pool) >= int(min_size):
+        return pool
+
+    new_quotes = _generate_quotes_batch_ru(max(60, int(min_size)))
+    if new_quotes:
+        merged = _normalize_quotes(pool + new_quotes)
+        _save_json_list(_QUOTES_POOL_PATH, merged)
+        return merged
+
+    return pool
+
+def pick_sarcastic_quote_ru(seed: int | None = None, chat_id: int | None = None) -> str:
+    pool = _ensure_quote_pool()
+    if not pool:
+        pool = _normalize_quotes(_FALLBACK_QUOTES)
+
+    sent_ids = set()
+    sent_path = None
+
+    if chat_id is not None:
+        sent_path = _quotes_sent_path(chat_id)
+        sent_ids = set(str(x) for x in _load_json_list(sent_path) if x)
+
+    fresh = [q for q in pool if q["id"] not in sent_ids]
+    if not fresh:
+        fresh = list(pool)
+        sent_ids = set()
+
     rnd = random.Random(seed)
-    author, q = rnd.choice(SARCASM_QUOTES)
-    return f"“{q}” — {author}"
+    picked = rnd.choice(fresh)
+
+    if sent_path is not None:
+        sent_ids.add(picked["id"])
+        keep_last = max(500, len(pool))
+        sent_list = list(sent_ids)[-keep_last:]
+        _save_json_list(sent_path, sent_list)
+
+    return f"“{picked['text']}” — {picked['author']}"

@@ -1141,6 +1141,18 @@ def _refresh_video_pool(user_id: int) -> dict:
 
     out = []
     seen = set()
+    seen_hashes = set()
+
+    def _file_sha1(path: Path) -> str:
+        import hashlib
+        h = hashlib.sha1()
+        with path.open("rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
     for p in files:
         if len(out) >= COLLECT_N:
             break
@@ -1181,10 +1193,21 @@ def _refresh_video_pool(user_id: int) -> dict:
 
         if item_id in seen:
             continue
-        seen.add(item_id)
 
         if not p.exists():
             continue
+
+        try:
+            file_sha1 = _file_sha1(p)
+        except Exception:
+            file_sha1 = ""
+
+        if file_sha1 and file_sha1 in seen_hashes:
+            continue
+
+        seen.add(item_id)
+        if file_sha1:
+            seen_hashes.add(file_sha1)
 
         out.append({
             "item_id": item_id,
@@ -1295,7 +1318,7 @@ async def ingest24_loop(bot: Bot) -> None:
         try:            
             for target_chat_id in targets:
                 seed = int(time.time()) ^ (abs(int(target_chat_id)) & 0xFFFF)
-                quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed)
+                quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed, chat_id=target_chat_id)
                 quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
                 try:
                     await bot.send_message(
