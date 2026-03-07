@@ -346,6 +346,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         pool = _refresh_video_pool(user_id)
 
     items = list(pool.get("items") or [])
+    SEND_V = 4 if send_mode in ("get12", "get24") else 2
 
     SEND_K = 8 if send_mode == "get24" else 8
     picked = []
@@ -480,7 +481,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     items = list(pool.get("items") or [])
 
     POOL_N = int(os.getenv("V_MEME_POOL_N", "30"))   # сколько показать GPT за раз
-    SEND_K = 8 if send_mode == "get24" else 4        # сколько отправить пользователю
+    SEND_K = 8 if send_mode in ("get12", "get24") else 4
     def _size_ok(x: dict) -> bool:
         abs_path = (x.get("abs_path") or "").strip()
         if not abs_path:
