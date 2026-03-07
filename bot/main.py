@@ -347,7 +347,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
     items = list(pool.get("items") or [])
 
-    SEND_V = 4 if send_mode == "get24" else 2
+    SEND_K = 8 if send_mode == "get24" else 8
     picked = []
     used_src_v: set[str] = set()
     used_embs: list[list[float]] = []
