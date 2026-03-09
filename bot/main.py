@@ -310,7 +310,7 @@ async def cmd_news(message: Message) -> None:
 async def cmd_get12(message: Message) -> None:
     if not _chat_allowed(message):
         return
-    user_id = int(message.from_user.id) if message.from_user else 0
+    user_id = int(message.chat.id)
     await _send_content(message, user_id=user_id, ingest_hours_n=None)
 
 # =========================
