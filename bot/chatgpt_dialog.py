@@ -564,6 +564,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             reply = _pick_clarify(chat_id, user_id, user_text)
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="chat", reply=reply)
+    
+    if ir and ir.addressed and ir.intent == "group_rewrite":
+        reply = persona.answer_group_rewrite_pushback(ir.question or "")
+        reply = _sanitize_reply(reply)
+        reply = persona.postprocess_text(reply, user_text)
+        add_assistant(chat_id, user_id, reply)
+        return DialogDecision(intent="chat", reply=reply)
 
     if ir and ir.addressed and ir.intent == "chat":
         reply = persona.answer_chat(ir.question or "")
