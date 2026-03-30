@@ -445,6 +445,16 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
                     request_timeout=int(os.getenv("V_VIDEO_SEND_TIMEOUT", "180")),
                 )
                 sentv.add(item_id)
+                from datetime import datetime, timezone
+
+                POSTED_TSV = Path("/data/a_posted_master.tsv")
+
+                try:
+                    ts = datetime.now(timezone.utc).isoformat()
+                    with POSTED_TSV.open("a", encoding="utf-8") as f:
+                        f.write(f"{ts}\t{user_id}\t{item_id}\tfeed_a_video\n")
+                except Exception:
+                    pass
                 actually_sent_ids.add(item_id)
             except Exception as e:
                 print(f"[send][video] FAILED item_id={item_id} path={abs_path}: {type(e).__name__}: {e}", flush=True)
