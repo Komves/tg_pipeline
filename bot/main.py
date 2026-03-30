@@ -209,6 +209,18 @@ DEFAULT_NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 _CHAT_ID_ENV = (os.getenv("CHAT_ID") or "").strip()
 ALLOWED_CHAT_ID: Optional[int] = int(_CHAT_ID_ENV) if _CHAT_ID_ENV else None
 
+_ADMIN_USER_IDS_ENV = (os.getenv("ADMIN_USER_IDS") or "").strip()
+ADMIN_USER_IDS: list[int] = []
+if _ADMIN_USER_IDS_ENV:
+    try:
+        ADMIN_USER_IDS = [
+            int(x.strip())
+            for x in _ADMIN_USER_IDS_ENV.split(",")
+            if x.strip()
+        ]
+    except Exception:
+        ADMIN_USER_IDS = []
+
 # =========================
 # BOT
 # =========================
@@ -732,6 +744,40 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
         )
 
         print(f"[yt] pool size={len(pool)}", flush=True)
+
+        if not pool:
+            yt_alert_path = DATA_DIR / "yt_master_exhausted_alert.json"
+            yt_alert_cooldown_sec = int(os.getenv("YT_EMPTY_ALERT_HOURS", "12")) * 3600
+
+            last_alert_ts = 0
+            try:
+                if yt_alert_path.exists():
+                    last_alert_ts = int(json.loads(yt_alert_path.read_text(encoding="utf-8")).get("ts") or 0)
+            except Exception:
+                last_alert_ts = 0
+
+            if now_ts - last_alert_ts >= yt_alert_cooldown_sec:
+                sent_any = False
+
+                for admin_user_id in ADMIN_USER_IDS:
+                    try:
+                        await bot.send_message(
+                            chat_id=admin_user_id,
+                            text=(
+                                "⚠️ YouTube-база исчерпана.\n"
+                                "Текущий master/work pool больше не дает роликов на выдачу.\n"
+                                "Пора вручную собирать новый пул ссылок."
+                            ),
+                        )
+                        sent_any = True
+                    except Exception:
+                        pass
+
+                if sent_any:
+                    try:
+                        yt_alert_path.write_text(json.dumps({"ts": now_ts}), encoding="utf-8")
+                    except Exception:
+                        pass
 
         for x in pool:
             title = (x.get("title") or "").strip()

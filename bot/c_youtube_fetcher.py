@@ -494,7 +494,7 @@ def _refresh_pool_from_master() -> dict:
     No YouTube API calls at all.
     """
     master = _load_json(MASTER_PATH, [])
-    items: list[dict] = []
+    raw_items: list[dict] = []
 
     now_ts = int(time.time())
 
@@ -512,10 +512,10 @@ def _refresh_pool_from_master() -> dict:
         # строгий URL
         url = f"https://www.youtube.com/watch?v={vid}"
 
-        # score как раньше (примерно)
-        score = (views * 1.0) + (likes * 30.0)
+        # базовый score как раньше
+        base_score = (views * 1.0) + (likes * 30.0)
 
-        items.append({
+        raw_items.append({
             "video_id": vid,
             "url": url,
             "title": title,
@@ -524,16 +524,47 @@ def _refresh_pool_from_master() -> dict:
             "channel_title": channel_title,
             "views": views,
             "likes": likes,
-            "score": float(score),
+            "score": float(base_score),
             "ts": now_ts,
         })
 
-    # сортируем, чтобы пул был сразу “жирный”
+    # сначала сортируем по базовому score
+    raw_items.sort(key=lambda z: float(z.get("score") or 0.0), reverse=True)
+
+    # разбалансировка: penalty по повторному каналу + hard cap на канал
+    max_per_channel = int(os.getenv("YT_POOL_MAX_PER_CHANNEL", "8"))
+    per_channel_counts: dict[str, int] = {}
+    items: list[dict] = []
+
+    for x in raw_items:
+        cid = (x.get("channel_id") or "").strip()
+        cnt = int(per_channel_counts.get(cid) or 0) if cid else 0
+
+        if cid and cnt >= max_per_channel:
+            continue
+
+        if cnt <= 0:
+            mult = 1.0
+        elif cnt == 1:
+            mult = 0.70
+        elif cnt == 2:
+            mult = 0.50
+        else:
+            mult = 0.35
+
+        y = dict(x)
+        y["score"] = float(y.get("score") or 0.0) * mult
+        y["channel_rank"] = cnt + 1
+        items.append(y)
+
+        if cid:
+            per_channel_counts[cid] = cnt + 1
+
+    # пересортировка уже после penalty
     items.sort(key=lambda z: float(z.get("score") or 0.0), reverse=True)
 
-    # ограничим размер work-пула (чтобы файл не разрастался)
-    # WORK_TARGET_N у тебя = 30, но можно сделать запас побольше:
-    keep_n = max(int(WORK_TARGET_N or 30) * 50, 1000)   # например 1500
+    # ограничим размер work-пула
+    keep_n = max(int(WORK_TARGET_N or 30) * 50, 1000)
     items = items[:keep_n]
 
     pool = {"ts": time.time(), "items": items}
