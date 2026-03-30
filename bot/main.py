@@ -246,12 +246,6 @@ def _img_should_react(chat_id: int) -> bool:
 # =========================
 
 async def _run_news_for_message(message: Message, *, hours: int, limit: int) -> None:
-    async with TG_LOCK:
-        items = await news_digest.get_news_digest(
-            news_sources_path=NEWS_SOURCES,
-            hours=hours,
-            limit=limit,
-        )
     try:
         async with TG_LOCK:
             print(f"[news] start hours={hours} limit={limit} sources={NEWS_SOURCES}", flush=True)

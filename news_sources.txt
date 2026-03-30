@@ -1,9 +1,0 @@
-# tg_pipeline/news_sources.txt
-https://t.me/glavmedia
-https://t.me/infantmilitario
-@trubapodneglinnoy
-https://t.me/zakupki_time
-https://t.me/MarketOverview
-https://t.me/banksta
-https://t.me/moscowmap
-https://t.me/HantyMoney
