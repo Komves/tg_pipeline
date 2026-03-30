@@ -26,7 +26,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DIALOG_TTL_SEC = int(os.getenv("V_DIALOG_TTL_SEC", os.getenv("DIALOG_TTL_SEC", "3600")))
 DIALOG_MAX_TURNS = int(os.getenv("V_DIALOG_MAX_TURNS", os.getenv("DIALOG_MAX_TURNS", "30")))
 
-DIALOG_MODEL = os.getenv("V_DIALOG_MODEL", os.getenv("DIALOG_MODEL", "gpt-4o-mini"))
+DIALOG_MODEL = os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini")
 VISION_MODEL = os.getenv("V_VISION_MODEL", DIALOG_MODEL)
 
 DEBUG_DIALOG = (os.getenv("V_DIALOG_DEBUG", os.getenv("DEBUG_DIALOG", "0")) or "").strip().lower() in {
@@ -346,8 +346,8 @@ _ACTION_ACKS_NEWS = [
     "ок, уже ищу свежее...",
     "Поняла, собираю дайджест...",
     "Сейчас проверю, что нового...",
-    "Там все те же на манеже... ",
-    "Думаешь война закночилась?... Не угадал...",
+    "Там все те же на манеже... Рыжий, пегий и седой...) ",
+    "Думаешь война закончилась?... Ваще не угадал...",
 ]
 
 ACTION_ACKS_CONTENT = [
