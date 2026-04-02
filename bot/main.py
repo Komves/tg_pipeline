@@ -1366,11 +1366,19 @@ async def ingest24_loop(bot: Bot) -> None:
             continue
 
         # === MORNING QUOTE TO ALL TARGETS ===
-        try:            
+        try:
             for target_chat_id in targets:
                 seed = int(time.time()) ^ (abs(int(target_chat_id)) & 0xFFFF)
                 quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed, chat_id=target_chat_id)
-                quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
+
+                parts = quote_text.rsplit(" — ", 1)
+                if len(parts) == 2:
+                    body, author = parts
+                    body_ru = chatgpt_dialog.translate_to_ru(body)
+                    quote_ru = f"{body_ru} — {author}"
+                else:
+                    quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
+
                 try:
                     await bot.send_message(
                         target_chat_id,

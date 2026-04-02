@@ -794,10 +794,17 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
         b64 = base64.b64encode(img_bytes).decode("utf-8")
 
         prompt = (
-            "Опиши изображение кратко и безопасно: что на фото, окружение, одежда/объекты. "
-            "НЕ пытайся идентифицировать человека, НЕ называй имён."
+            "Посмотри на изображение и сам определи, какой ответ нужен.\n"
+            "Если это узнаваемый объект (памятник, здание, картина, скульптура, техника, предмет, место) — "
+            "попробуй определить, что это именно.\n"
+            "Если уверен — назови объект и кратко объясни по визуальным признакам.\n"
+            "Если не уверен — прямо напиши: 'не уверен', и дай 1–3 наиболее вероятных варианта.\n"
+            "После этого добавь короткий комментарий.\n"
+            "Если это просто сцена — кратко опиши и прокомментируй.\n"
+            "Не идентифицируй людей.\n"
+            "Ответ короткий, по-русски."
         )
-
+        
         resp = client.responses.create(
             model=VISION_MODEL,
             input=[
@@ -814,6 +821,16 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
 
         out = _extract_text(resp)
         reply = _sanitize_reply(out) or "вижу фото. хочешь описание или сравнение?"
+
+        # fallback через web если модель не уверена
+        if "не уверен" in (reply or "").lower():
+            try:
+                extra = _web_search_fallback(reply)
+                if extra:
+                    reply = reply + "\n\nДополнительно: " + extra
+            except Exception:
+                pass
+
         return DialogDecision(intent="chat", reply=reply)
 
     except Exception as e:
@@ -982,6 +999,35 @@ def _save_json_list(path: Path, items: list) -> None:
     except Exception:
         pass
 
+def _web_search_fallback(query: str) -> str:
+    import httpx
+
+    try:
+        r = httpx.get(
+            "https://api.duckduckgo.com/",
+            params={
+                "q": query,
+                "format": "json",
+                "no_redirect": 1,
+                "no_html": 1,
+            },
+            timeout=10,
+        )
+        data = r.json()
+        abstract = data.get("AbstractText")
+        if abstract:
+            return abstract
+
+        related = data.get("RelatedTopics") or []
+        for x in related:
+            if isinstance(x, dict) and x.get("Text"):
+                return x["Text"]
+
+    except Exception:
+        pass
+
+    return ""
+
 def _quote_id(author: str, text: str) -> str:
     s = f"{author}||{text}"
     import hashlib
@@ -1070,7 +1116,7 @@ def _ensure_quote_pool(min_size: int = 80) -> list[dict]:
 
     return pool
 
-def pick_sarcastic_quote_ru(seed: int | None = None, chat_id: int | None = None) -> str:
+def pick_sarcastic_quote_ru(seed: int | None = None, chat_id: int | None = None) -> dict:
     pool = _ensure_quote_pool()
     if not pool:
         pool = _normalize_quotes(_FALLBACK_QUOTES)
@@ -1090,10 +1136,11 @@ def pick_sarcastic_quote_ru(seed: int | None = None, chat_id: int | None = None)
     rnd = random.Random(seed)
     picked = rnd.choice(fresh)
 
-    if sent_path is not None:
-        sent_ids.add(picked["id"])
-        keep_last = max(500, len(pool))
-        sent_list = list(sent_ids)[-keep_last:]
-        _save_json_list(sent_path, sent_list)
-
-    return f"“{picked['text']}” — {picked['author']}"
+    return {
+        "id": str(picked["id"]),
+        "text": str(picked["text"]).strip(),
+        "author": str(picked["author"]).strip(),
+        "sent_path": sent_path,
+        "sent_ids": sent_ids,
+        "pool_size": len(pool),
+    }
