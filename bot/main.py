@@ -980,7 +980,22 @@ async def vesya_handler(message: Message) -> None:
         _save_private_users(users)
 
     text = (message.text or "").strip()
-    orig_text = text  # keep original text for routing
+    orig_text = text
+
+    # === PHOTO → VISION ROUTE ===
+    last_photo = chatgpt_dialog.pop_last_user_photo(
+        int(message.chat.id),
+        int(message.from_user.id) if message.from_user else 0,
+    )
+
+    if last_photo:
+        try:
+            decision = chatgpt_dialog.describe_or_compare_photo(text, last_photo)
+            if decision and decision.reply:
+                await message.answer(decision.reply)
+                return
+        except Exception as e:
+            print(f"[vision route error] {e}", flush=True)
 
     # In groups: react only when bot is addressed (name/command/reply)
     if message.chat.type in ("group", "supergroup"):

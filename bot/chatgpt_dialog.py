@@ -808,7 +808,7 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
         resp = client.responses.create(
             model=VISION_MODEL,
             input=[
-                {"role": "system", "content": getattr(persona, "_SYSTEM_PROMPT", "Ты — безопасный ассистент.")},
+                {"role": "system", "content": "Ты анализируешь изображения. Отвечай точно, по делу, без лишнего сарказма."},
                 {
                     "role": "user",
                     "content": [
@@ -825,7 +825,7 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
         # fallback через web если модель не уверена
         if "не уверен" in (reply or "").lower():
             try:
-                extra = _web_search_fallback(reply)
+                extra = _web_search_fallback(t or reply)
                 if extra:
                     reply = reply + "\n\nДополнительно: " + extra
             except Exception:
