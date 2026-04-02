@@ -820,14 +820,20 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
         )
 
         out = _extract_text(resp)
-        reply = _sanitize_reply(out) or "вижу фото. хочешь описание или сравнение?"
+        reply = _sanitize_reply(out)
+
+        if not reply:
+            reply = out or "не удалось определить, что на изображении"
 
         # fallback через web если модель не уверена
         if "не уверен" in (reply or "").lower():
             try:
-                extra = _web_search_fallback(t or reply)
+                query = t if t else reply
+                extra = _web_search_fallback(query)
+
                 if extra:
-                    reply = reply + "\n\nДополнительно: " + extra
+                    reply = _expert_refine_answer(reply, extra)
+
             except Exception:
                 pass
 
@@ -1028,6 +1034,35 @@ def _web_search_fallback(query: str) -> str:
 
     return ""
 
+def _expert_refine_answer(hypothesis: str, web_text: str) -> str:
+    try:
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты эксперт по архитектуре, искусству и достопримечательностям.\n"
+                        "Дай точный и краткий ответ.\n"
+                        "Если объект известен — назови его.\n"
+                        "Добавь 1 короткий факт.\n"
+                        "Без воды и без лишнего текста."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Гипотеза: {hypothesis}\n\n"
+                        f"Дополнительная информация: {web_text}\n\n"
+                        "Сформулируй финальный ответ."
+                    ),
+                },
+            ],
+        )
+        return _sanitize_reply(_extract_text(resp)) or hypothesis
+    except Exception:
+        return hypothesis
+
 def _quote_id(author: str, text: str) -> str:
     s = f"{author}||{text}"
     import hashlib
@@ -1080,13 +1115,13 @@ def _generate_quotes_batch_ru(n: int = 60) -> list[dict]:
     try:
         client = OpenAI()
         prompt = (
-            f"Сгенерируй {int(n)} разных коротких саркастичных, мрачноватых, умных цитат для утренней рассылки. "
-            "Не копируй известных авторов дословно. "
-            "Формат ответа строго JSON-массив объектов вида "
-            '[{"author":"Реальный автор или неизвестный автор","text":"Текст цитаты"}]. '
-            "Если автор неизвестен — пиши ровно 'неизвестный автор'. "
-            "Никогда не используй слова: 'псевдоним', 'anonymous', 'unknown'. "
-            "Все цитаты только на русском. Без пояснений."
+            "Посмотри на изображение и определи, что это.\n"
+            "Если это известный объект (здание, памятник, картина, место) — назови его.\n"
+            "Ответ должен быть экспертный, короткий и точный.\n"
+            "Если уверен — дай название + 1 короткий факт.\n"
+            "Если не уверен — напиши 'не уверен' и дай 1–2 версии.\n"
+            "Не идентифицируй людей.\n"
+            "Без лишнего текста."
         )
         resp = client.responses.create(
             model=DIALOG_MODEL,
