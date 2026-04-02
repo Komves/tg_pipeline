@@ -981,21 +981,7 @@ async def vesya_handler(message: Message) -> None:
 
     text = (message.text or "").strip()
     orig_text = text
-
-    # === PHOTO → VISION ROUTE ===
-    last_photo = chatgpt_dialog.pop_last_user_photo(
-        int(message.chat.id),
-        int(message.from_user.id) if message.from_user else 0,
-    )
-
-    if last_photo:
-        try:
-            decision = chatgpt_dialog.describe_or_compare_photo(text, last_photo)
-            if decision and decision.reply:
-                await message.answer(decision.reply)
-                return
-        except Exception as e:
-            print(f"[vision route error] {e}", flush=True)
+    # photo is handled below via reply-photo or LAST_USER_IMAGE_ID
 
     # In groups: react only when bot is addressed (name/command/reply)
     if message.chat.type in ("group", "supergroup"):
@@ -1035,8 +1021,17 @@ async def vesya_handler(message: Message) -> None:
         wants_photo = (
             "что на фото" in t
             or "что ты видишь" in t
+            or "что это" in t
+            or "что за " in t
+            or "где это" in t
+            or "что здесь" in t
+            or "что изображено" in t
+            or "где хранится" in t
+            or "кто автор" in t
+            or "какой стиль" in t
+            or "какая эпоха" in t
+            or "чья это работа" in t
             or t.startswith("опиши фото")
-            or t.startswith("опиши картин")
             or t.startswith("опиши изображ")
             or "опиши фото" in t
         )
