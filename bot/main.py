@@ -1379,15 +1379,16 @@ async def ingest24_loop(bot: Bot) -> None:
         try:
             for target_chat_id in targets:
                 seed = int(time.time()) ^ (abs(int(target_chat_id)) & 0xFFFF)
-                quote_text = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed, chat_id=target_chat_id)
+                picked = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed, chat_id=target_chat_id)
 
-                parts = quote_text.rsplit(" — ", 1)
-                if len(parts) == 2:
-                    body, author = parts
+                body = str(picked.get("text") or "").strip()
+                author = str(picked.get("author") or "").strip()
+
+                if body:
                     body_ru = chatgpt_dialog.translate_to_ru(body)
-                    quote_ru = f"{body_ru} — {author}"
+                    quote_ru = f"{body_ru} — {author}" if author else body_ru
                 else:
-                    quote_ru = chatgpt_dialog.translate_to_ru(quote_text)
+                    quote_ru = "Цитата не сформировалась."
 
                 try:
                     await bot.send_message(
@@ -1395,6 +1396,34 @@ async def ingest24_loop(bot: Bot) -> None:
                         _format_morning_quote(quote_ru),
                         parse_mode="html"
                     )
+
+                    await bot.send_message(
+                        target_chat_id,
+                        _format_morning_quote(quote_ru),
+                        parse_mode="html"
+                    )
+
+                    # ⬇ ВСТАВИТЬ ВОТ СЮДА
+                    sent_path = picked.get("sent_path")
+                    sent_ids = set(picked.get("sent_ids") or [])
+                    picked_id = str(picked.get("id") or "").strip()
+
+                    if sent_path is not None and picked_id:
+                        sent_ids.add(picked_id)
+                        keep_last = max(500, int(picked.get("pool_size") or 0))
+                        sent_list = list(sent_ids)[-keep_last:]
+                        chatgpt_dialog._save_json_list(sent_path, sent_list)
+
+                    sent_path = picked.get("sent_path")
+                    sent_ids = set(picked.get("sent_ids") or [])
+                    picked_id = str(picked.get("id") or "").strip()
+
+                    if sent_path is not None and picked_id:
+                        sent_ids.add(picked_id)
+                        keep_last = max(500, int(picked.get("pool_size") or 0))
+                        sent_list = list(sent_ids)[-keep_last:]
+                        chatgpt_dialog._save_json_list(sent_path, sent_list)
+
                 except Exception as e:
                     print(f"[ingest24] quote send error to {target_chat_id}: {e}", flush=True)
         except Exception as e:
