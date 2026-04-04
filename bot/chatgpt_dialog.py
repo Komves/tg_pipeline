@@ -1118,8 +1118,8 @@ def _generate_quotes_batch_ru(n: int = 60) -> list[dict]:
             f"Сгенерируй {int(n)} разных коротких саркастичных, мрачноватых, умных цитат для утренней рассылки. "
             "Не копируй известных авторов дословно. "
             "Формат ответа строго JSON-массив объектов вида "
-            '[{"author":"Реальный автор или неизвестный автор","text":"Текст цитаты"}]. '
-            "Если автор неизвестен — пиши ровно 'неизвестный автор'. "
+            '[{"author":"Реальный автор","text":"Текст цитаты"}]. '
+            "У каждой цитаты обязательно должен быть указан конкретный реальный автор. "
             "Никогда не используй слова: 'псевдоним', 'anonymous', 'unknown'. "
             "Все цитаты только на русском. Без пояснений."
         )
@@ -1163,10 +1163,23 @@ def pick_sarcastic_quote_ru(seed: int | None = None, chat_id: int | None = None)
         sent_path = _quotes_sent_path(chat_id)
         sent_ids = set(str(x) for x in _load_json_list(sent_path) if x)
 
-    fresh = [q for q in pool if q["id"] not in sent_ids]
+    fresh = [
+        q for q in pool
+        if q["id"] not in sent_ids
+        and str(q.get("author") or "").strip().lower() != "неизвестный автор"
+    ]
     if not fresh:
-        fresh = list(pool)
+        fresh = [
+            q for q in pool
+            if str(q.get("author") or "").strip().lower() != "неизвестный автор"
+        ]
         sent_ids = set()
+
+    if not fresh:
+        fresh = [q for q in pool if q["id"] not in sent_ids]
+        if not fresh:
+            fresh = list(pool)
+            sent_ids = set()
 
     rnd = random.Random(seed)
     picked = rnd.choice(fresh)

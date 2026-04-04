@@ -1077,6 +1077,26 @@ async def vesya_handler(message: Message) -> None:
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
 
+    # reply to bot-sent video/document/video_note should stay LLM-chat,
+    # not trigger fresh content broadcast
+    r = message.reply_to_message
+    is_reply_to_bot_video = bool(
+        r
+        and r.from_user
+        and r.from_user.is_bot
+        and (
+            getattr(r, "video", None)
+            or getattr(r, "video_note", None)
+            or (
+                getattr(r, "document", None)
+                and (getattr(r.document, "mime_type", "") or "").startswith("video/")
+            )
+        )
+    )
+
+    if is_reply_to_bot_video and intent == "content":
+        intent = "chat"
+
     if intent == "chat":
         # имитация "печатает..." + пауза 5–10 секунд
         wait_s = random.uniform(5, 10)
@@ -1397,13 +1417,6 @@ async def ingest24_loop(bot: Bot) -> None:
                         parse_mode="html"
                     )
 
-                    await bot.send_message(
-                        target_chat_id,
-                        _format_morning_quote(quote_ru),
-                        parse_mode="html"
-                    )
-
-                    # ⬇ ВСТАВИТЬ ВОТ СЮДА
                     sent_path = picked.get("sent_path")
                     sent_ids = set(picked.get("sent_ids") or [])
                     picked_id = str(picked.get("id") or "").strip()
