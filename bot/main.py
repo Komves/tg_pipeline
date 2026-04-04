@@ -1077,24 +1077,47 @@ async def vesya_handler(message: Message) -> None:
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
 
-    # reply to bot-sent video/document/video_note should stay LLM-chat,
+    # reply to bot-sent content should stay LLM-chat,
     # not trigger fresh content broadcast
     r = message.reply_to_message
-    is_reply_to_bot_video = bool(
+
+    def _has_fb_buttons(msg) -> bool:
+        try:
+            rm = getattr(msg, "reply_markup", None)
+            kb = getattr(rm, "inline_keyboard", None) or []
+            for row in kb:
+                for btn in row:
+                    data = (getattr(btn, "callback_data", "") or "")
+                    if data.startswith("fb:"):
+                        return True
+        except Exception:
+            pass
+        return False
+
+    is_reply_to_bot_content = bool(
         r
-        and r.from_user
-        and r.from_user.is_bot
         and (
-            getattr(r, "video", None)
-            or getattr(r, "video_note", None)
+            _has_fb_buttons(r)
             or (
-                getattr(r, "document", None)
-                and (getattr(r.document, "mime_type", "") or "").startswith("video/")
+                r.from_user
+                and r.from_user.is_bot
+                and (
+                    getattr(r, "video", None)
+                    or getattr(r, "video_note", None)
+                    or getattr(r, "photo", None)
+                    or (
+                        getattr(r, "document", None)
+                        and (
+                            (getattr(r.document, "mime_type", "") or "").startswith("video/")
+                            or (getattr(r.document, "mime_type", "") or "").startswith("image/")
+                        )
+                    )
+                )
             )
         )
     )
 
-    if is_reply_to_bot_video and intent == "content":
+    if is_reply_to_bot_content and intent == "content":
         intent = "chat"
 
     if intent == "chat":
