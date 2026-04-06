@@ -492,7 +492,10 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     sentm = _load_sent(sentm_path)
 
     pool_path = _pool_path("meme", user_id)
-    pool = _refresh_meme_pool(user_id)
+    pool = _load_json(pool_path, {"ts": 0, "items": []})
+    items0 = list(pool.get("items") or [])
+    if (not _pool_is_fresh(pool)) or (not items0) or (not any(Path((x.get("abs_path") or "")).exists() for x in items0)):
+        pool = _refresh_meme_pool(user_id)
 
     items = list(pool.get("items") or [])
 
@@ -695,6 +698,18 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             reply_markup=fb_kb(item_id),
         )
         sentm.add(item_id)
+
+        from datetime import datetime, timezone
+
+        POSTED_TSV = Path("/data/a_posted_master.tsv")
+
+        try:
+            ts = datetime.now(timezone.utc).isoformat()
+            with POSTED_TSV.open("a", encoding="utf-8") as f:
+                f.write(f"{ts}\t{user_id}\t{item_id}\tfeed_memes\n")
+        except Exception:
+            pass
+
         actually_sent_ids.add(item_id)
         sent_count += 1
 
@@ -1152,32 +1167,8 @@ async def vesya_handler(message: Message) -> None:
         else:
             await message.answer("сек, собираю горячее.")
 
-        await _send_content(message, user_id=user_id, ingest_hours_n=None)
+        await _send_content(message, user_id=chat_id, ingest_hours_n=None)
         return
-
-        # --- мемы ---
-        sentm_path = DATA_DIR / f"sent_meme_{user_id}.json"
-        sentm = _load_sent(sentm_path)
-
-        m_items = rank_memes(user_id=user_id, n=10)
-        m_items = [it for it in m_items if it.item_id not in sentm]
-
-        m_ok = []
-        for it in m_items:
-            ok = await _gpt_meme_ok(it.abs_path, src=getattr(it, "src", "") or "")
-            if ok:
-                m_ok.append(it)
-        m_items = m_ok
-
-        for it in m_items:
-            await message.answer_photo(
-                FSInputFile(it.abs_path),
-                reply_markup=fb_kb(it.item_id),
-            )
-            sentm.add(it.item_id)
-
-        _save_sent(sentm_path, sentm, keep_last=700)
-
 
 # =====================
 # INGEST24 LOOP (06:00 MSK)
