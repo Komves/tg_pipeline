@@ -35,6 +35,13 @@ AD_SRC_HINTS = {
     "shop", "store", "market", "prod", "food", "fish",
     "alpenorth", "sale", "скидк", "акци", "ассортимент",
 }
+# фильтр животных (мемы не нужны)
+BANNED_ANIMALS = {
+    "кот", "кошка", "коты", "котик", "котята",
+    "cat", "cats", "kitty", "kitten",
+    "пес", "собака", "собаки", "щенок",
+    "dog", "dogs", "puppy",
+}
 
 # diversity: максимум мемов с одного src за выдачу
 MAX_PER_SRC = int(os.getenv("V_MEME_MAX_PER_SRC", "6"))
