@@ -132,6 +132,11 @@ def _looks_like_ad(meta: dict) -> bool:
     src = (meta.get("src") or "")
     s = (cap + " " + src).lower()
 
+    # фильтр животных (кошки/собаки)
+    for k in BANNED_ANIMALS:
+        if k in s:
+            return True
+
     for k in AD_KEYWORDS:
         if k in s:
             return True
