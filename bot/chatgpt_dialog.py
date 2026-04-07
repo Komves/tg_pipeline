@@ -572,6 +572,14 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="chat", reply=reply)
 
+    if ir and ir.addressed and ir.intent == "add_youtube":
+        video_id = ir.question
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        ok, msg = add_youtube_to_archive(chat_id, user_id, url, video_id)
+        reply = msg
+        add_assistant(chat_id, user_id, reply)
+        return DialogDecision(intent="chat", reply=reply)
+
     if ir and ir.addressed and ir.intent == "chat":
         reply = persona.answer_chat(ir.question or "")
         reply = _sanitize_reply(reply)
@@ -1197,3 +1205,58 @@ def pick_sarcastic_quote_ru(seed: int | None = None, chat_id: int | None = None)
         "sent_ids": sent_ids,
         "pool_size": len(pool),
     }
+# =============================================================================
+# YOUTUBE ADD TO ARCHIVE
+# =============================================================================
+
+def add_youtube_to_archive(chat_id: int, user_id: int, url: str, video_id: str) -> tuple[bool, str]:
+    """Добавляет видео в yt_master_channels.json"""
+    import json
+    import time
+    
+    DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+    master_path = DATA_DIR / "yt_master_channels.json"
+    
+    # Загружаем существующий мастер-файл
+    if master_path.exists():
+        try:
+            with open(master_path, 'r') as f:
+                master = json.load(f)
+        except Exception:
+            master = []
+    else:
+        master = []
+    
+    # Проверяем, нет ли уже такого видео
+    for v in master:
+        if v.get("video_id") == video_id:
+            return False, "уже есть"
+    
+    # Добавляем новое видео
+    master.append({
+        "video_id": video_id,
+        "url": url,
+        "title": "",
+        "channel_title": "",
+        "channel_id": "",
+        "views": 0,
+        "likes": 0,
+        "added_at": int(time.time()),
+        "added_by": f"{chat_id}:{user_id}"
+    })
+    
+    # Сохраняем
+    try:
+        with open(master_path, 'w') as f:
+            json.dump(master, f, ensure_ascii=False, indent=2)
+        
+        # Обновляем рабочий пул
+        try:
+            from c_youtube_fetcher import _refresh_pool_from_master
+            _refresh_pool_from_master()
+        except Exception:
+            pass
+        
+        return True, "добавила"
+    except Exception as e:
+        return False, f"ошибка: {e}"

@@ -51,6 +51,10 @@ IGNITE_RE = re.compile(r"\b(жги|зажги|огня|дай огня|дай ж
 CHOICE_CONTENT_RE = re.compile(r"\b(контент|пост|мем|видос|видео|get12|прогон|ингест|ingest)\b", re.IGNORECASE)
 CHOICE_NEWS_RE = re.compile(r"\b(новост|дайджест|в мире|news)\b", re.IGNORECASE)
 CHOICE_STRIP_RE = re.compile(r"\b(стриптиз|разденься|нюд|nude|эротик)\b", re.IGNORECASE)
+ADD_VIDEO_PATTERN = re.compile(
+    r"(?:https?://(?:www\.)?youtube\.com/watch\?v=|https?://youtu\.be/)([A-Za-z0-9_-]{11})",
+    re.IGNORECASE
+)
 GROUP_REWRITE_RE = re.compile(
     r"\b("
     r"замени|не повторяй|не говори|убери|исключи|запомни|"
@@ -334,6 +338,13 @@ def detect_intent(text: str) -> IntentResult:
     
     if addressed and GROUP_REWRITE_RE.search(t):
         return IntentResult(addressed=True, intent="group_rewrite", question=t)
+
+    # Добавление YouTube в архив
+    yt_match = ADD_VIDEO_PATTERN.search(t)
+    if yt_match and addressed:
+        if any(phrase in t.lower() for phrase in ["добавь в архив", "сохрани", "запомни", "в коробку"]):
+            video_id = yt_match.group(1)
+            return IntentResult(addressed=True, intent="add_youtube", question=video_id)
 
     if addressed and t:
         return IntentResult(addressed=True, intent="chat", question=t)
