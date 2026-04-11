@@ -221,6 +221,61 @@ if _ADMIN_USER_IDS_ENV:
     except Exception:
         ADMIN_USER_IDS = []
 
+MAIN_GROUP_ID = -1002356524398
+
+# one-shot relay mode: (chat_id, user_id) -> True
+RELAY_NEXT_MESSAGE: dict[tuple[int, int], bool] = {}
+
+
+def _is_admin_user(message: Message) -> bool:
+    uid = int(message.from_user.id) if message.from_user else 0
+    return bool(uid and uid in ADMIN_USER_IDS)
+
+
+def _relay_key(message: Message) -> tuple[int, int]:
+    return (
+        int(message.chat.id),
+        int(message.from_user.id) if message.from_user else 0,
+    )
+
+
+def _relay_is_armed(message: Message) -> bool:
+    return RELAY_NEXT_MESSAGE.get(_relay_key(message), False)
+
+
+def _relay_arm(message: Message) -> None:
+    RELAY_NEXT_MESSAGE[_relay_key(message)] = True
+
+
+def _relay_disarm(message: Message) -> None:
+    RELAY_NEXT_MESSAGE.pop(_relay_key(message), None)
+
+
+def _relay_command_text(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return "режим пересылки" in t or "отправь в основную группу" in t
+
+
+async def _copy_to_main_group(message: Message) -> bool:
+    try:
+        await bot.copy_message(
+            chat_id=MAIN_GROUP_ID,
+            from_chat_id=int(message.chat.id),
+            message_id=int(message.message_id),
+        )
+        return True
+    except Exception as e:
+        print(f"[relay] copy failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+def _is_relayable_document(message: Message) -> bool:
+    doc = getattr(message, "document", None)
+    if not doc:
+        return False
+
+    mt = (getattr(doc, "mime_type", "") or "").lower()
+    return mt.startswith("image/") or mt.startswith("video/")
+
 # =========================
 # BOT
 # =========================
@@ -299,9 +354,6 @@ async def _run_news_for_message(message: Message, *, hours: int, limit: int) -> 
         print(f"[news] FAILED: {type(e).__name__}: {e}", flush=True)
         await message.answer("Новости сейчас не отдались (ошибка). Смотри логи [news].")
 
-        text = news_digest.build_html_message(items, hours=hours)
-        await message.answer(text, parse_mode="html")
-        news_digest.mark_digest_as_seen(items)
 
 # =========================
 # COMMANDS
@@ -853,6 +905,19 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 async def on_photo(message: Message) -> None:
     print("[IMG] photo handler triggered", flush=True)
 
+    if _relay_is_armed(message):
+        _relay_disarm(message)
+
+        if not _is_admin_user(message):
+            return
+
+        ok = await _copy_to_main_group(message)
+        if ok:
+            await message.answer("кинула.")
+        else:
+            await message.answer("не вышло.")
+        return
+
     if not _chat_allowed(message):
         return
 
@@ -914,9 +979,26 @@ async def on_photo(message: Message) -> None:
 
 @dp.message(F.document)
 async def on_image_document(message: Message) -> None:
-
     if not _chat_allowed(message):
         return
+
+    if _relay_is_armed(message):
+        _relay_disarm(message)
+
+        if not _is_admin_user(message):
+            return
+
+        if not _is_relayable_document(message):
+            await message.answer("это не картинка и не видео.")
+            return
+
+        ok = await _copy_to_main_group(message)
+        if ok:
+            await message.answer("кинула.")
+        else:
+            await message.answer("не вышло.")
+        return
+
     try:
         doc = message.document
 
@@ -971,6 +1053,25 @@ async def on_image_document(message: Message) -> None:
     except Exception as e:
         print(f"[img] doc error: {e}", flush=True)
 
+@dp.message(F.video)
+async def on_video(message: Message) -> None:
+    if not _chat_allowed(message):
+        return
+
+    if not _relay_is_armed(message):
+        return
+
+    _relay_disarm(message)
+
+    if not _is_admin_user(message):
+        return
+
+    ok = await _copy_to_main_group(message)
+    if ok:
+        await message.answer("кинула.")
+    else:
+        await message.answer("не вышло.")
+
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
     print(f"[DEBUG] msg_id={message.message_id} chat_id={message.chat.id} from={message.from_user.id if message.from_user else 0}", flush=True)
@@ -996,6 +1097,22 @@ async def vesya_handler(message: Message) -> None:
 
     text = (message.text or "").strip()
     orig_text = text
+
+    # =========================
+    # ONE-SHOT RELAY MODE
+    # =========================
+    if _relay_is_armed(message):
+        _relay_disarm(message)
+
+        if not _is_admin_user(message):
+            return
+
+        ok = await _copy_to_main_group(message)
+        if ok:
+            await message.answer("кинула.")
+        else:
+            await message.answer("не вышло.")
+        return
     # photo is handled below via reply-photo or LAST_USER_IMAGE_ID
 
     # In groups: react only when bot is addressed (name/command/reply)
@@ -1019,6 +1136,29 @@ async def vesya_handler(message: Message) -> None:
             if not text:
                 await message.answer("да?")
                 return
+
+    # =========================
+    # RELAY CANCEL / ARM
+    # =========================
+    if ("отбой" in text.lower() or "отмена" in text.lower()):
+        if not _is_admin_user(message):
+            return
+
+        if _relay_is_armed(message):
+            _relay_disarm(message)
+            await message.answer("ладно, не шлём.")
+        else:
+            await message.answer("и не собирались.")
+        return
+
+    if _relay_command_text(text):
+        if not _is_admin_user(message):
+            await message.answer("не тебе.")
+            return
+
+        _relay_arm(message)
+        await message.answer("кидай следующим сообщением.")
+        return
 
     print(f"[route] text={text!r}", flush=True)
 
@@ -1391,121 +1531,26 @@ async def ingest24_loop(bot: Bot) -> None:
 
         print("[ingest24] starting ingest_hours(24)", flush=True)
 
-       # === BROADCAST TARGETS ===
-        targets = []
-
-        # 1. Группы (список или один id)
-        _ids_env = (os.getenv("MORNING_CHAT_IDS") or os.getenv("MORNING_CHAT_ID") or "").strip()
-        if _ids_env:
-            for part in _ids_env.split(","):
-                part = part.strip()
-                if part:
-                    targets.append(int(part))
-
-        # 2. Все личные пользователи
-        targets.extend(list(_load_private_users()))
-
-        if not targets:
-            print("[ingest24] no targets, skip sending", flush=True)
-            continue
-
-        # === MORNING QUOTE TO ALL TARGETS ===
-        try:
-            for target_chat_id in targets:
-                seed = int(time.time()) ^ (abs(int(target_chat_id)) & 0xFFFF)
-                picked = chatgpt_dialog.pick_sarcastic_quote_ru(seed=seed, chat_id=target_chat_id)
-
-                body = str(picked.get("text") or "").strip()
-                author = str(picked.get("author") or "").strip()
-
-                if body:
-                    body_ru = chatgpt_dialog.translate_to_ru(body)
-                    quote_ru = f"{body_ru} — {author}" if author else body_ru
-                else:
-                    quote_ru = "Цитата не сформировалась."
-
-                try:
-                    await bot.send_message(
-                        target_chat_id,
-                        _format_morning_quote(quote_ru),
-                        parse_mode="html"
-                    )
-
-                    sent_path = picked.get("sent_path")
-                    sent_ids = set(picked.get("sent_ids") or [])
-                    picked_id = str(picked.get("id") or "").strip()
-
-                    if sent_path is not None and picked_id:
-                        sent_ids.add(picked_id)
-                        keep_last = max(500, int(picked.get("pool_size") or 0))
-                        sent_list = list(sent_ids)[-keep_last:]
-                        chatgpt_dialog._save_json_list(sent_path, sent_list)
-
-                    sent_path = picked.get("sent_path")
-                    sent_ids = set(picked.get("sent_ids") or [])
-                    picked_id = str(picked.get("id") or "").strip()
-
-                    if sent_path is not None and picked_id:
-                        sent_ids.add(picked_id)
-                        keep_last = max(500, int(picked.get("pool_size") or 0))
-                        sent_list = list(sent_ids)[-keep_last:]
-                        chatgpt_dialog._save_json_list(sent_path, sent_list)
-
-                except Exception as e:
-                    print(f"[ingest24] quote send error to {target_chat_id}: {e}", flush=True)
-        except Exception as e:
-            print(f"[ingest24] quote send error: {e}", flush=True)
         try:
             async with TG_LOCK:
                 await ingest_hours(24)
 
-            # отправка пользователю
+            print("[ingest24] auto-send disabled; ingest only", flush=True)
 
-            class Dummy:
-                def __init__(self, bot, chat_id, user_id):
-                    self.bot = bot
-                    self.chat = type("c", (), {"id": chat_id})
-                    self.message_id = 0
-                    self.from_user = type("u", (), {"id": user_id})
+            # при необходимости можно оставить обновление пулов
+            try:
+                _refresh_video_pool(MAIN_GROUP_ID)
+            except Exception as e:
+                print(f"[pool] video refresh error: {e}", flush=True)
 
-                async def answer(self, text, **kw):
-                    return await self.bot.send_message(self.chat.id, text, **kw)
-
-                async def answer_photo(self, photo, **kw):
-                    return await self.bot.send_photo(self.chat.id, photo, **kw)
-
-                async def answer_video(self, video, **kw):
-                    return await self.bot.send_video(self.chat.id, video, **kw)
-
-                async def answer_document(self, document, **kw):
-                    return await self.bot.send_document(self.chat.id, document, **kw)
-
-            for target_chat_id in targets:
-
-                dummy = Dummy(bot, target_chat_id, target_chat_id)
-
-                try:
-                    _refresh_video_pool(target_chat_id)
-                except Exception as e:
-                    print(f"[pool] video refresh error: {e}", flush=True)
-
-                try:
-                    _refresh_meme_pool(target_chat_id)
-                except Exception as e:
-                    print(f"[pool] meme refresh error: {e}", flush=True)
-
-                try:
-                    await _send_content(dummy, user_id=target_chat_id, ingest_hours_n=None, send_mode="get24")
-                except Exception as e:
-                    print(f"[ingest24] send error to {target_chat_id}: {e}", flush=True)
-
-                users = _load_private_users()
-                if target_chat_id in users:
-                    users.discard(target_chat_id)
-                    _save_private_users(users)
+            try:
+                _refresh_meme_pool(MAIN_GROUP_ID)
+            except Exception as e:
+                print(f"[pool] meme refresh error: {e}", flush=True)
 
         except Exception as e:
             print(f"[ingest24] error: {e}", flush=True)
+
 async def heartbeat_loop() -> None:
     while True:
         _log("heartbeat")
