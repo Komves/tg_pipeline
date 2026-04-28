@@ -1161,9 +1161,91 @@ async def vesya_handler(message: Message) -> None:
         return
 
     print(f"[route] text={text!r}", flush=True)
+    
+    # =========================
+    # MANUAL YOUTUBE SEARCH
+    # =========================
+    import re
 
-    if not text:
-        return
+    def _extract_manual_youtube_query(text: str) -> str | None:
+        t = (text or "").strip()
+        t = re.sub(r"^\s*(веся|веслава|веська)\s*[,.:;-]?\s*", "", t, flags=re.I)
+        tl = t.lower()
+
+        triggers = [
+            "найди мне клип",
+            "найди клип",
+            "найди видео",
+            "найди на ютубе",
+            "найди в ютубе",
+            "поищи клип",
+            "поищи видео",
+        ]
+
+        for tr in triggers:
+            if tl.startswith(tr):
+                q = t[len(tr):].strip(" ,.:;-")
+                return q or None
+
+        return None
+
+
+    async def _youtube_manual_search(query: str) -> dict | None:
+        import urllib.parse, urllib.request, json
+
+        api_key = (os.getenv("YT_API_KEY") or "").strip()
+        if not api_key:
+            return None
+
+        params = urllib.parse.urlencode({
+            "part": "snippet",
+            "type": "video",
+            "maxResults": "1",
+            "q": query,
+            "key": api_key,
+        })
+
+        url = "https://www.googleapis.com/youtube/v3/search?" + params
+
+        def _load():
+            with urllib.request.urlopen(url, timeout=10) as r:
+                return json.loads(r.read().decode("utf-8"))
+
+        data = await asyncio.to_thread(_load)
+        items = data.get("items") or []
+        if not items:
+            return None
+
+        x = items[0]
+        vid = (x.get("id") or {}).get("videoId")
+        title = (x.get("snippet") or {}).get("title")
+
+        if not vid:
+            return None
+
+        return {
+            "title": title,
+            "url": f"https://www.youtube.com/watch?v={vid}",
+        }
+
+
+    yt_query = _extract_manual_youtube_query(text)
+    if yt_query:
+        await message.answer("Ща найду...")
+
+        try:
+            found = await _youtube_manual_search(yt_query)
+            if not found:
+                await message.answer("Не нашла.")
+                return
+
+            await message.answer(f"{found['title']}\n{found['url']}")
+            return
+
+        except Exception as e:
+            print(f"[yt_manual] error: {e}", flush=True)
+            await message.answer("Ошибка поиска.")
+            return
 
     # =========================
     # PHOTO CONTEXT: describe only when user asked
