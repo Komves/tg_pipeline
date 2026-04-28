@@ -1192,17 +1192,56 @@ async def vesya_handler(message: Message) -> None:
 
     async def _youtube_manual_search(query: str) -> dict | None:
         import urllib.parse, urllib.request, json
+        from openai import OpenAI
 
         api_key = (os.getenv("YT_API_KEY") or "").strip()
         if not api_key:
+            print("[yt_manual] missing YT_API_KEY", flush=True)
             return None
+
+        openai_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+
+        raw_query = (query or "").strip()
+        clean_query = raw_query
+
+        if openai_key and raw_query:
+            try:
+                client = OpenAI(api_key=openai_key)
+                resp = client.responses.create(
+                    model=os.getenv("V_DIALOG_MODEL", "gpt-4o-mini"),
+                    input=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Ты чистишь пользовательский запрос для поиска музыкального клипа на YouTube. "
+                                "Убери обращение к боту, эмоции, оскорбления, мусорные слова, кавычки и лишние пояснения. "
+                                "Оставь только исполнитель + название песни + слова 'официальный клип' или 'клип'. "
+                                "Если исполнитель написан в падеже, приведи к нормальной форме. "
+                                "Верни только одну поисковую строку, без пояснений."
+                            ),
+                        },
+                        {"role": "user", "content": raw_query},
+                    ],
+                )
+                clean_query = (getattr(resp, "output_text", "") or "").strip()
+                clean_query = clean_query.replace("\n", " ").strip()
+                if not clean_query:
+                    clean_query = raw_query
+            except Exception as e:
+                print(f"[yt_manual_gpt] clean failed: {type(e).__name__}: {e}", flush=True)
+                clean_query = raw_query
+
+        print(f"[yt_manual] raw_query={raw_query!r} clean_query={clean_query!r}", flush=True)
 
         params = urllib.parse.urlencode({
             "part": "snippet",
             "type": "video",
-            "maxResults": "1",
-            "q": query,
+            "maxResults": "5",
+            "q": clean_query,
             "key": api_key,
+            "order": "relevance",
+            "videoDuration": "medium",
+            "safeSearch": "none",
         })
 
         url = "https://www.googleapis.com/youtube/v3/search?" + params
@@ -1216,7 +1255,18 @@ async def vesya_handler(message: Message) -> None:
         if not items:
             return None
 
-        x = items[0]
+        x = None
+        for item in items:
+            title0 = ((item.get("snippet") or {}).get("title") or "").lower()
+            desc0 = ((item.get("snippet") or {}).get("description") or "").lower()
+            if "#shorts" in title0 or "#shorts" in desc0 or "shorts" in title0:
+                continue
+            x = item
+            break
+
+        if x is None:
+            x = items[0]
+
         vid = (x.get("id") or {}).get("videoId")
         title = (x.get("snippet") or {}).get("title")
 
@@ -1227,7 +1277,6 @@ async def vesya_handler(message: Message) -> None:
             "title": title,
             "url": f"https://www.youtube.com/watch?v={vid}",
         }
-
 
     yt_query = _extract_manual_youtube_query(text)
     if yt_query:
