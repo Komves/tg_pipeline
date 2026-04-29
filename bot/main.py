@@ -1164,7 +1164,8 @@ async def vesya_handler(message: Message) -> None:
 
     # === GMAIL CONNECT COMMAND ===
     if "подключи почту" in text.lower():
-        url = "https://vesya-auth.onrender.com/auth/google/start"
+        user_id = message.from_user.id
+        url = f"https://vesya-auth.onrender.com/auth/google/start?user_id={user_id}"
         await message.answer(f"Подключи почту:\n{url}")
         return
     
