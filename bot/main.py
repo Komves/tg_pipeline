@@ -1369,6 +1369,43 @@ async def vesya_handler(message: Message) -> None:
 
         return
     
+    # === GMAIL DISCONNECT COMMAND ===
+    if "отключи почту" in text.lower():
+        if message.chat.type != "private":
+            await message.answer("почту отключаем только в личке.")
+            return
+
+        try:
+            import requests
+
+            supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+            supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
+            user_id = int(message.from_user.id)
+
+            r = requests.delete(
+                f"{supabase_url}/rest/v1/gmail_accounts",
+                headers={
+                    "apikey": supabase_key,
+                    "Authorization": f"Bearer {supabase_key}",
+                    "Prefer": "return=minimal",
+                },
+                params={"user_id": f"eq.{user_id}"},
+                timeout=20,
+            )
+
+            if r.status_code >= 300:
+                await message.answer(f"не отключила: {r.status_code} {r.text[:300]}")
+                return
+
+            GMAIL_LAST_MESSAGES.pop(user_id, None)
+            await message.answer("почту отключила.")
+
+        except Exception as e:
+            print(f"[gmail_disconnect] failed: {type(e).__name__}: {e}", flush=True)
+            await message.answer(f"не отключила: {type(e).__name__}: {e}")
+
+        return
+
     # =========================
     # MANUAL YOUTUBE SEARCH
     # =========================
