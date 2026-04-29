@@ -1161,6 +1161,12 @@ async def vesya_handler(message: Message) -> None:
         return
 
     print(f"[route] text={text!r}", flush=True)
+
+    # === GMAIL CONNECT COMMAND ===
+    if "подключи почту" in text.lower():
+        url = "https://vesya-auth.onrender.com/auth/google/start"
+        await message.answer(f"Подключи почту:\n{url}")
+        return
     
     # =========================
     # MANUAL YOUTUBE SEARCH
