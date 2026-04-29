@@ -1169,6 +1169,113 @@ async def vesya_handler(message: Message) -> None:
         await message.answer(f"Подключи почту:\n{url}")
         return
     
+    # === GMAIL CHECK COMMAND ===
+    if "проверь почту" in text.lower():
+        await message.answer("смотрю почту...")
+
+        try:
+            import requests
+
+            supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+            supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
+
+            user_id = int(message.from_user.id)
+
+            r = requests.get(
+                f"{supabase_url}/rest/v1/gmail_accounts",
+                headers={
+                    "apikey": supabase_key,
+                    "Authorization": f"Bearer {supabase_key}",
+                },
+                params={
+                    "select": "creds_json",
+                    "user_id": f"eq.{user_id}",
+                    "order": "id.desc",
+                    "limit": "1",
+                },
+                timeout=20,
+            )
+
+            if r.status_code >= 300:
+                await message.answer(f"ошибка Supabase: {r.status_code}")
+                return
+
+            rows = r.json()
+            if not rows:
+                await message.answer("почта не подключена")
+                return
+
+            creds = rows[0].get("creds_json") or {}
+            refresh_token = creds.get("refresh_token")
+
+            if not refresh_token:
+                await message.answer("refresh_token не найден")
+                return
+
+            token_res = requests.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                    "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+                timeout=20,
+            ).json()
+
+            access_token = token_res.get("access_token")
+            if not access_token:
+                await message.answer(f"не смогла обновить токен: {token_res}")
+                return
+
+            gmail_res = requests.get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"maxResults": "5", "q": "in:inbox"},
+                timeout=20,
+            ).json()
+
+            messages = gmail_res.get("messages") or []
+            if not messages:
+                await message.answer("в inbox писем не вижу")
+                return
+
+            out = []
+            for m in messages[:5]:
+                msg_id = m.get("id")
+                if not msg_id:
+                    continue
+
+                detail = requests.get(
+                    f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={
+                        "format": "metadata",
+                        "metadataHeaders": ["From", "Subject", "Date"],
+                    },
+                    timeout=20,
+                ).json()
+
+                headers = {
+                    h.get("name"): h.get("value")
+                    for h in detail.get("payload", {}).get("headers", [])
+                }
+
+                out.append(
+                    "📩 Письмо\n"
+                    f"От: {headers.get('From', '')}\n"
+                    f"Тема: {headers.get('Subject', 'без темы')}\n"
+                    f"Дата: {headers.get('Date', '')}\n"
+                    f"{detail.get('snippet', '')}"
+                )
+
+            await message.answer("\n\n".join(out)[:3900])
+
+        except Exception as e:
+            print(f"[gmail_check] failed: {type(e).__name__}: {e}", flush=True)
+            await message.answer("почту не прочитала. смотри логи [gmail_check].")
+
+        return    
     # =========================
     # MANUAL YOUTUBE SEARCH
     # =========================
