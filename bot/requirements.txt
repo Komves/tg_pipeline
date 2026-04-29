@@ -4,3 +4,7 @@ pillow
 requests==2.31.0
 openai>=1.40.0
 yt-dlp==2026.02.04
+fastapi
+uvicorn
+google-auth
+google-auth-oauthlib
