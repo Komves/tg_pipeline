@@ -747,10 +747,18 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
             print(f"[send] size check failed meme: {abs_path}: {e}", flush=True)
             continue
 
-        await message.answer_photo(
-            FSInputFile(abs_path),
-            reply_markup=fb_kb(item_id),
-        )
+        try:
+            await message.answer_photo(
+                FSInputFile(abs_path),
+                reply_markup=fb_kb(item_id),
+            )
+        except Exception as e:
+            print(
+                f"[send][meme] FAILED item_id={item_id} path={abs_path}: {type(e).__name__}: {e}",
+                flush=True,
+            )
+            continue
+
         sentm.add(item_id)
 
         from datetime import datetime, timezone
@@ -2127,15 +2135,30 @@ async def on_gmail_open(cb):
         ).json()
 
         def _walk(payload):
+            if not payload:
+                return ""
+
+            mime = payload.get("mimeType", "")
             body = payload.get("body", {}) or {}
             data = body.get("data")
-            mime = payload.get("mimeType", "")
-            if data and "text/plain" in mime:
-                return base64.urlsafe_b64decode(data + "===").decode("utf-8", errors="replace")
+
+            if data and mime == "text/plain":
+                try:
+                    return base64.urlsafe_b64decode(data + "===").decode("utf-8", errors="replace")
+                except Exception:
+                    return ""
+
+            for p in payload.get("parts", []) or []:
+                if p.get("mimeType") == "text/plain":
+                    got = _walk(p)
+                    if got:
+                        return got
+
             for p in payload.get("parts", []) or []:
                 got = _walk(p)
                 if got:
                     return got
+
             return ""
 
         full_text = _walk(detail.get("payload") or {}) or detail.get("snippet", "")
