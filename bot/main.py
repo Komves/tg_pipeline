@@ -23,6 +23,7 @@ from meme_ranker import rank_memes
 import c_youtube_fetcher
 # deploy trigger
 RECENT_MSG_IDS = {}
+GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]
 # last image per (chat_id, user_id) to support "опиши фото" without reply
 LAST_USER_IMAGE_ID = {}  # (chat_id:int, user_id:int) -> file_id:str
 
@@ -1168,7 +1169,7 @@ async def vesya_handler(message: Message) -> None:
         url = f"https://vesya-auth.onrender.com/auth/google/start?user_id={user_id}"
         await message.answer(f"Подключи почту:\n{url}")
         return
-    
+        
     # === GMAIL CHECK COMMAND ===
     if "проверь почту" in text.lower():
         await message.answer("смотрю почту...")
@@ -1240,8 +1241,10 @@ async def vesya_handler(message: Message) -> None:
                 await message.answer("в inbox писем не вижу")
                 return
 
-            out = []
-            for m in messages[:5]:
+            saved = []
+            lines = ["📬 Последние письма:"]
+
+            for idx, m in enumerate(messages[:5], start=1):
                 msg_id = m.get("id")
                 if not msg_id:
                     continue
@@ -1261,21 +1264,105 @@ async def vesya_handler(message: Message) -> None:
                     for h in detail.get("payload", {}).get("headers", [])
                 }
 
-                out.append(
-                    "📩 Письмо\n"
-                    f"От: {headers.get('From', '')}\n"
-                    f"Тема: {headers.get('Subject', 'без темы')}\n"
-                    f"Дата: {headers.get('Date', '')}\n"
-                    f"{detail.get('snippet', '')}"
+                subj = headers.get("Subject", "без темы")
+                frm = headers.get("From", "")
+                snippet = detail.get("snippet", "")
+
+                saved.append({
+                    "id": msg_id,
+                    "from": frm,
+                    "subject": subj,
+                    "date": headers.get("Date", ""),
+                    "snippet": snippet,
+                    "access_token": access_token,
+                })
+
+                lines.append(
+                    f"\n{idx}. 📩 {subj}\n"
+                    f"От: {frm}\n"
+                    f"Кратко: {snippet[:220]}"
                 )
 
-            await message.answer("\n\n".join(out)[:3900])
+            GMAIL_LAST_MESSAGES[user_id] = saved
+
+            await message.answer(
+                "\n".join(lines)[:3900]
+                + "\n\nЧтобы открыть полностью: Веся письмо 1"
+            )
 
         except Exception as e:
             print(f"[gmail_check] failed: {type(e).__name__}: {e}", flush=True)
-            await message.answer("почту не прочитала. смотри логи [gmail_check].")
+            await message.answer(f"почту не прочитала: {type(e).__name__}: {e}")
 
-        return    
+        return
+    
+    # === GMAIL OPEN MESSAGE COMMAND ===
+    if "письмо " in text.lower():
+        try:
+            import re
+            import base64
+            import requests
+
+            user_id = int(message.from_user.id)
+            mm = re.search(r"письмо\s+(\d+)", text.lower())
+            if not mm:
+                return
+
+            n = int(mm.group(1))
+            cached = GMAIL_LAST_MESSAGES.get(user_id) or []
+
+            if n < 1 or n > len(cached):
+                await message.answer("такого номера письма нет. сначала: Веся проверь почту")
+                return
+
+            item = cached[n - 1]
+            access_token = item["access_token"]
+            msg_id = item["id"]
+
+            detail = requests.get(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"format": "full"},
+                timeout=20,
+            ).json()
+
+            def _walk_parts(payload):
+                if not payload:
+                    return ""
+                body = payload.get("body", {}) or {}
+                data = body.get("data")
+                mime = payload.get("mimeType", "")
+                if data and ("text/plain" in mime or mime == ""):
+                    try:
+                        raw = base64.urlsafe_b64decode(data + "===")
+                        return raw.decode("utf-8", errors="replace")
+                    except Exception:
+                        return ""
+                for p in payload.get("parts", []) or []:
+                    got = _walk_parts(p)
+                    if got:
+                        return got
+                return ""
+
+            full_text = _walk_parts(detail.get("payload") or {})
+            if not full_text:
+                full_text = detail.get("snippet", "")
+
+            out = (
+                f"📩 {item.get('subject')}\n"
+                f"От: {item.get('from')}\n"
+                f"Дата: {item.get('date')}\n\n"
+                f"{full_text}"
+            )
+
+            await message.answer(out[:3900])
+
+        except Exception as e:
+            print(f"[gmail_open] failed: {type(e).__name__}: {e}", flush=True)
+            await message.answer(f"письмо не открыла: {type(e).__name__}: {e}")
+
+        return
+    
     # =========================
     # MANUAL YOUTUBE SEARCH
     # =========================
