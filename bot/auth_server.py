@@ -7,6 +7,25 @@ from google_auth_oauthlib.flow import Flow
 
 app = FastAPI()
 
+import os
+from fastapi.responses import RedirectResponse
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+
+@app.get("/auth/google/start")
+async def google_start():
+    url = (
+        "https://accounts.google.com/o/oauth2/v2/auth"
+        f"?client_id={GOOGLE_CLIENT_ID}"
+        f"&redirect_uri={GOOGLE_REDIRECT_URI}"
+        "&response_type=code"
+        "&scope=https://www.googleapis.com/auth/gmail.readonly"
+        "&access_type=offline"
+        "&prompt=consent"
+    )
+    return RedirectResponse(url)
+
 DATA_DIR = Path(os.getenv("DATA_DIR", "/tmp"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
