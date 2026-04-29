@@ -7,8 +7,8 @@ from google_auth_oauthlib.flow import Flow
 
 app = FastAPI()
 
-DATA_DIR = Path("/data")
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR = Path(os.getenv("DATA_DIR", "/tmp"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 CLIENT_ID = os.getenv("GMAIL_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET")
