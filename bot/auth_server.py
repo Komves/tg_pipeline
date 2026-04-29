@@ -20,7 +20,7 @@ async def google_start(user_id: int):
     f"?client_id={GOOGLE_CLIENT_ID}"
     f"&redirect_uri={GOOGLE_REDIRECT_URI}"
     "&response_type=code"
-    "&scope=https://www.googleapis.com/auth/gmail.readonly"
+    "&scope=https://www.googleapis.com/auth/gmail.modify"
     "&access_type=offline"
     "&prompt=consent"
     f"&state={user_id}"
@@ -93,8 +93,7 @@ CLIENT_ID = os.getenv("GMAIL_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("GMAIL_REDIRECT_URI")
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 def _client_config():
     return {

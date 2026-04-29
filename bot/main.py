@@ -24,7 +24,8 @@ import c_youtube_fetcher
 # deploy trigger
 RECENT_MSG_IDS = {}
 GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]
-# last image per (chat_id, user_id) to support "опиши фото" without reply
+GMAIL_POLL_INTERVAL_SEC = int(os.getenv("GMAIL_POLL_INTERVAL_SEC", "900"))
+GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]# last image per (chat_id, user_id) to support "опиши фото" without reply
 LAST_USER_IMAGE_ID = {}  # (chat_id:int, user_id:int) -> file_id:str
 
 # =========================
@@ -1176,30 +1177,35 @@ async def vesya_handler(message: Message) -> None:
 
         try:
             import requests
+            from openai import OpenAI
+
+            def _ru_summary(s: str) -> str:
+                key = (os.getenv("OPENAI_API_KEY") or "").strip()
+                if not key:
+                    return s[:260]
+                try:
+                    client = OpenAI(api_key=key)
+                    r = client.responses.create(
+                        model=os.getenv("V_DIALOG_MODEL", "gpt-4o-mini"),
+                        input=[
+                            {"role": "system", "content": "Кратко переведи и перескажи письмо по-русски в 1-2 строки. Без воды."},
+                            {"role": "user", "content": s[:2500]},
+                        ],
+                    )
+                    return (getattr(r, "output_text", "") or s[:260]).strip()
+                except Exception:
+                    return s[:260]
 
             supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
             supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
-
             user_id = int(message.from_user.id)
 
             r = requests.get(
                 f"{supabase_url}/rest/v1/gmail_accounts",
-                headers={
-                    "apikey": supabase_key,
-                    "Authorization": f"Bearer {supabase_key}",
-                },
-                params={
-                    "select": "creds_json",
-                    "user_id": f"eq.{user_id}",
-                    "order": "id.desc",
-                    "limit": "1",
-                },
+                headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"},
+                params={"select": "creds_json", "user_id": f"eq.{user_id}", "order": "id.desc", "limit": "1"},
                 timeout=20,
             )
-
-            if r.status_code >= 300:
-                await message.answer(f"ошибка Supabase: {r.status_code}")
-                return
 
             rows = r.json()
             if not rows:
@@ -1208,7 +1214,6 @@ async def vesya_handler(message: Message) -> None:
 
             creds = rows[0].get("creds_json") or {}
             refresh_token = creds.get("refresh_token")
-
             if not refresh_token:
                 await message.answer("refresh_token не найден")
                 return
@@ -1242,8 +1247,6 @@ async def vesya_handler(message: Message) -> None:
                 return
 
             saved = []
-            lines = ["📬 Последние письма:"]
-
             for idx, m in enumerate(messages[:5], start=1):
                 msg_id = m.get("id")
                 if not msg_id:
@@ -1252,43 +1255,38 @@ async def vesya_handler(message: Message) -> None:
                 detail = requests.get(
                     f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
                     headers={"Authorization": f"Bearer {access_token}"},
-                    params={
-                        "format": "metadata",
-                        "metadataHeaders": ["From", "Subject", "Date"],
-                    },
+                    params={"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]},
                     timeout=20,
                 ).json()
 
-                headers = {
-                    h.get("name"): h.get("value")
-                    for h in detail.get("payload", {}).get("headers", [])
-                }
-
+                headers = {h.get("name"): h.get("value") for h in detail.get("payload", {}).get("headers", [])}
                 subj = headers.get("Subject", "без темы")
                 frm = headers.get("From", "")
+                date = headers.get("Date", "")
                 snippet = detail.get("snippet", "")
 
                 saved.append({
                     "id": msg_id,
                     "from": frm,
                     "subject": subj,
-                    "date": headers.get("Date", ""),
+                    "date": date,
                     "snippet": snippet,
                     "access_token": access_token,
                 })
 
-                lines.append(
-                    f"\n{idx}. 📩 {subj}\n"
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="Открыть", callback_data=f"gmail_open:{idx}"),
+                    InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del:{idx}"),
+                ]])
+
+                await message.answer(
+                    f"{idx}. 📩 {subj}\n"
                     f"От: {frm}\n"
-                    f"Кратко: {snippet[:220]}"
+                    f"Кратко: {_ru_summary(snippet)}",
+                    reply_markup=kb,
                 )
 
             GMAIL_LAST_MESSAGES[user_id] = saved
-
-            await message.answer(
-                "\n".join(lines)[:3900]
-                + "\n\nЧтобы открыть полностью: Веся письмо 1"
-            )
 
         except Exception as e:
             print(f"[gmail_check] failed: {type(e).__name__}: {e}", flush=True)
@@ -1888,6 +1886,194 @@ async def heartbeat_loop() -> None:
         _log("heartbeat")
         await asyncio.sleep(300)
 
+async def gmail_poll_loop() -> None:
+    await asyncio.sleep(30)
+
+    while True:
+        try:
+            await _gmail_poll_once()
+        except Exception as e:
+            print(f"[gmail_poll] failed: {type(e).__name__}: {e}", flush=True)
+
+        await asyncio.sleep(GMAIL_POLL_INTERVAL_SEC)
+
+
+async def _gmail_poll_once() -> None:
+    import requests
+    from datetime import datetime, timezone
+    from openai import OpenAI
+
+    def _parse_iso_ms(value: str | None) -> int:
+        if not value:
+            return 0
+        try:
+            v = str(value).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(v)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            return 0
+
+    def _ru_summary(text: str) -> str:
+        key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        if not key:
+            return (text or "")[:260]
+
+        try:
+            client = OpenAI(api_key=key)
+            r = client.responses.create(
+                model=os.getenv("V_DIALOG_MODEL", "gpt-4o-mini"),
+                input=[
+                    {
+                        "role": "system",
+                        "content": "Кратко переведи и перескажи письмо по-русски в 1-2 строки. Без воды.",
+                    },
+                    {
+                        "role": "user",
+                        "content": (text or "")[:2500],
+                    },
+                ],
+            )
+            return (getattr(r, "output_text", "") or text[:260]).strip()
+        except Exception:
+            return (text or "")[:260]
+
+    supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
+
+    if not supabase_url or not supabase_key:
+        print("[gmail_poll] SUPABASE_URL/SUPABASE_KEY empty", flush=True)
+        return
+
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+    }
+
+    acc_res = requests.get(
+        f"{supabase_url}/rest/v1/gmail_accounts",
+        headers=headers,
+        params={
+            "select": "id,user_id,creds_json,last_checked,created_at,lang",
+            "order": "id.desc",
+            "limit": "100",
+        },
+        timeout=20,
+    )
+
+    if acc_res.status_code >= 300:
+        print(f"[gmail_poll] supabase accounts failed: {acc_res.status_code} {acc_res.text}", flush=True)
+        return
+
+    accounts = acc_res.json() or []
+
+    for acc in accounts:
+        acc_id = acc.get("id")
+        user_id = int(acc.get("user_id") or 0)
+
+        if not acc_id or not user_id:
+            continue
+
+        creds = acc.get("creds_json") or {}
+        refresh_token = creds.get("refresh_token")
+
+        if not refresh_token:
+            continue
+
+        last_ms = _parse_iso_ms(acc.get("last_checked") or acc.get("created_at"))
+
+        token_res = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=20,
+        ).json()
+
+        access_token = token_res.get("access_token")
+        if not access_token:
+            print(f"[gmail_poll] token refresh failed user_id={user_id}: {token_res}", flush=True)
+            continue
+
+        list_res = requests.get(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"maxResults": "10", "q": "in:inbox"},
+            timeout=20,
+        ).json()
+
+        messages = list_res.get("messages") or []
+        new_items = []
+
+        for m in messages:
+            msg_id = m.get("id")
+            if not msg_id:
+                continue
+
+            detail = requests.get(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={
+                    "format": "metadata",
+                    "metadataHeaders": ["From", "Subject", "Date"],
+                },
+                timeout=20,
+            ).json()
+
+            internal_ms = int(detail.get("internalDate") or 0)
+            if internal_ms <= last_ms:
+                continue
+
+            msg_headers = {
+                h.get("name"): h.get("value")
+                for h in detail.get("payload", {}).get("headers", [])
+            }
+
+            new_items.append({
+                "id": msg_id,
+                "from": msg_headers.get("From", ""),
+                "subject": msg_headers.get("Subject", "без темы"),
+                "date": msg_headers.get("Date", ""),
+                "snippet": detail.get("snippet", ""),
+                "access_token": access_token,
+            })
+
+        if new_items:
+            GMAIL_LAST_MESSAGES[user_id] = new_items[:10]
+
+            for idx, item in enumerate(new_items[:5], start=1):
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="Открыть", callback_data=f"gmail_open:{idx}"),
+                    InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del:{idx}"),
+                ]])
+
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"{idx}. 📩 {item.get('subject')}\n"
+                        f"От: {item.get('from')}\n"
+                        f"Кратко: {_ru_summary(item.get('snippet') or '')}"
+                    ),
+                    reply_markup=kb,
+                )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        requests.patch(
+            f"{supabase_url}/rest/v1/gmail_accounts",
+            headers={
+                **headers,
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            params={"id": f"eq.{acc_id}"},
+            json={"last_checked": now_iso},
+            timeout=20,
+        )
 # =========================
 # START
 # =========================
@@ -1895,6 +2081,7 @@ async def main() -> None:
     _log("starting aiogram polling")
     asyncio.create_task(heartbeat_loop())
     asyncio.create_task(ingest24_loop(bot))
+    asyncio.create_task(gmail_poll_loop())
     await dp.start_polling(bot)
 
 @dp.callback_query(F.data.startswith("fb:"))
@@ -1914,7 +2101,111 @@ async def on_feedback(cb):
     except Exception:
         pass
 
+@dp.callback_query(F.data.startswith("gmail_open:"))
+async def on_gmail_open(cb):
+    try:
+        import base64
+        import requests
+        from openai import OpenAI
 
+        n = int(cb.data.split(":")[1])
+        user_id = int(cb.from_user.id)
+        cached = GMAIL_LAST_MESSAGES.get(user_id) or []
+
+        if n < 1 or n > len(cached):
+            await cb.message.answer("сначала: Веся проверь почту")
+            return
+
+        item = cached[n - 1]
+        access_token = item["access_token"]
+
+        detail = requests.get(
+            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{item['id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"format": "full"},
+            timeout=20,
+        ).json()
+
+        def _walk(payload):
+            body = payload.get("body", {}) or {}
+            data = body.get("data")
+            mime = payload.get("mimeType", "")
+            if data and "text/plain" in mime:
+                return base64.urlsafe_b64decode(data + "===").decode("utf-8", errors="replace")
+            for p in payload.get("parts", []) or []:
+                got = _walk(p)
+                if got:
+                    return got
+            return ""
+
+        full_text = _walk(detail.get("payload") or {}) or detail.get("snippet", "")
+
+        key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        translated = full_text
+        if key:
+            try:
+                client = OpenAI(api_key=key)
+                r = client.responses.create(
+                    model=os.getenv("V_DIALOG_MODEL", "gpt-4o-mini"),
+                    input=[
+                        {"role": "system", "content": "Переведи письмо на русский. Сохрани смысл, без лишних комментариев."},
+                        {"role": "user", "content": full_text[:6000]},
+                    ],
+                )
+                translated = (getattr(r, "output_text", "") or full_text).strip()
+            except Exception:
+                translated = full_text
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del:{n}"),
+        ]])
+
+        await cb.message.answer(
+            f"📩 {item.get('subject')}\n"
+            f"От: {item.get('from')}\n"
+            f"Дата: {item.get('date')}\n\n"
+            f"{translated[:3300]}",
+            reply_markup=kb,
+        )
+        await cb.answer()
+
+    except Exception as e:
+        print(f"[gmail_open] failed: {type(e).__name__}: {e}", flush=True)
+        await cb.message.answer(f"письмо не открыла: {type(e).__name__}: {e}")
+
+
+@dp.callback_query(F.data.startswith("gmail_del:"))
+async def on_gmail_delete(cb):
+    try:
+        import requests
+
+        n = int(cb.data.split(":")[1])
+        user_id = int(cb.from_user.id)
+        cached = GMAIL_LAST_MESSAGES.get(user_id) or []
+
+        if n < 1 or n > len(cached):
+            await cb.message.answer("сначала: Веся проверь почту")
+            return
+
+        item = cached[n - 1]
+        access_token = item["access_token"]
+
+        rr = requests.post(
+            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{item['id']}/trash",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=20,
+        )
+
+        if rr.status_code >= 300:
+            await cb.message.answer(f"не удалила: {rr.status_code} {rr.text[:300]}")
+            return
+
+        await cb.message.answer(f"удалила: {item.get('subject')}")
+        await cb.answer("удалено")
+
+    except Exception as e:
+        print(f"[gmail_del] failed: {type(e).__name__}: {e}", flush=True)
+        await cb.message.answer(f"не удалила: {type(e).__name__}: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
