@@ -72,8 +72,39 @@ async def oauth(request: Request):
         data = json.loads(state_file.read_text())
         user_id = data["user_id"]
 
-        token_file = DATA_DIR / f"gmail_{user_id}.json"
-        token_file.write_text(creds.to_json(), encoding="utf-8")
+        import requests
+
+        supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+        supabase_key = os.getenv("SUPABASE_KEY") or ""
+
+        if not supabase_url or not supabase_key:
+            return JSONResponse({"error": "SUPABASE_URL or SUPABASE_KEY is empty"}, status_code=500)
+
+        payload = {
+            "user_id": int(user_id),
+            "email": "unknown",
+            "creds_json": json.loads(creds.to_json()),
+        }
+
+        headers = {
+            "apikey": supabase_key,
+            "Authorization": f"Bearer {supabase_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        }
+
+        r = requests.post(
+            f"{supabase_url}/rest/v1/gmail_accounts",
+            headers=headers,
+            json=payload,
+            timeout=15,
+        )
+
+        if r.status_code >= 300:
+            return JSONResponse(
+                {"error": "supabase insert failed", "status": r.status_code, "body": r.text},
+                status_code=500,
+            )
 
         return JSONResponse({"status": "ok", "message": "Gmail подключен"})
 
