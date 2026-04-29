@@ -46,10 +46,37 @@ async def google_callback(code: str):
     r = requests.post(token_url, data=data)
     token_json = r.json()
 
-    return {
-        "status": "ok",
-        "token": token_json
-    }
+    from supabase import create_client
+
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    @app.get("/auth/google/callback")
+    async def google_callback(code: str):
+
+        token_url = "https://oauth2.googleapis.com/token"
+
+        data = {
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        }
+
+        r = requests.post(token_url, data=data)
+        token_json = r.json()
+
+        supabase.table("gmail_accounts").insert({
+            "email": token_json.get("id_token", ""),
+            "access_token": token_json.get("access_token"),
+            "refresh_token": token_json.get("refresh_token"),
+            "raw": token_json
+        }).execute()
+
+        return {"status": "saved"}
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/tmp"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
