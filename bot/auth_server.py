@@ -47,22 +47,42 @@ async def google_callback(code: str, state: str | None = None):
     r = requests.post(token_url, data=data)
     token_json = r.json()
 
-    from supabase import create_client
+    supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
 
-    SUPABASE_URL = os.getenv("SUPABASE_URL")
-    SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    if not supabase_url or not supabase_key:
+        return JSONResponse(
+            {"error": "SUPABASE_URL or SUPABASE_SERVICE_KEY is empty"},
+            status_code=500,
+        )
 
     user_id = int(state) if state else None
 
-    supabase.table("gmail_accounts").insert({
+    payload = {
         "user_id": user_id,
-        "email": token_json.get("id_token", ""),
-        "access_token": token_json.get("access_token"),
-        "refresh_token": token_json.get("refresh_token"),
-        "raw": token_json
-    }).execute()
+        "email": "unknown",
+        "creds_json": token_json,
+    }
+
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+
+    rr = requests.post(
+        f"{supabase_url}/rest/v1/gmail_accounts",
+        headers=headers,
+        json=payload,
+        timeout=20,
+    )
+
+    if rr.status_code >= 300:
+        return JSONResponse(
+            {"error": "supabase insert failed", "status": rr.status_code, "body": rr.text},
+            status_code=500,
+        )
 
     return {"status": "saved", "user_id": user_id}
 
