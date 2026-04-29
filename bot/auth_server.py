@@ -14,7 +14,7 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 
 @app.get("/auth/google/start")
-async def google_start():
+async def google_start(user_id: int):
     url = (
     "https://accounts.google.com/o/oauth2/v2/auth"
     f"?client_id={GOOGLE_CLIENT_ID}"
@@ -23,6 +23,7 @@ async def google_start():
     "&scope=https://www.googleapis.com/auth/gmail.readonly"
     "&access_type=offline"
     "&prompt=consent"
+    f"&state={user_id}"
     "&include_granted_scopes=true"
 )
     return RedirectResponse(url)
