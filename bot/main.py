@@ -508,7 +508,7 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
                 await message.answer_video(
                     FSInputFile(tmp_path),
                     reply_markup=fb_kb(item_id),
-                    request_timeout=int(os.getenv("V_VIDEO_SEND_TIMEOUT", "180")),
+                    request_timeout=int(os.getenv("V_VIDEO_SEND_TIMEOUT", "45")),
                 )
                 sentv.add(item_id)
                 from datetime import datetime, timezone
@@ -2013,7 +2013,15 @@ async def _gmail_poll_once() -> None:
 
     accounts = acc_res.json() or []
 
+    seen_users = set()
+
     for acc in accounts:
+        uid_key = int(acc.get("user_id") or 0)
+        if not uid_key:
+            continue
+        if uid_key in seen_users:
+            continue
+        seen_users.add(uid_key)
         acc_id = acc.get("id")
         user_id = int(acc.get("user_id") or 0)
 
