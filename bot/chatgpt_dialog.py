@@ -642,8 +642,8 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         return dd
 
     except Exception as e:
-        _dbg(f"decide EXC: {type(e).__name__}: {e}")
-        reply = _pick_clarify(chat_id, user_id, user_text)
+        print(f"[chatgpt_dialog] decide EXC: {type(e).__name__}: {e}", flush=True)
+        reply = "мозг не завёлся. смотри лог [chatgpt_dialog]."
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="chat", reply=reply)
 

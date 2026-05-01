@@ -2208,21 +2208,7 @@ async def on_gmail_open(cb):
 
         full_text = _walk(detail.get("payload") or {}) or detail.get("snippet", "")
 
-        key = (os.getenv("OPENAI_API_KEY") or "").strip()
-        translated = full_text
-        if key:
-            try:
-                client = OpenAI(api_key=key)
-                r = client.responses.create(
-                    model=os.getenv("V_DIALOG_MODEL", "gpt-4o-mini"),
-                    input=[
-                        {"role": "system", "content": "Переведи письмо на русский. Сохрани смысл, без лишних комментариев."},
-                        {"role": "user", "content": full_text[:6000]},
-                    ],
-                )
-                translated = (getattr(r, "output_text", "") or full_text).strip()
-            except Exception:
-                translated = full_text
+        translated = chatgpt_dialog.translate_to_ru(full_text)
 
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del:{n}"),
