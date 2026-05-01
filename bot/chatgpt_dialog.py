@@ -580,14 +580,9 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         return DialogDecision(intent="chat", reply=reply)
 
     if ir and ir.addressed and ir.intent == "chat":
-        reply = persona.answer_chat(ir.question or "")
-        reply = _sanitize_reply(reply)
-        reply = persona.postprocess_text(reply, user_text)
-        reply = _dequestionize(reply)
-        if not reply:
-            reply = _pick_clarify(chat_id, user_id, user_text)
-        add_assistant(chat_id, user_id, reply)
-        return DialogDecision(intent="chat", reply=reply)
+        # Обычная беседа/творческий запрос: не отвечаем заготовками persona.answer_chat.
+        # Пускаем ниже в free-chat LLM.
+        pass
 
     # 1) If no key — just clarify (do NOT become generic assistant)
     if not _has_key():
