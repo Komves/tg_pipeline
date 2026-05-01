@@ -550,10 +550,9 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         return DialogDecision(intent="content", reply=reply)
 
     if ir and ir.addressed and ir.intent == "unclear":
-        reply = _pick_clarify(chat_id, user_id, user_text)
-        reply = _dequestionize(reply)
-        add_assistant(chat_id, user_id, reply)
-        return DialogDecision(intent="chat", reply=reply)
+        # Не превращаем любое обращение в "контент / новости".
+        # Если Веся не распознала команду — пускаем ниже в обычный LLM-диалог.
+        pass
 
     if ir and ir.addressed and ir.intent == "info_q":
         reply = persona.answer_info_fast(ir.question)
@@ -595,6 +594,35 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         reply = _pick_clarify(chat_id, user_id, user_text)
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="chat", reply=reply)
+    
+    if ir and ir.addressed:
+        try:
+            client = OpenAI()
+            resp = client.responses.create(
+                model=DIALOG_MODEL,
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            getattr(persona, "_SYSTEM_PROMPT", "").strip()
+                            + "\n\n"
+                            "Ты Веся. Отвечай на любую обычную тему живо, по-русски, без JSON. "
+                            "Не исполняй команды контента/новостей/почты здесь. "
+                            "Если пользователь просит текст, песню, объяснение, мнение или разговор — отвечай нормально. "
+                            "Держи стиль: коротко, суховато, с лёгкой язвительностью, но по делу."
+                        ),
+                    },
+                    *get_history(chat_id, user_id),
+                ],
+            )
+            reply = _sanitize_reply(_extract_text(resp))
+            reply = persona.postprocess_text(reply, user_text)
+            reply = _dequestionize(reply)
+            if reply:
+                add_assistant(chat_id, user_id, reply)
+                return DialogDecision(intent="chat", reply=reply)
+        except Exception as e:
+            print(f"[chatgpt_dialog] free chat EXC: {type(e).__name__}: {e}", flush=True)
 
     # 2) Model-based decision (fallback for non-addressed active sessions etc.)
     hist = get_history(chat_id, user_id)
