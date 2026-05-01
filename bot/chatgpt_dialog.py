@@ -334,6 +334,33 @@ def _deterministic_pick(options: List[str], seed_str: str) -> str:
         return ""
     return options[_deterministic_index(len(options), seed_str)]
 
+def _explicit_action_request(user_text: str, intent: str) -> bool:
+    t = (user_text or "").lower()
+
+    if intent == "news":
+        return any(x in t for x in (
+            "новости",
+            "новост",
+            "дайджест",
+            "сводку",
+            "что нового",
+        ))
+
+    if intent == "content":
+        return any(x in t for x in (
+            "огня",
+            "жги",
+            "контент",
+            "мем",
+            "мемы",
+            "видос",
+            "видосы",
+            "видео",
+            "get12",
+            "get24",
+        ))
+
+    return False
 
 # =============================================================================
 # REPLIES
@@ -643,6 +670,11 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
         intent = (str(data.get("intent", "chat")) or "chat").strip().lower()
         if intent not in {"chat", "news", "content", "end"}:
+            intent = "chat"
+
+        # LLM-router не имеет права сам запускать контент/новости из обычной беседы.
+        # Контент/новости запускаются только по явным словам-триггерам.
+        if intent in {"news", "content"} and not _explicit_action_request(user_text, intent):
             intent = "chat"
 
         reply = _sanitize_reply(str(data.get("reply", "")))
