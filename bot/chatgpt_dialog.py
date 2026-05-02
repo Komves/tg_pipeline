@@ -577,9 +577,43 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         return DialogDecision(intent="content", reply=reply)
 
     if ir and ir.addressed and ir.intent == "unclear":
-        # Не превращаем любое обращение в "контент / новости".
-        # Если Веся не распознала команду — пускаем ниже в обычный LLM-диалог.
-        pass
+        # Непонятная, но адресованная Весе реплика — это обычный разговор,
+        # а не выбор "контент / новости".
+        try:
+            client = OpenAI()
+            resp = client.responses.create(
+                model=DIALOG_MODEL,
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            getattr(persona, "_SYSTEM_PROMPT", "").strip()
+                            + "\n\n"
+                            "Это обычный разговорный или творческий запрос. "
+                            "Не уводи в контент или новости. "
+                            "Если просят прочитать, рассказать, пересказать, назвать или объяснить — отвечай по сути. "
+                            "Если нельзя цитировать дословно — назови произведения, дай краткий пересказ или настроение."
+                        ),
+                    },
+                    *get_history(chat_id, user_id),
+                ],
+            )
+
+            reply = _sanitize_reply(_extract_text(resp))
+            reply = persona.postprocess_text(reply, user_text)
+            reply = _dequestionize(reply)
+
+            if not reply:
+                reply = "Не цитирую дословно. Но суть передать могу."
+
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="chat", reply=reply)
+
+        except Exception as e:
+            print(f"[chatgpt_dialog] unclear chat EXC: {type(e).__name__}: {e}", flush=True)
+            reply = "Не вышло ответить нормально. Великолепно."
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="chat", reply=reply)
 
     if ir and ir.addressed and ir.intent == "info_q":
         reply = persona.answer_info_fast(ir.question)

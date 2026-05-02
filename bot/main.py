@@ -1170,6 +1170,52 @@ async def vesya_handler(message: Message) -> None:
         await message.answer("кидай следующим сообщением.")
         return
 
+    dialog_text = text
+
+    dialog_text = text
+
+    # === REPLY CONTEXT FOR LLM ===
+    if message.reply_to_message:
+        r = message.reply_to_message
+
+        current_author = (
+            message.from_user.full_name
+            if message.from_user
+            else "пользователь"
+        )
+
+        replied_author = (
+            r.from_user.full_name
+            if r.from_user
+            else "пользователь"
+        )
+
+        replied_text = (
+            r.text
+            or r.caption
+            or ""
+        ).strip()
+
+        if replied_text:
+            dialog_text = (
+                f"Веся, сообщение от {current_author}. "
+                f"Он отвечает на сообщение пользователя {replied_author}: "
+                f"«{replied_text}». "
+                f"В его текущем сообщении местоимения вроде 'он', 'его', 'ему' относятся к {replied_author}. "
+                f"Текущий текст: «{text}»."
+            )
+        else:
+            dialog_text = (
+                f"Веся, сообщение от {current_author}. "
+                f"Он отвечает на сообщение пользователя {replied_author}. "
+                f"В его текущем сообщении местоимения вроде 'он', 'его', 'ему' относятся к {replied_author}. "
+                f"Текущий текст: «{text}»."
+            )
+
+    elif message.chat.type in ("group", "supergroup") and "is_reply_to_bot" in locals() and is_reply_to_bot:
+        if not chatgpt_dialog.persona.is_addressed(dialog_text):
+            dialog_text = f"Веся, {dialog_text}"
+
     print(f"[route] text={text!r}", flush=True)
 
     # === GMAIL CONNECT COMMAND ===
@@ -1584,13 +1630,6 @@ async def vesya_handler(message: Message) -> None:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
-    reply = ""
-    intent = "chat"
-    decision = chatgpt_dialog.decide(chat_id, user_id, orig_text)
-    print(f"[route] intent={decision.intent} reply={decision.reply!r}", flush=True)
-    intent = (decision.intent or "chat").strip().lower()
-    reply = (decision.reply or "").strip()
-
     # reply to bot-sent content should stay LLM-chat,
     # not trigger fresh content broadcast
     r = message.reply_to_message
@@ -1631,8 +1670,18 @@ async def vesya_handler(message: Message) -> None:
         )
     )
 
-    if is_reply_to_bot_content and intent == "content":
-        intent = "chat"
+    reply = ""
+    intent = "chat"
+
+    if is_reply_to_bot_content:
+        decision = chatgpt_dialog.decide(chat_id, user_id, f"Веся, {text}")
+        decision.intent = "chat"
+    else:
+        decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
+
+    print(f"[route] intent={decision.intent} reply={decision.reply!r}", flush=True)
+    intent = (decision.intent or "chat").strip().lower()
+    reply = (decision.reply or "").strip()
 
     if intent == "chat":
         # имитация "печатает..." + пауза 5–10 секунд
