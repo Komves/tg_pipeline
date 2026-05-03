@@ -68,10 +68,59 @@ class _Session:
     history: Deque[Dict[str, str]]
     active: bool = True
     last_clarify_idx: Optional[int] = None
+    irritation: int = 0
 
 
 _sessions: Dict[Tuple[int, int], _Session] = {}
+# === PERSISTENT USER MEMORY ===
 
+USER_MEMORY_PATH = DATA_DIR / "vesya_user_memory.json"
+
+def _memory_key(chat_id: int, user_id: int) -> str:
+    return f"{int(chat_id)}:{int(user_id)}"
+
+def _load_user_memory() -> dict:
+    try:
+        if USER_MEMORY_PATH.exists():
+            return json.loads(USER_MEMORY_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def _save_user_memory(data: dict) -> None:
+    try:
+        USER_MEMORY_PATH.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+def _get_saved_irritation(chat_id: int, user_id: int) -> int:
+    data = _load_user_memory()
+    rec = data.get(_memory_key(chat_id, user_id), {})
+
+    level = int(rec.get("irritation", 0))
+    ts = int(rec.get("ts", 0))
+
+    # если прошло больше 24 часов — снижаем
+    if ts:
+        hours = (time.time() - ts) / 3600
+        if hours > 24:
+            level = max(0, level - 2)
+        elif hours > 6:
+            level = max(0, level - 1)
+
+    return level
+
+def _set_saved_irritation(chat_id: int, user_id: int, level: int) -> None:
+    data = _load_user_memory()
+    key = _memory_key(chat_id, user_id)
+    rec = data.get(key, {})
+    rec["irritation"] = int(level)
+    rec["ts"] = int(time.time())
+    data[key] = rec
+    _save_user_memory(data)
 
 def _now() -> float:
     return time.time()
@@ -127,7 +176,11 @@ def activate(chat_id: int, user_id: int) -> None:
     key = (chat_id, user_id)
     s = _sessions.get(key)
     if not s:
-        s = _Session(expires_at=_now() + DIALOG_TTL_SEC, history=deque(maxlen=DIALOG_MAX_TURNS))
+        s = _Session(
+            expires_at=_now() + DIALOG_TTL_SEC,
+            history=deque(maxlen=DIALOG_MAX_TURNS),
+            irritation=_get_saved_irritation(chat_id, user_id),
+        )
         _sessions[key] = s
     s.active = True
     s.expires_at = _now() + DIALOG_TTL_SEC
@@ -149,11 +202,31 @@ def is_active(chat_id: int, user_id: int) -> bool:
     s = _sessions.get((chat_id, user_id))
     return bool(s and s.active and s.expires_at >= _now())
 
-
 def add_user(chat_id: int, user_id: int, text: str) -> None:
     activate(chat_id, user_id)
-    _sessions[(chat_id, user_id)].history.append({"role": "user", "content": text})
+    s = _sessions[(chat_id, user_id)]
+    s.history.append({"role": "user", "content": text})
 
+    tl = (text or "").lower()
+
+    apology = bool(re.search(
+        r"\b(извини|извиняюсь|прости|сорри|виноват|погорячился|был неправ|был не прав|не хотел обидеть)\b",
+        tl,
+    ))
+
+    rude = bool(re.search(
+        r"\b(бля|бляд|хуй|хуйн|пизд|еба|нахуй|сука|долбо|идиот|туп|достал|достала|заебал|заебала|несешь|несёшь)\b",
+        tl,
+    ))
+
+    if apology:
+        s.irritation = max(0, s.irritation - 2)
+    elif rude:
+        s.irritation = min(5, s.irritation + 1)
+    else:
+        s.irritation = max(0, s.irritation - 1)
+
+    _set_saved_irritation(chat_id, user_id, s.irritation)
 
 def add_assistant(chat_id: int, user_id: int, text: str) -> None:
     s = _sessions.get((chat_id, user_id))
@@ -165,6 +238,27 @@ def get_history(chat_id: int, user_id: int) -> List[Dict[str, str]]:
     s = _sessions.get((chat_id, user_id))
     return list(s.history) if s else []
 
+def _irritation_instruction(chat_id: int, user_id: int) -> str:
+    s = _sessions.get((chat_id, user_id))
+    level = int(getattr(s, "irritation", 0) or 0) if s else 0
+
+    if level >= 3:
+        return (
+            "Пользователь уже успел тебя раздражить в этой сессии. "
+            "Можно отвечать холоднее и жестче, но всё равно по сути. "
+            "Не превращай каждый ответ в оскорбление."
+        )
+
+    if level >= 1:
+        return (
+            "Пользователь немного раздражает. "
+            "Добавь сухость и дистанцию, но не груби без необходимости."
+        )
+
+    return (
+        "Пользователь сейчас не раздражает. "
+        "Базовый режим: спокойно, сухо, умно, с лёгкой иронией."
+    )
 
 # =============================================================================
 # LAST PHOTO (main.py uses these)
@@ -590,9 +684,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
                             getattr(persona, "_SYSTEM_PROMPT", "").strip()
                             + "\n\n"
                             "Это обычный разговорный или творческий запрос. "
+                            "Не начинай с вводной фразы, сразу давай результат. "
                             "Не уводи в контент или новости. "
-                            "Если просят прочитать, рассказать, пересказать, назвать или объяснить — отвечай по сути. "
-                            "Если нельзя цитировать дословно — назови произведения, дай краткий пересказ или настроение."
+                            "Если просят прочитать, рассказать, пересказать, назвать, написать стих, текст, сцену или объяснить — сразу выполняй просьбу. "
+                            "Не отвечай обещанием вместо результата. "
+                            "Если нельзя цитировать дословно — назови произведения, дай краткий пересказ или настроение. "
+                            "Базово отвечай спокойнее: умно, сухо, с лёгкой иронией. Жёсткость только если пользователь хамит или давит. "
+                            + _irritation_instruction(chat_id, user_id)
                         ),
                     },
                     *get_history(chat_id, user_id),
@@ -664,8 +762,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
                             + "\n\n"
                             "Ты Веся. Отвечай на любую обычную тему живо, по-русски, без JSON. "
                             "Не исполняй команды контента/новостей/почты здесь. "
-                            "Если пользователь просит текст, песню, объяснение, мнение или разговор — отвечай нормально. "
-                            "Держи стиль: коротко, суховато, с лёгкой язвительностью, но по делу."
+                            "Если пользователь просит текст, стих, песню, сцену, историю, объяснение, мнение или разговор — сразу дай результат, а не обещание. "
+                            "Не начинай с 'сделаю', 'поняла', 'могу', 'сейчас', если можно сразу выполнить просьбу. "
+                            "Не начинай ответ с вводной фразы, подтверждения или рассуждения о задаче. "
+                            "Сразу давай содержательную часть. "
+                            "Базовый стиль: спокойно, сухо, умно, с лёгкой иронией. "
+                            "Жёсткость включай только на хамство, давление, повторное доставание или попытку перепрошить стиль. "
+                            + _irritation_instruction(chat_id, user_id)
                         ),
                     },
                     *get_history(chat_id, user_id),

@@ -910,7 +910,6 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
     except Exception as e:
        print(f"[content] youtube error: {e}", flush=True)
 
-
 @dp.message(F.photo)
 async def on_photo(message: Message) -> None:
     print("[IMG] photo handler triggered", flush=True)
@@ -945,7 +944,12 @@ async def on_photo(message: Message) -> None:
             int(message.from_user.id) if message.from_user else 0,
             img_bytes,
         )
-
+        caption = (message.caption or "").strip()
+        if caption and chatgpt_dialog.persona.is_addressed(caption):
+            dd = chatgpt_dialog.describe_or_compare_photo(caption, img_bytes)
+            if dd and (dd.reply or "").strip():
+                await message.answer(dd.reply)
+                return
         fn = IMG_INBOX / f"{message.chat.id}_{message.message_id}.jpg"
 
         try:
@@ -2260,7 +2264,6 @@ async def on_gmail_open(cb):
         print(f"[gmail_open] failed: {type(e).__name__}: {e}", flush=True)
         await cb.message.answer(f"письмо не открыла: {type(e).__name__}: {e}")
 
-
 @dp.callback_query(F.data.startswith("gmail_del:"))
 async def on_gmail_delete(cb):
     try:
@@ -2275,7 +2278,51 @@ async def on_gmail_delete(cb):
             return
 
         item = cached[n - 1]
-        access_token = item["access_token"]
+
+        supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+        supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
+
+        r = requests.get(
+            f"{supabase_url}/rest/v1/gmail_accounts",
+            headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+            },
+            params={
+                "select": "creds_json",
+                "user_id": f"eq.{user_id}",
+                "order": "id.desc",
+                "limit": "1",
+            },
+            timeout=20,
+        )
+
+        rows = r.json()
+        if not rows:
+            await cb.message.answer("почта не подключена")
+            return
+
+        creds = rows[0].get("creds_json") or {}
+        refresh_token = creds.get("refresh_token")
+        if not refresh_token:
+            await cb.message.answer("refresh_token не найден")
+            return
+
+        token_res = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=20,
+        ).json()
+
+        access_token = token_res.get("access_token")
+        if not access_token:
+            await cb.message.answer(f"не смогла обновить токен: {token_res}")
+            return
 
         rr = requests.post(
             f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{item['id']}/trash",
@@ -2286,6 +2333,12 @@ async def on_gmail_delete(cb):
         if rr.status_code >= 300:
             await cb.message.answer(f"не удалила: {rr.status_code} {rr.text[:300]}")
             return
+
+        try:
+            cached.pop(n - 1)
+            GMAIL_LAST_MESSAGES[user_id] = cached
+        except Exception:
+            pass
 
         await cb.message.answer(f"удалила: {item.get('subject')}")
         await cb.answer("удалено")
