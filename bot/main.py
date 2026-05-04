@@ -201,6 +201,49 @@ def _shrink_jpeg_bytes(src_bytes: bytes, max_side: int = 1024, quality: int = 70
     except Exception:
         return src_bytes
 
+def _extract_video_frames(video_bytes: bytes, n: int = 5) -> list[bytes]:
+    """
+    Extract a few JPG frames from a Telegram video using ffmpeg.
+    """
+    import subprocess
+    import tempfile
+
+    frames: list[bytes] = []
+
+    if not video_bytes:
+        return frames
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        video_path = d / "input.mp4"
+        out_pattern = d / "frame_%03d.jpg"
+
+        video_path.write_bytes(video_bytes)
+
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-i", str(video_path),
+            "-vf", "fps=0.25",
+            "-frames:v", str(int(n)),
+            "-q:v", "3",
+            str(out_pattern),
+        ]
+
+        try:
+            subprocess.run(cmd, check=False, timeout=30)
+        except Exception:
+            return frames
+
+        for p in sorted(d.glob("frame_*.jpg"))[:int(n)]:
+            try:
+                frames.append(_shrink_jpeg_bytes(p.read_bytes(), max_side=768, quality=65))
+            except Exception:
+                pass
+
+    return frames
+
 BASE_DIR = Path(__file__).resolve().parent
 NEWS_SOURCES = BASE_DIR / "news_sources.txt"
 
@@ -1072,20 +1115,41 @@ async def on_video(message: Message) -> None:
     if not _chat_allowed(message):
         return
 
-    if not _relay_is_armed(message):
+    if _relay_is_armed(message):
+        _relay_disarm(message)
+
+        if not _is_admin_user(message):
+            return
+
+        ok = await _copy_to_main_group(message)
+        if ok:
+            await message.answer("кинула.")
+        else:
+            await message.answer("не вышло.")
         return
 
-    _relay_disarm(message)
+    caption = (message.caption or "").strip()
 
-    if not _is_admin_user(message):
-        return
+    # В группах видео обсуждаем только если явно обратились к Весе.
+    if message.chat.type in ("group", "supergroup"):
+        if not (caption and chatgpt_dialog.persona.is_addressed(caption)):
+            return
 
-    ok = await _copy_to_main_group(message)
-    if ok:
-        await message.answer("кинула.")
-    else:
-        await message.answer("не вышло.")
+    try:
+        raw = await _download_tg_file_bytes(message.bot, message.video.file_id)
+        frames = await asyncio.to_thread(_extract_video_frames, raw, 5)
 
+        dd = chatgpt_dialog.describe_video_frames(caption or "Веся, посмотри видео и прокомментируй.", frames)
+
+        if dd and (dd.reply or "").strip():
+            await message.answer(dd.reply)
+        else:
+            await message.answer("видео посмотрела кадрами. Ничего внятного не вытащила.")
+
+    except Exception as e:
+        print(f"[video] discuss error: {type(e).__name__}: {e}", flush=True)
+        await message.answer(f"видео не разобрала: {type(e).__name__}: {e}")
+        
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
     print(f"[DEBUG] msg_id={message.message_id} chat_id={message.chat.id} from={message.from_user.id if message.from_user else 0}", flush=True)

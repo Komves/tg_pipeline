@@ -999,8 +999,27 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
         b64 = base64.b64encode(img_bytes).decode("utf-8")
 
         user_task = (t or "").strip()
+        asks_about_image = bool(re.search(
+            r"\b(когда|почему|зачем|что думаешь|как думаешь|прокомментируй|разбери|поясни|объясни|это правда|ну и|и что|когда уже)\b",
+            tl,
+        ))
 
-        if any(x in tl for x in ("шутк", "мем", "смешн", "юмор", "оцени", "оценить")):
+        if asks_about_image and not any(x in tl for x in ("шутк", "мем", "смешн", "юмор")):
+            prompt = (
+                "Пользователь прислал изображение/скрин и задал вопрос по нему.\n"
+                f"Вопрос пользователя: {user_task}\n\n"
+                "Сначала прочитай видимый текст на изображении. "
+                "Пойми, о чём там речь. "
+                "Ответь именно на вопрос пользователя, а не просто описывай картинку.\n"
+                "Если пользователь спрашивает 'когда уже?' — это ироничный вопрос, не требующий точной даты. "
+                "Можно ответить оценочно, саркастично, по смыслу изображения.\n"
+                "Не говори 'не могу определить', если на изображении есть читаемый текст. "
+                "Не делай нейтральную справку. "
+                "Отвечай от лица Веси: коротко, холодно, с лёгкой иронией.\n"
+                "Формат: 1–3 короткие фразы. По-русски. Без вопросов пользователю."
+            )
+
+        elif any(x in tl for x in ("шутк", "мем", "смешн", "юмор", "оцени", "оценить")):
             personal_to_vesya = bool(re.search(
                 r"\b(ты|тебя|тебе|твой|твоя|твое|твоё|твои|сама|насколько ты|про тебя)\b",
                 tl,
@@ -1096,6 +1115,78 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
     except Exception as e:
         _dbg(f"vision EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="не удалось определить объект на изображении")
+
+def describe_video_frames(text: str, frame_bytes_list: List[bytes]) -> Optional[DialogDecision]:
+    """
+    Discuss user-sent video by looking at sampled frames.
+    No audio transcription here.
+    """
+    try:
+        frames = [b for b in (frame_bytes_list or []) if b]
+        if not frames:
+            return DialogDecision(intent="chat", reply="кадры из видео не достались.")
+
+        if not _has_key():
+            return DialogDecision(intent="chat", reply="видео вижу, но мозг для анализа сейчас не подключен.")
+
+        client = OpenAI()
+
+        user_task = (text or "").strip()
+        content = [
+            {
+                "type": "input_text",
+                "text": (
+                    "Пользователь прислал видео и хочет обсудить его.\n"
+                    f"Запрос пользователя: {user_task}\n\n"
+                    "Ниже несколько кадров из видео по порядку.\n"
+                    "Пойми общий смысл сцены по кадрам.\n"
+                    "Если пользователь просит мнение — дай мнение.\n"
+                    "Если просит объяснить — объясни.\n"
+                    "Если просит оценить — оцени.\n"
+                    "Не делай вид, что видел звук или речь, если её нет в кадрах.\n"
+                    "Ответь от лица Веси: коротко, умно, сухо, с лёгкой иронией.\n"
+                    "Формат: 1–4 короткие фразы. По-русски. Без вопросов пользователю."
+                ),
+            }
+        ]
+
+        for b in frames[:5]:
+            b64 = base64.b64encode(b).decode("utf-8")
+            content.append({
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{b64}",
+            })
+
+        resp = client.responses.create(
+            model=VISION_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        getattr(persona, "_SYSTEM_PROMPT", "").strip()
+                        + "\n\n"
+                        "Ты обсуждаешь видео от лица Веси по нескольким кадрам. "
+                        "Не называй это полноценным просмотром со звуком. "
+                        "Не уходи в нейтральную справку. "
+                        "Сначала реакция, потом короткое пояснение."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": content,
+                },
+            ],
+        )
+
+        reply = _sanitize_reply(_extract_text(resp))
+        if not reply:
+            reply = "вижу только кадры. По ним — ничего выдающегося."
+
+        return DialogDecision(intent="chat", reply=reply)
+
+    except Exception as e:
+        _dbg(f"video frames EXC: {type(e).__name__}: {e}")
+        return DialogDecision(intent="chat", reply="видео разобрать не вышло.")
 
 # =============================================================================
 # MEME: batch ranker (Variant A)
