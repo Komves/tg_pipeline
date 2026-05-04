@@ -1445,8 +1445,8 @@ async def vesya_handler(message: Message) -> None:
                 })
 
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="Открыть", callback_data=f"gmail_open:{idx}"),
-                    InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del:{idx}"),
+                    InlineKeyboardButton(text="Открыть", callback_data=f"gmail_open_id:{msg_id}"),
+                    InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del_id:{msg_id}"),
                 ]])
 
                 await message.answer(
@@ -2249,8 +2249,8 @@ async def _gmail_poll_once() -> None:
 
             for idx, item in enumerate(new_items[:5], start=1):
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="Открыть", callback_data=f"gmail_open:{idx}"),
-                    InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del:{idx}"),
+                    InlineKeyboardButton(text="Открыть", callback_data=f"gmail_open:{item.get('id')}"),
+                    InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del:{item.get('id')}"),
                 ]])
 
                 await bot.send_message(
@@ -2303,22 +2303,22 @@ async def on_feedback(cb):
     except Exception:
         pass
 
-@dp.callback_query(F.data.startswith("gmail_open:"))
+@dp.callback_query(F.data.startswith("gmail_open_id:"))
 async def on_gmail_open(cb):
     try:
         import base64
         import requests
         from openai import OpenAI
 
-        n = int(cb.data.split(":")[1])
+        msg_id = cb.data.split(":", 1)[1].strip()
         user_id = int(cb.from_user.id)
         cached = GMAIL_LAST_MESSAGES.get(user_id) or []
 
-        if n < 1 or n > len(cached):
-            await cb.message.answer("сначала: Веся проверь почту")
+        item = next((x for x in cached if x.get("id") == msg_id), None)
+        if not item:
+            await cb.message.answer("кэш письма сдох. Проверь почту заново.")
             return
 
-        item = cached[n - 1]
         access_token = item["access_token"]
 
         detail = requests.get(
@@ -2360,7 +2360,7 @@ async def on_gmail_open(cb):
         translated = chatgpt_dialog.translate_to_ru(full_text)
 
         kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del:{n}"),
+            InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del_id:{msg_id}"),
         ]])
 
         await cb.message.answer(
@@ -2376,20 +2376,18 @@ async def on_gmail_open(cb):
         print(f"[gmail_open] failed: {type(e).__name__}: {e}", flush=True)
         await cb.message.answer(f"письмо не открыла: {type(e).__name__}: {e}")
 
-@dp.callback_query(F.data.startswith("gmail_del:"))
+@dp.callback_query(F.data.startswith("gmail_del_id:"))
 async def on_gmail_delete(cb):
     try:
         import requests
 
-        n = int(cb.data.split(":")[1])
+        msg_id = cb.data.split(":", 1)[1].strip()
         user_id = int(cb.from_user.id)
         cached = GMAIL_LAST_MESSAGES.get(user_id) or []
 
-        if n < 1 or n > len(cached):
-            await cb.message.answer("сначала: Веся проверь почту")
-            return
-
-        item = cached[n - 1]
+        item = next((x for x in cached if x.get("id") == msg_id), None)
+        if not item:
+            item = {"id": msg_id, "subject": "письмо"}
 
         supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
         supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
@@ -2454,8 +2452,7 @@ async def on_gmail_delete(cb):
             return
 
         try:
-            cached.pop(n - 1)
-            GMAIL_LAST_MESSAGES[user_id] = cached
+            GMAIL_LAST_MESSAGES[user_id] = [x for x in cached if x.get("id") != msg_id]
         except Exception:
             pass
 
