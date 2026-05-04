@@ -1255,7 +1255,13 @@ def describe_video_frames(
         )
 
         reply = _sanitize_reply(_extract_text(resp))
-        return DialogDecision(intent="chat", reply=reply or "видео посмотрела. Смысла там меньше, чем уверенности.")
+        reply = persona.postprocess_text(reply, user_task)
+        reply = _dequestionize(reply)
+
+        return DialogDecision(
+            intent="chat",
+            reply=reply or "Видео посмотрела. Понтов больше, чем сюжета."
+        )
 
     except Exception as e:
         _dbg(f"video discuss EXC: {type(e).__name__}: {e}")

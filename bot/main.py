@@ -2443,12 +2443,24 @@ async def on_gmail_delete(cb):
         )
 
         if rr.status_code >= 300:
-            await cb.message.answer(f"не удалила: {rr.status_code} {rr.text[:300]}")
+            body = rr.text[:500]
+            if rr.status_code in (401, 403):
+                await cb.message.answer(
+                    "Не удалила. У почты нет права на удаление. "
+                    "Нужно переподключить Gmail со scope gmail.modify."
+                )
+            else:
+                await cb.message.answer(f"не удалила: {rr.status_code} {body}")
             return
 
         try:
             cached.pop(n - 1)
             GMAIL_LAST_MESSAGES[user_id] = cached
+        except Exception:
+            pass
+
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
 
