@@ -689,6 +689,9 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
                             getattr(persona, "_SYSTEM_PROMPT", "").strip()
                             + "\n\n"
                             "Это обычный разговор или реакция.\n"
+                            "Никогда не пересказывай инструкцию пользователю. "
+                            "Не пиши фразы вроде 'похоже, обычный вопрос', 'отвечай коротко', 'без лишней драмы'. "
+                            "Это служебные правила, их нельзя выводить в ответ. "
                             "Пользователь НЕ просит контент и НЕ просит новости.\n"
                             "Нельзя уводить в контент или запускать подборки.\n"
                             "Отвечай как на обычный вопрос или реакцию.\n"
@@ -1126,6 +1129,61 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
         _dbg(f"transcribe EXC: {type(e).__name__}: {e}")
         return ""
 
+def recognize_music_audd(audio_bytes: bytes) -> str:
+    """
+    Recognize music track using AudD.io.
+    Returns short human-readable track info or empty string.
+    """
+    try:
+        token = (os.getenv("AUDD_API_TOKEN") or "").strip()
+        if not token or not audio_bytes:
+            return ""
+
+        import tempfile
+        import requests
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=True) as f:
+            f.write(audio_bytes)
+            f.flush()
+
+            with open(f.name, "rb") as af:
+                r = requests.post(
+                    "https://api.audd.io/",
+                    data={
+                        "api_token": token,
+                        "return": "apple_music,spotify",
+                    },
+                    files={
+                        "file": ("audio.mp3", af, "audio/mpeg"),
+                    },
+                    timeout=25,
+                )
+
+        data = r.json()
+        if data.get("status") != "success":
+            return ""
+
+        result = data.get("result")
+        if not isinstance(result, dict):
+            return ""
+
+        title = (result.get("title") or "").strip()
+        artist = (result.get("artist") or "").strip()
+        album = (result.get("album") or "").strip()
+
+        if title and artist:
+            if album:
+                return f"{artist} — {title} ({album})"
+            return f"{artist} — {title}"
+
+        if title:
+            return title
+
+        return ""
+
+    except Exception as e:
+        _dbg(f"audd recognize EXC: {type(e).__name__}: {e}")
+        return ""
 
 def describe_video_frames(
     text: str,
@@ -1134,7 +1192,9 @@ def describe_video_frames(
 ) -> Optional[DialogDecision]:
     try:
         frames = [b for b in (frame_bytes_list or []) if b]
-        transcript = transcribe_audio_bytes(audio_bytes or b"")
+        audio = audio_bytes or b""
+        transcript = transcribe_audio_bytes(audio)
+        music_track = recognize_music_audd(audio)
 
         if not frames and not transcript:
             return DialogDecision(intent="chat", reply="из видео ничего не вытащила. Пустой фокус.")
@@ -1150,12 +1210,17 @@ def describe_video_frames(
             "text": (
                 "Пользователь прислал видео и хочет обсудить его.\n"
                 f"Запрос пользователя: {user_task}\n\n"
-                f"Транскрибация звука, если была речь:\n{transcript or '[речи не распознано]'}\n\n"
+                f"Транскрибация речи, если была речь:\n{transcript or '[речи не распознано]'}\n\n"
+                f"Распознанная музыка:\n{music_track or '[трек не распознан]'}\n\n"
                 "Ниже несколько кадров из видео по порядку.\n"
                 "Пойми общий смысл сцены по кадрам и звуку.\n"
                 "Не избегай описания людей, внешности и позы, если это ключевой элемент сцены.\n"
                 "Не сглаживай очевидный сексуальный, комичный или конфликтный контекст.\n"
-                "Если звук не распознан — не выдумывай речь.\n"
+                "Если речь не распознана — не выдумывай речь.\n"
+                "Если пользователь спрашивает про музыку и трек распознан — назови трек. "
+                "Если трек не распознан — честно скажи, что трек не распознала, и оцени только настроение музыки.\n"
+                "Если пользователь спрашивает, что за музыка играет, а в транскрибации нет названия трека — честно скажи: 'трек не распознала'. "
+                "Не делай вид, что узнала музыку. "
                 "Ответь от лица Веси, живо и лично, не как обзорщик видео.\n"
                 "Не пиши пресно: избегай слов вроде 'завораживающий', 'гармония', 'атмосфера', если можно сказать острее.\n"
                 "Если на видео явно есть тело, поза, сексуальный акцент или демонстративность — не делай вид, что это только пейзаж.\n"
