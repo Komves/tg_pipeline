@@ -201,6 +201,39 @@ def _shrink_jpeg_bytes(src_bytes: bytes, max_side: int = 1024, quality: int = 70
     except Exception:
         return src_bytes
 
+def _extract_video_audio_mp3(video_bytes: bytes) -> bytes:
+    import subprocess
+    import tempfile
+
+    if not video_bytes:
+        return b""
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        video_path = d / "input.mp4"
+        audio_path = d / "audio.mp3"
+        video_path.write_bytes(video_bytes)
+
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", str(video_path),
+            "-vn",
+            "-ac", "1",
+            "-ar", "16000",
+            "-t", "120",
+            "-f", "mp3",
+            str(audio_path),
+        ]
+
+        try:
+            subprocess.run(cmd, check=False, timeout=45)
+            if audio_path.exists() and audio_path.stat().st_size > 0:
+                return audio_path.read_bytes()
+        except Exception:
+            return b""
+
+    return b""
+
 def _extract_video_frames(video_bytes: bytes, n: int = 5) -> list[bytes]:
     """
     Extract a few JPG frames from a Telegram video using ffmpeg.
@@ -1130,26 +1163,31 @@ async def on_video(message: Message) -> None:
 
     caption = (message.caption or "").strip()
 
-    # В группах видео обсуждаем только если явно обратились к Весе.
     if message.chat.type in ("group", "supergroup"):
         if not (caption and chatgpt_dialog.persona.is_addressed(caption)):
             return
 
     try:
         raw = await _download_tg_file_bytes(message.bot, message.video.file_id)
-        frames = await asyncio.to_thread(_extract_video_frames, raw, 5)
 
-        dd = chatgpt_dialog.describe_video_frames(caption or "Веся, посмотри видео и прокомментируй.", frames)
+        frames = await asyncio.to_thread(_extract_video_frames, raw, 5)
+        audio_mp3 = await asyncio.to_thread(_extract_video_audio_mp3, raw)
+
+        dd = chatgpt_dialog.describe_video_frames(
+            caption or "Веся, посмотри видео и прокомментируй.",
+            frames,
+            audio_mp3,
+        )
 
         if dd and (dd.reply or "").strip():
             await message.answer(dd.reply)
         else:
-            await message.answer("видео посмотрела кадрами. Ничего внятного не вытащила.")
+            await message.answer("видео посмотрела. Ничего внятного не вытащила.")
 
     except Exception as e:
         print(f"[video] discuss error: {type(e).__name__}: {e}", flush=True)
         await message.answer(f"видео не разобрала: {type(e).__name__}: {e}")
-        
+
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
     print(f"[DEBUG] msg_id={message.message_id} chat_id={message.chat.id} from={message.from_user.id if message.from_user else 0}", flush=True)

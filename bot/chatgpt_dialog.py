@@ -1188,6 +1188,96 @@ def describe_video_frames(text: str, frame_bytes_list: List[bytes]) -> Optional[
         _dbg(f"video frames EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="видео разобрать не вышло.")
 
+def transcribe_audio_bytes(audio_bytes: bytes) -> str:
+    try:
+        if not audio_bytes or not _has_key():
+            return ""
+
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=True) as f:
+            f.write(audio_bytes)
+            f.flush()
+
+            client = OpenAI()
+            r = client.audio.transcriptions.create(
+                model=os.getenv("V_TRANSCRIBE_MODEL", "whisper-1"),
+                file=open(f.name, "rb"),
+            )
+
+        return (getattr(r, "text", "") or "").strip()
+
+    except Exception as e:
+        _dbg(f"transcribe EXC: {type(e).__name__}: {e}")
+        return ""
+
+
+def describe_video_frames(
+    text: str,
+    frame_bytes_list: List[bytes],
+    audio_bytes: bytes | None = None,
+) -> Optional[DialogDecision]:
+    try:
+        frames = [b for b in (frame_bytes_list or []) if b]
+        transcript = transcribe_audio_bytes(audio_bytes or b"")
+
+        if not frames and not transcript:
+            return DialogDecision(intent="chat", reply="из видео ничего не вытащила. Пустой фокус.")
+
+        if not _has_key():
+            return DialogDecision(intent="chat", reply="видео вижу, но мозг для анализа сейчас не подключен.")
+
+        client = OpenAI()
+        user_task = (text or "").strip()
+
+        content = [{
+            "type": "input_text",
+            "text": (
+                "Пользователь прислал видео и хочет обсудить его.\n"
+                f"Запрос пользователя: {user_task}\n\n"
+                f"Транскрибация звука, если была речь:\n{transcript or '[речи не распознано]'}\n\n"
+                "Ниже несколько кадров из видео по порядку.\n"
+                "Пойми общий смысл сцены по кадрам и звуку.\n"
+                "Не избегай описания людей, внешности и позы, если это ключевой элемент сцены.\n"
+                "Не сглаживай очевидный сексуальный, комичный или конфликтный контекст.\n"
+                "Если звук не распознан — не выдумывай речь.\n"
+                "Ответь от лица Веси: коротко, умно, сухо, с лёгкой иронией.\n"
+                "Формат: 1–4 короткие фразы. По-русски. Без вопросов пользователю."
+            ),
+        }]
+
+        for b in frames[:5]:
+            b64 = base64.b64encode(b).decode("utf-8")
+            content.append({
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{b64}",
+            })
+
+        resp = client.responses.create(
+            model=VISION_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        getattr(persona, "_SYSTEM_PROMPT", "").strip()
+                        + "\n\n"
+                        "Ты обсуждаешь видео от лица Веси по кадрам и транскрибации звука. "
+                        "Не уходи в нейтральную справку. "
+                        "Не делай вид, что слышала звук, если транскрибации нет. "
+                        "Сначала реакция, потом короткое пояснение."
+                    ),
+                },
+                {"role": "user", "content": content},
+            ],
+        )
+
+        reply = _sanitize_reply(_extract_text(resp))
+        return DialogDecision(intent="chat", reply=reply or "видео посмотрела. Смысла там меньше, чем уверенности.")
+
+    except Exception as e:
+        _dbg(f"video discuss EXC: {type(e).__name__}: {e}")
+        return DialogDecision(intent="chat", reply="видео разобрать не вышло.")
+
 # =============================================================================
 # MEME: batch ranker (Variant A)
 # =============================================================================
