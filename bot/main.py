@@ -1180,6 +1180,16 @@ async def on_video(message: Message) -> None:
         )
 
         if dd and (dd.reply or "").strip():
+            chat_id = int(message.chat.id)
+            user_id = int(message.from_user.id) if message.from_user else 0
+
+            chatgpt_dialog.add_user(
+                chat_id,
+                user_id,
+                caption or "Веся, посмотри видео и прокомментируй.",
+            )
+            chatgpt_dialog.add_assistant(chat_id, user_id, dd.reply)
+
             await message.answer(dd.reply)
         else:
             await message.answer("видео посмотрела. Ничего внятного не вытащила.")
