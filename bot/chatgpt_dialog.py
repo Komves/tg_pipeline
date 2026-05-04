@@ -666,9 +666,14 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
     # IMPORTANT: "жги/огня/ignite" must start content run (user requirement)
     if ir and ir.addressed and ir.intent in {"ignite_choice", "run_all"}:
-        reply = _deterministic_pick(ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
-        add_assistant(chat_id, user_id, reply)
-        return DialogDecision(intent="content", reply=reply)
+        if not _explicit_action_request(user_text, "content"):
+            # Если persona ошибочно распознала обычную фразу как запуск контента —
+            # не запускаем подборку, а продолжаем как обычный chat.
+            pass
+        else:
+            reply = _deterministic_pick(ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="content", reply=reply)
 
     if ir and ir.addressed and ir.intent == "unclear":
         # Непонятная, но адресованная Весе реплика — это обычный разговор,
@@ -683,13 +688,12 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
                         "content": (
                             getattr(persona, "_SYSTEM_PROMPT", "").strip()
                             + "\n\n"
-                            "Это обычный разговорный или творческий запрос. "
-                            "Не начинай с вводной фразы, сразу давай результат. "
-                            "Не уводи в контент или новости. "
-                            "Если просят прочитать, рассказать, пересказать, назвать, написать стих, текст, сцену или объяснить — сразу выполняй просьбу. "
-                            "Не отвечай обещанием вместо результата. "
-                            "Если нельзя цитировать дословно — назови произведения, дай краткий пересказ или настроение. "
-                            "Базово отвечай спокойнее: умно, сухо, с лёгкой иронией. Жёсткость только если пользователь хамит или давит. "
+                            "Это обычный разговор или реакция.\n"
+                            "Пользователь НЕ просит контент и НЕ просит новости.\n"
+                            "Нельзя уводить в контент или запускать подборки.\n"
+                            "Отвечай как на обычный вопрос или реакцию.\n"
+                            "Если пользователь прислал медиа — реагируй на него напрямую.\n"
+                            "Сразу дай ответ, без вступлений.\n"
                             + _irritation_instruction(chat_id, user_id)
                         ),
                     },
@@ -749,39 +753,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="chat", reply=reply)
     
-    if ir and ir.addressed:
-        try:
-            client = OpenAI()
-            resp = client.responses.create(
-                model=DIALOG_MODEL,
-                input=[
-                    {
-                        "role": "system",
-                        "content": (
-                            getattr(persona, "_SYSTEM_PROMPT", "").strip()
-                            + "\n\n"
-                            "Ты Веся. Отвечай на любую обычную тему живо, по-русски, без JSON. "
-                            "Не исполняй команды контента/новостей/почты здесь. "
-                            "Если пользователь просит текст, стих, песню, сцену, историю, объяснение, мнение или разговор — сразу дай результат, а не обещание. "
-                            "Не начинай с 'сделаю', 'поняла', 'могу', 'сейчас', если можно сразу выполнить просьбу. "
-                            "Не начинай ответ с вводной фразы, подтверждения или рассуждения о задаче. "
-                            "Сразу давай содержательную часть. "
-                            "Базовый стиль: спокойно, сухо, умно, с лёгкой иронией. "
-                            "Жёсткость включай только на хамство, давление, повторное доставание или попытку перепрошить стиль. "
-                            + _irritation_instruction(chat_id, user_id)
-                        ),
-                    },
-                    *get_history(chat_id, user_id),
-                ],
-            )
-            reply = _sanitize_reply(_extract_text(resp))
-            reply = persona.postprocess_text(reply, user_text)
-            reply = _dequestionize(reply)
-            if reply:
-                add_assistant(chat_id, user_id, reply)
-                return DialogDecision(intent="chat", reply=reply)
-        except Exception as e:
-            print(f"[chatgpt_dialog] free chat EXC: {type(e).__name__}: {e}", flush=True)
+
 
     # 2) Model-based decision (fallback for non-addressed active sessions etc.)
     hist = get_history(chat_id, user_id)
@@ -813,9 +785,24 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         # Контент/новости запускаются только по явным словам-триггерам.
         if intent in {"news", "content"} and not _explicit_action_request(user_text, intent):
             intent = "chat"
-
         reply = _sanitize_reply(str(data.get("reply", "")))
         reply = _dequestionize(reply)
+
+        # жёстко убираем контент-ответы, если пользователь не просил
+        if intent == "chat":
+            if any(x in reply.lower() for x in [
+                "жги",
+                "контент",
+                "подборку",
+                "мемы",
+                "видосы",
+                "пошла искать",
+                "пошла искать",
+                "собираю",
+                "ища уже",
+                "ищу уже",
+            ]):
+                reply = ""
         
         # Guardrails for action intents
         if intent == "news" and (_looks_like_clarification(reply) or _looks_like_meta_pipeline(reply) or not reply or reply.strip().lower() == "ack"):
@@ -1115,78 +1102,6 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
     except Exception as e:
         _dbg(f"vision EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="не удалось определить объект на изображении")
-
-def describe_video_frames(text: str, frame_bytes_list: List[bytes]) -> Optional[DialogDecision]:
-    """
-    Discuss user-sent video by looking at sampled frames.
-    No audio transcription here.
-    """
-    try:
-        frames = [b for b in (frame_bytes_list or []) if b]
-        if not frames:
-            return DialogDecision(intent="chat", reply="кадры из видео не достались.")
-
-        if not _has_key():
-            return DialogDecision(intent="chat", reply="видео вижу, но мозг для анализа сейчас не подключен.")
-
-        client = OpenAI()
-
-        user_task = (text or "").strip()
-        content = [
-            {
-                "type": "input_text",
-                "text": (
-                    "Пользователь прислал видео и хочет обсудить его.\n"
-                    f"Запрос пользователя: {user_task}\n\n"
-                    "Ниже несколько кадров из видео по порядку.\n"
-                    "Пойми общий смысл сцены по кадрам.\n"
-                    "Если пользователь просит мнение — дай мнение.\n"
-                    "Если просит объяснить — объясни.\n"
-                    "Если просит оценить — оцени.\n"
-                    "Не делай вид, что видел звук или речь, если её нет в кадрах.\n"
-                    "Ответь от лица Веси: коротко, умно, сухо, с лёгкой иронией.\n"
-                    "Формат: 1–4 короткие фразы. По-русски. Без вопросов пользователю."
-                ),
-            }
-        ]
-
-        for b in frames[:5]:
-            b64 = base64.b64encode(b).decode("utf-8")
-            content.append({
-                "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{b64}",
-            })
-
-        resp = client.responses.create(
-            model=VISION_MODEL,
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        getattr(persona, "_SYSTEM_PROMPT", "").strip()
-                        + "\n\n"
-                        "Ты обсуждаешь видео от лица Веси по нескольким кадрам. "
-                        "Не называй это полноценным просмотром со звуком. "
-                        "Не уходи в нейтральную справку. "
-                        "Сначала реакция, потом короткое пояснение."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": content,
-                },
-            ],
-        )
-
-        reply = _sanitize_reply(_extract_text(resp))
-        if not reply:
-            reply = "вижу только кадры. По ним — ничего выдающегося."
-
-        return DialogDecision(intent="chat", reply=reply)
-
-    except Exception as e:
-        _dbg(f"video frames EXC: {type(e).__name__}: {e}")
-        return DialogDecision(intent="chat", reply="видео разобрать не вышло.")
 
 def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     try:
