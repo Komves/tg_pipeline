@@ -29,6 +29,9 @@ GMAIL_POLL_INTERVAL_SEC = int(os.getenv("GMAIL_POLL_INTERVAL_SEC", "900"))
 GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]# last image per (chat_id, user_id) to support "опиши фото" without reply
 LAST_USER_IMAGE_ID = {}  # (chat_id:int, user_id:int) -> file_id:str
 
+TOPIC_TTL_SEC = int(os.getenv("V_TOPIC_TTL_SEC", str(7 * 24 * 3600)))
+TOPIC_PATH = DATA_DIR / "vesya_topics.json"
+
 # =========================
 # IMAGE REACTION LIMITER (moderate)
 # =========================
@@ -486,6 +489,91 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
         return True
 
     return False
+
+def _topic_key(chat_id: int, user_id: int) -> str:
+    return f"{int(chat_id)}:{int(user_id)}"
+
+
+def _load_topics() -> dict:
+    try:
+        if TOPIC_PATH.exists():
+            data = json.loads(TOPIC_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_topics(data: dict) -> None:
+    try:
+        now = time.time()
+        clean = {}
+        for k, v in (data or {}).items():
+            if not isinstance(v, dict):
+                continue
+            ts = float(v.get("created_at") or 0)
+            if ts and (now - ts) <= TOPIC_TTL_SEC:
+                clean[k] = v
+
+        tmp = TOPIC_PATH.with_suffix(TOPIC_PATH.suffix + ".tmp")
+        tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(TOPIC_PATH)
+    except Exception:
+        pass
+
+
+def _remember_topic(chat_id: int, user_id: int, topic: dict) -> None:
+    data = _load_topics()
+    topic = dict(topic or {})
+    topic["created_at"] = time.time()
+    data[_topic_key(chat_id, user_id)] = topic
+    _save_topics(data)
+
+
+def _get_topic(chat_id: int, user_id: int) -> dict | None:
+    data = _load_topics()
+    topic = data.get(_topic_key(chat_id, user_id))
+    if not isinstance(topic, dict):
+        return None
+
+    ts = float(topic.get("created_at") or 0)
+    if not ts or (time.time() - ts) > TOPIC_TTL_SEC:
+        data.pop(_topic_key(chat_id, user_id), None)
+        _save_topics(data)
+        return None
+
+    return topic
+
+
+def _looks_like_topic_followup(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+
+    return any(x in t for x in (
+        "а что за музыка",
+        "что за музыка",
+        "что за трек",
+        "что за песня",
+        "кто поет",
+        "кто поёт",
+        "а подробнее",
+        "почему",
+        "а почему",
+        "что там",
+        "что она",
+        "что он",
+        "что они",
+        "это правда",
+        "а это",
+        "и что",
+        "ну и",
+        "в смысле",
+        "объясни",
+        "поясни",
+        "разбери",
+    ))
 
 # =========================
 # NEWS RUNNER (calls Telethon inside news_digest)
@@ -1128,6 +1216,15 @@ async def on_photo(message: Message) -> None:
         ):
             dd = chatgpt_dialog.describe_or_compare_photo(caption, img_bytes)
             if dd and (dd.reply or "").strip():
+                _remember_topic(
+                    int(message.chat.id),
+                    int(message.from_user.id) if message.from_user else 0,
+                    {
+                        "type": "photo",
+                        "user_prompt": caption,
+                        "summary": dd.reply,
+                    },
+                )
                 await message.answer(dd.reply)
                 return
         fn = IMG_INBOX / f"{message.chat.id}_{message.message_id}.jpg"
@@ -1294,6 +1391,22 @@ async def on_video(message: Message) -> None:
             frames,
             audio_mp3,
         )
+
+        chat_id = int(message.chat.id)
+        user_id = int(message.from_user.id) if message.from_user else 0
+
+        music_track = ""
+        try:
+            music_track = chatgpt_dialog.recognize_music_audd(audio_mp3)
+        except Exception:
+            music_track = ""
+
+        _remember_topic(chat_id, user_id, {
+            "type": "video",
+            "user_prompt": caption or "",
+            "summary": (dd.reply if dd else "") or "",
+            "music_track": music_track,
+        })
 
         if dd and (dd.reply or "").strip():
             chat_id = int(message.chat.id)
@@ -1912,6 +2025,13 @@ async def vesya_handler(message: Message) -> None:
             )
         )
     )
+
+    topic = _get_topic(chat_id, user_id)
+    if topic and _looks_like_topic_followup(text):
+        dd = chatgpt_dialog.continue_topic_discussion(text, topic)
+        if dd and (dd.reply or "").strip():
+            await message.answer(dd.reply)
+            return
 
     reply = ""
     intent = "chat"

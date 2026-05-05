@@ -1161,6 +1161,64 @@ def comment_text_object(user_text: str, object_text: str) -> Optional[DialogDeci
         _dbg(f"comment_text_object EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="прочитать-то прочитала, а ответить нормально не вышло.")
 
+def continue_topic_discussion(user_text: str, topic: dict) -> Optional[DialogDecision]:
+    """
+    Continue discussion of previously shared text/photo/video topic.
+    Does NOT route to news/content.
+    """
+    try:
+        u = (user_text or "").strip()
+        topic = topic or {}
+
+        if not topic:
+            return DialogDecision(intent="chat", reply="Тему потеряла. Очень человечно, кстати.")
+
+        if not _has_key():
+            return DialogDecision(intent="chat", reply="Тему помню, но мозг сейчас не подключен. Красиво живём.")
+
+        client = OpenAI()
+        topic_text = json.dumps(topic, ensure_ascii=False)[:7000]
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        getattr(persona, "_SYSTEM_PROMPT", "").strip()
+                        + "\n\n"
+                        "Ты — Веся. Пользователь продолжает обсуждать ранее присланный объект: текст, фото, мем или видео. "
+                        "НЕ запускай новости. НЕ запускай контент. НЕ предлагай подборки. "
+                        "Отвечай по сохранённой теме. "
+                        "Стиль: коротко, холодно, саркастично, по делу. "
+                        "Если спрашивают про музыку — используй music_track из темы. "
+                        "Если music_track пустой — честно скажи, что трек не распознала. "
+                        "Формат: 1–2 короткие фразы. Без вопросов пользователю."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Текущий вопрос пользователя: {u}\n\n"
+                        f"Сохранённая тема:\n{topic_text}"
+                    ),
+                },
+            ],
+        )
+
+        reply = _sanitize_reply(_extract_text(resp))
+        reply = persona.postprocess_text(reply, u)
+        reply = _dequestionize(reply)
+
+        return DialogDecision(
+            intent="chat",
+            reply=reply or "Помню. Смысл там был примерно на уровне декоративного шума."
+        )
+
+    except Exception as e:
+        _dbg(f"continue_topic_discussion EXC: {type(e).__name__}: {e}")
+        return DialogDecision(intent="chat", reply="тему помню, но ответить нормально не вышло.")
+
 def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     try:
         if not audio_bytes or not _has_key():
