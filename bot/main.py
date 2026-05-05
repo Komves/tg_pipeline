@@ -1455,6 +1455,10 @@ async def vesya_handler(message: Message) -> None:
     text = (message.text or "").strip()
     orig_text = text
 
+    # Если это сообщение с медиа (фото/видео/документ) — НЕ обрабатываем как текст
+    if message.photo or message.video or message.document:
+        return
+
     # Пересланный текст сам по себе НЕ является вопросом к Весе.
     # Его комментируем только если пользователь явно спросил в этом же сообщении,
     # а обычный forward без просьбы просто кладём в контекст и молчим.
@@ -2498,8 +2502,8 @@ async def _gmail_poll_once() -> None:
 
             for idx, item in enumerate(new_items[:5], start=1):
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="Открыть", callback_data=f"gmail_open:{item.get('id')}"),
-                    InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del:{item.get('id')}"),
+                    InlineKeyboardButton(text="Открыть", callback_data=f"gmail_open_id:{item.get('id')}"),
+                    InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del_id:{item.get('id')}"),
                 ]])
 
                 await bot.send_message(
@@ -2553,6 +2557,7 @@ async def on_feedback(cb):
         pass
 
 @dp.callback_query(F.data.startswith("gmail_open_id:"))
+@dp.callback_query(F.data.startswith("gmail_open:"))
 async def on_gmail_open(cb):
     try:
         import base64
@@ -2626,6 +2631,7 @@ async def on_gmail_open(cb):
         await cb.message.answer(f"письмо не открыла: {type(e).__name__}: {e}")
 
 @dp.callback_query(F.data.startswith("gmail_del_id:"))
+@dp.callback_query(F.data.startswith("gmail_del:"))
 async def on_gmail_delete(cb):
     try:
         import requests
