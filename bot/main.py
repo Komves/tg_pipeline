@@ -289,6 +289,8 @@ NEWS_SOURCES = BASE_DIR / "news_sources.txt"
 DEFAULT_NEWS_HOURS = int(os.getenv("NEWS_HOURS", "12"))
 DEFAULT_NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 
+BRAVE_SEARCH_API_KEY = (os.getenv("BRAVE_SEARCH_API_KEY") or "").strip()
+
 # optional: restrict to one chat
 _CHAT_ID_ENV = (os.getenv("CHAT_ID") or "").strip()
 ALLOWED_CHAT_ID: Optional[int] = int(_CHAT_ID_ENV) if _CHAT_ID_ENV else None
@@ -580,6 +582,115 @@ def _looks_like_topic_followup(text: str) -> bool:
 # =========================
 # NEWS RUNNER (calls Telethon inside news_digest)
 # =========================
+
+def _strip_vesya_prefix(text: str) -> str:
+    t = (text or "").strip()
+    return re.sub(
+        r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
+        "",
+        t,
+        flags=re.I,
+    ).strip()
+
+
+def _extract_web_search_query(text: str) -> str:
+    q = _strip_vesya_prefix(text)
+    q = re.sub(
+        r"^\s*(найди|поищи|загугли|посмотри в интернете|поищи в интернете)\s+",
+        "",
+        q,
+        flags=re.I,
+    ).strip()
+    return q
+
+
+async def _run_web_search_for_message(message: Message, query: str) -> None:
+    query = (query or "").strip()
+    if not query:
+        await message.answer("Искать нечего. Пустой запрос — тоже диагноз.")
+        return
+
+    if not BRAVE_SEARCH_API_KEY:
+        await message.answer("Поиск не подключён: нет BRAVE_SEARCH_API_KEY.")
+        return
+
+    try:
+        import requests
+        from openai import OpenAI
+
+        def _search():
+            r = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={
+                    "Accept": "application/json",
+                    "X-Subscription-Token": BRAVE_SEARCH_API_KEY,
+                },
+                params={
+                    "q": query,
+                    "count": 5,
+                    "search_lang": "ru",
+                    "country": "RU",
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+            return r.json()
+
+        data = await asyncio.to_thread(_search)
+        results = (data.get("web") or {}).get("results") or []
+
+        if not results:
+            await message.answer("Ничего внятного не нашла. Интернет тоже умеет молчать.")
+            return
+
+        compact = []
+        for x in results[:5]:
+            compact.append({
+                "title": (x.get("title") or "").strip(),
+                "url": (x.get("url") or "").strip(),
+                "description": (x.get("description") or "").strip(),
+            })
+
+        client = OpenAI()
+        resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты — Веся. Пользователь попросил найти информацию в интернете. "
+                        "На основе результатов поиска дай короткий ответ по-русски. "
+                        "Сначала факты, потом короткая холодная интонация. "
+                        "Не хамить пользователю. Не уходить в команды. "
+                        "Формат: 2–5 коротких строк. Если источники слабые — прямо скажи."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Запрос: {query}\n\n"
+                        f"Результаты поиска JSON:\n{json.dumps(compact, ensure_ascii=False)}"
+                    ),
+                },
+            ],
+        )
+
+        summary = (getattr(resp, "output_text", "") or "").strip()
+        if not summary:
+            summary = "Нашла, но пересказать красиво не вышло. Очень по-человечески."
+
+        links = []
+        for i, x in enumerate(compact[:3], start=1):
+            title = x.get("title") or "источник"
+            url = x.get("url") or ""
+            if url:
+                links.append(f"{i}. {title}\n{url}")
+
+        await message.answer((summary + "\n\n" + "\n".join(links))[:3900])
+
+    except Exception as e:
+        print(f"[web_search] failed: {type(e).__name__}: {e}", flush=True)
+        await message.answer(f"поиск сломался: {type(e).__name__}: {e}")
 
 async def _run_news_for_message(message: Message, *, hours: int, limit: int) -> None:
     try:
@@ -2092,6 +2203,16 @@ async def vesya_handler(message: Message) -> None:
             await message.answer("ок. сейчас соберу сводку.")
 
         await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
+        return
+
+    if intent == "web_search":
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+        if reply:
+            await message.answer(reply)
+
+        q = _extract_web_search_query(text)
+        await _run_web_search_for_message(message, q)
         return
 
     if intent == "content":

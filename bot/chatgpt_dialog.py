@@ -53,7 +53,7 @@ _PERSONA_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
 @dataclass
 class DialogDecision:
-    intent: str  # chat | news | content | end
+    intent: str  # chat | news | content | web_search | end
     reply: str
 
 
@@ -428,6 +428,26 @@ def _deterministic_pick(options: List[str], seed_str: str) -> str:
         return ""
     return options[_deterministic_index(len(options), seed_str)]
 
+def looks_like_web_search_request(user_text: str) -> bool:
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    if any(x in t for x in (
+        "найди ",
+        "поищи ",
+        "посмотри в интернете",
+        "поищи в интернете",
+        "загугли",
+        "что известно про",
+        "что известно о",
+        "где найти",
+        "найти где",
+    )):
+        return True
+
+    return False
+
 def _explicit_action_request(user_text: str, intent: str) -> bool:
     t = (user_text or "").lower()
 
@@ -630,6 +650,10 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     reply = ""
     add_user(chat_id, user_id, user_text)
     touch(chat_id, user_id)    
+    if looks_like_web_search_request(user_text):
+        reply = "Сейчас посмотрю. Без театра, просто факты."
+        add_assistant(chat_id, user_id, reply)
+        return DialogDecision(intent="web_search", reply=reply)
     tl = user_text.lower()
     if ("веся" in tl or "веслава" in tl) and ("новост" in tl or "дайджест" in tl):
         reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
