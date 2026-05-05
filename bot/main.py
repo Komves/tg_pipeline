@@ -385,6 +385,88 @@ def _img_should_react(chat_id: int) -> bool:
     IMG_REACT_LAST_TS[int(chat_id)] = now
     return True
 
+def _wants_context_comment(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+
+    return any(x in t for x in (
+        "как тебе",
+        "что думаешь",
+        "что скажешь",
+        "прокоммент",
+        "оцени",
+        "мнение",
+        "ну и",
+        "это как",
+        "как оно",
+        "разбери",
+        "что по этому поводу",
+        "что по нему",
+        "что по ней",
+        "как тебе такое",
+    ))
+
+
+async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
+    r = message.reply_to_message
+    if not r:
+        return False
+
+    prompt = f"Веся, прокомментируй это в своём вкусе. Вопрос пользователя: {user_text}"
+
+    try:
+        if getattr(r, "photo", None):
+            raw = await _download_tg_file_bytes(message.bot, r.photo[-1].file_id)
+            img_bytes = _shrink_jpeg_bytes(raw)
+            dd = chatgpt_dialog.describe_or_compare_photo(prompt, img_bytes)
+            if dd and (dd.reply or "").strip():
+                await message.answer(dd.reply)
+                return True
+
+        doc = getattr(r, "document", None)
+        if doc:
+            mt = (getattr(doc, "mime_type", "") or "").lower()
+
+            if mt.startswith("image/"):
+                raw = await _download_tg_file_bytes(message.bot, doc.file_id)
+                img_bytes = _shrink_jpeg_bytes(raw)
+                dd = chatgpt_dialog.describe_or_compare_photo(prompt, img_bytes)
+                if dd and (dd.reply or "").strip():
+                    await message.answer(dd.reply)
+                    return True
+
+            if mt.startswith("video/"):
+                raw = await _download_tg_file_bytes(message.bot, doc.file_id)
+                frames = await asyncio.to_thread(_extract_video_frames, raw, 5)
+                audio_mp3 = await asyncio.to_thread(_extract_video_audio_mp3, raw)
+                dd = chatgpt_dialog.describe_video_frames(prompt, frames, audio_mp3)
+                if dd and (dd.reply or "").strip():
+                    await message.answer(dd.reply)
+                    return True
+
+        if getattr(r, "video", None):
+            raw = await _download_tg_file_bytes(message.bot, r.video.file_id)
+            frames = await asyncio.to_thread(_extract_video_frames, raw, 5)
+            audio_mp3 = await asyncio.to_thread(_extract_video_audio_mp3, raw)
+            dd = chatgpt_dialog.describe_video_frames(prompt, frames, audio_mp3)
+            if dd and (dd.reply or "").strip():
+                await message.answer(dd.reply)
+                return True
+
+        obj_text = (r.text or r.caption or "").strip()
+        if obj_text:
+            dd = chatgpt_dialog.comment_text_object(user_text, obj_text)
+            if dd and (dd.reply or "").strip():
+                await message.answer(dd.reply)
+                return True
+
+    except Exception as e:
+        print(f"[context_comment] failed: {type(e).__name__}: {e}", flush=True)
+        await message.answer(f"не смогла прокомментировать: {type(e).__name__}: {e}")
+        return True
+
+    return False
 
 # =========================
 # NEWS RUNNER (calls Telethon inside news_digest)
@@ -1021,7 +1103,10 @@ async def on_photo(message: Message) -> None:
             img_bytes,
         )
         caption = (message.caption or "").strip()
-        if caption and chatgpt_dialog.persona.is_addressed(caption):
+        if caption and (
+            chatgpt_dialog.persona.is_addressed(caption)
+            or (message.chat.type == "private" and _wants_context_comment(caption))
+        ):
             dd = chatgpt_dialog.describe_or_compare_photo(caption, img_bytes)
             if dd and (dd.reply or "").strip():
                 await message.answer(dd.reply)
@@ -1109,6 +1194,18 @@ async def on_image_document(message: Message) -> None:
             img_bytes,
         )
 
+        caption = (message.caption or "").strip()
+        if caption and (
+            chatgpt_dialog.persona.is_addressed(caption)
+            or (message.chat.type == "private" and _wants_context_comment(caption))
+        ):
+            dd = chatgpt_dialog.describe_or_compare_photo(
+                f"Веся, прокомментируй это в своём вкусе. Вопрос пользователя: {caption}",
+                img_bytes,
+            )
+            if dd and (dd.reply or "").strip():
+                await message.answer(dd.reply)
+                return
         # In groups: react rarely (cooldown + probability)
         if message.chat.type in ("group", "supergroup"):
             if not _img_should_react(int(message.chat.id)):
@@ -1285,6 +1382,11 @@ async def vesya_handler(message: Message) -> None:
         _relay_arm(message)
         await message.answer("кидай следующим сообщением.")
         return
+
+    if _wants_context_comment(text):
+        handled = await _try_reply_context_comment(message, text)
+        if handled:
+            return
 
     dialog_text = text
 

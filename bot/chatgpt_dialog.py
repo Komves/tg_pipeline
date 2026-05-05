@@ -1106,6 +1106,61 @@ def describe_or_compare_photo(text: str, img_bytes: bytes) -> Optional[DialogDec
         _dbg(f"vision EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="не удалось определить объект на изображении")
 
+def comment_text_object(user_text: str, object_text: str) -> Optional[DialogDecision]:
+    """
+    Comment on forwarded/replied text in Vesya style.
+    Does NOT route to news/content.
+    """
+    try:
+        u = (user_text or "").strip()
+        obj = (object_text or "").strip()
+
+        if not obj:
+            return DialogDecision(intent="chat", reply="Комментировать нечего. Пустота тоже жанр, но скучный.")
+
+        if not _has_key():
+            return DialogDecision(intent="chat", reply="Текст вижу, но мозг сейчас не подключен. Очень удобно.")
+
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        getattr(persona, "_SYSTEM_PROMPT", "").strip()
+                        + "\n\n"
+                        "Ты — Веся. Пользователь дал тебе текст/пост/новость/пересланное сообщение и просит мнение. "
+                        "НЕ запускай новости. НЕ запускай контент. НЕ предлагай подборки. "
+                        "Твоя задача — прочитать смысл и дать короткий едкий комментарий в своём стиле. "
+                        "Стиль: холодно, умно, саркастично, без блогерства и без канцелярита. "
+                        "Формат: 1–2 короткие фразы. Без вопросов пользователю."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Вопрос пользователя: {u}\n\n"
+                        f"Текст/объект для комментария:\n{obj[:6000]}"
+                    ),
+                },
+            ],
+        )
+
+        reply = _sanitize_reply(_extract_text(resp))
+        reply = persona.postprocess_text(reply, u)
+        reply = _dequestionize(reply)
+
+        return DialogDecision(
+            intent="chat",
+            reply=reply or "Прочитала. Пафоса больше, чем смысла."
+        )
+
+    except Exception as e:
+        _dbg(f"comment_text_object EXC: {type(e).__name__}: {e}")
+        return DialogDecision(intent="chat", reply="прочитать-то прочитала, а ответить нормально не вышло.")
+
 def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     try:
         if not audio_bytes or not _has_key():
