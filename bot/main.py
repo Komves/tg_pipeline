@@ -386,6 +386,15 @@ def _img_should_react(chat_id: int) -> bool:
     IMG_REACT_LAST_TS[int(chat_id)] = now
     return True
 
+def _is_forwarded_message(message: Message) -> bool:
+    return bool(
+        getattr(message, "forward_origin", None)
+        or getattr(message, "forward_date", None)
+        or getattr(message, "forward_from", None)
+        or getattr(message, "forward_sender_name", None)
+        or getattr(message, "forward_from_chat", None)
+    )
+
 def _wants_context_comment(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
@@ -1330,6 +1339,12 @@ async def vesya_handler(message: Message) -> None:
 
     text = (message.text or "").strip()
     orig_text = text
+
+    # Пересланный текст сам по себе НЕ является вопросом к Весе.
+    # Его комментируем только если пользователь явно спросил в этом же сообщении,
+    # а обычный forward без просьбы просто кладём в контекст и молчим.
+    if _is_forwarded_message(message) and not _wants_context_comment(text):
+        return
 
     # =========================
     # ONE-SHOT RELAY MODE
