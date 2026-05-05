@@ -27,10 +27,7 @@ RECENT_MSG_IDS = {}
 GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]
 GMAIL_POLL_INTERVAL_SEC = int(os.getenv("GMAIL_POLL_INTERVAL_SEC", "900"))
 GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]# last image per (chat_id, user_id) to support "опиши фото" without reply
-LAST_USER_IMAGE_ID = {}  # (chat_id:int, user_id:int) -> file_id:str
-
-TOPIC_TTL_SEC = int(os.getenv("V_TOPIC_TTL_SEC", str(7 * 24 * 3600)))
-TOPIC_PATH = DATA_DIR / "vesya_topics.json"
+LAST_USER_IMAGE_ID = {}
 
 # =========================
 # IMAGE REACTION LIMITER (moderate)
@@ -161,6 +158,11 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is empty (set Render env var BOT_TOKEN).")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+TOPIC_TTL_SEC = int(os.getenv("V_TOPIC_TTL_SEC", str(7 * 24 * 3600)))
+TOPIC_PATH = DATA_DIR / "vesya_topics.json"
+
 # === PRIVATE USERS REGISTRY ===
 PRIVATE_USERS_PATH = DATA_DIR / "private_users.json"
 
