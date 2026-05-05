@@ -9,6 +9,7 @@ import shutil
 import uuid
 import html
 import clip_embedder
+import re
 from pathlib import Path
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatAction
