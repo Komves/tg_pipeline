@@ -1217,18 +1217,23 @@ async def on_photo(message: Message) -> None:
             or (message.chat.type == "private" and _wants_context_comment(caption))
         ):
             dd = chatgpt_dialog.describe_or_compare_photo(caption, img_bytes)
-            if dd and (dd.reply or "").strip():
-                _remember_topic(
-                    int(message.chat.id),
-                    int(message.from_user.id) if message.from_user else 0,
-                    {
-                        "type": "photo",
-                        "user_prompt": caption,
-                        "summary": dd.reply,
-                    },
-                )
-                await message.answer(dd.reply)
-                return
+            reply = ((dd.reply if dd else "") or "").strip()
+
+            if not reply:
+                reply = "Посмотрела. Визуальный аргумент засчитан, смысл — по остаточному принципу."
+
+            _remember_topic(
+                int(message.chat.id),
+                int(message.from_user.id) if message.from_user else 0,
+                {
+                    "type": "photo",
+                    "user_prompt": caption,
+                    "summary": reply,
+                },
+            )
+
+            await message.answer(reply)
+            return
         fn = IMG_INBOX / f"{message.chat.id}_{message.message_id}.jpg"
 
         try:
