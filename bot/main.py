@@ -390,13 +390,23 @@ def _wants_context_comment(text: str) -> bool:
     if not t:
         return False
 
+    # Личный вопрос к Весе — отвечаем на вопрос, НЕ комментируем вложенный/пересланный объект.
+    if re.search(
+        r"\b(ты|тебе|тебя|твой|твоя|твои|хочешь|можешь|будешь|стала бы|согласна|нравится ли тебе)\b",
+        t,
+        flags=re.I,
+    ):
+        return False
+
     return any(x in t for x in (
         "как тебе",
-        "что думаешь",
-        "что скажешь",
+        "что думаешь про это",
+        "что думаешь об этом",
+        "что скажешь про это",
+        "что скажешь об этом",
         "прокоммент",
         "оцени",
-        "мнение",
+        "мнение по этому",
         "ну и",
         "это как",
         "как оно",
@@ -406,7 +416,6 @@ def _wants_context_comment(text: str) -> bool:
         "что по ней",
         "как тебе такое",
     ))
-
 
 async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
     r = message.reply_to_message
