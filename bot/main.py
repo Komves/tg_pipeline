@@ -1365,6 +1365,19 @@ async def on_image_document(message: Message) -> None:
 
 @dp.message(F.video)
 async def on_video(message: Message) -> None:
+    now = time.time()
+    k = (int(message.chat.id), int(message.message_id))
+
+    for kk, ts in list(RECENT_MSG_IDS.items()):
+        if now - ts > 60:
+            RECENT_MSG_IDS.pop(kk, None)
+
+    if k in RECENT_MSG_IDS:
+        print(f"[VIDEO] duplicate msg_id={message.message_id} skipped", flush=True)
+        return
+
+    RECENT_MSG_IDS[k] = now
+
     if not _chat_allowed(message):
         return
 
