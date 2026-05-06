@@ -342,6 +342,8 @@ DEFAULT_NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 
 BRAVE_SEARCH_API_KEY = (os.getenv("BRAVE_SEARCH_API_KEY") or "").strip()
 
+VOICE_STT_MODEL = os.getenv("V_VOICE_STT_MODEL", "gpt-4o-mini-transcribe")
+
 # optional: restrict to one chat
 _CHAT_ID_ENV = (os.getenv("CHAT_ID") or "").strip()
 ALLOWED_CHAT_ID: Optional[int] = int(_CHAT_ID_ENV) if _CHAT_ID_ENV else None
@@ -728,6 +730,34 @@ async def _answer_long(message: Message, text: str, *, chunk_size: int = 3500) -
 
         await message.answer(part.strip())
         t = t[len(part):].strip()
+
+def _transcribe_voice_ogg(audio_bytes: bytes) -> str:
+    if not audio_bytes:
+        return ""
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return ""
+
+    try:
+        from openai import OpenAI
+        from io import BytesIO
+
+        client = OpenAI()
+
+        f = BytesIO(audio_bytes)
+        f.name = "voice.ogg"
+
+        tr = client.audio.transcriptions.create(
+            model=VOICE_STT_MODEL,
+            file=f,
+            language="ru",
+        )
+
+        return (getattr(tr, "text", "") or "").strip()
+
+    except Exception as e:
+        print(f"[voice] transcribe failed: {type(e).__name__}: {e}", flush=True)
+        return ""
 
 def _extract_web_search_query(text: str) -> str:
     q = _strip_vesya_prefix(text)
@@ -1739,6 +1769,133 @@ async def on_video(message: Message) -> None:
     except Exception as e:
         print(f"[video] discuss error: {type(e).__name__}: {e}", flush=True)
         await message.answer(f"видео не разобрала: {type(e).__name__}: {e}")
+
+async def _handle_text_core(message: Message, text: str, *, event_type: str = "text") -> None:
+    """
+    Shared semantic core for normal text and transcribed voice.
+    Voice must not have its own intelligence: it becomes text and uses the same router/executors.
+    """
+    text = (text or "").strip()
+    if not text:
+        return
+
+    chat_id = int(message.chat.id)
+    user_id = int(message.from_user.id) if message.from_user else 0
+
+    dialog_text = text
+
+    if message.reply_to_message:
+        r = message.reply_to_message
+
+        current_author = (
+            message.from_user.full_name
+            if message.from_user
+            else "пользователь"
+        )
+
+        replied_author = (
+            r.from_user.full_name
+            if r.from_user
+            else "пользователь"
+        )
+
+        replied_text = (
+            r.text
+            or r.caption
+            or ""
+        ).strip()
+
+        if replied_text:
+            dialog_text = (
+                f"Веся, сообщение от {current_author}. "
+                f"Он отвечает на сообщение пользователя {replied_author}: "
+                f"«{replied_text}». "
+                f"В его текущем сообщении местоимения вроде 'он', 'его', 'ему' относятся к {replied_author}. "
+                f"Текущий текст: «{text}»."
+            )
+
+    decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
+
+    print(f"[route][{event_type}] intent={decision.intent} reply={decision.reply!r}", flush=True)
+
+    intent = (decision.intent or "chat").strip().lower()
+    reply = (decision.reply or "").strip()
+
+    _record_memory_event(
+        message,
+        text=dialog_text,
+        intent=intent,
+        reply=reply,
+        event_type=event_type,
+    )
+
+    if intent == "end":
+        chatgpt_dialog.end(chat_id, user_id)
+        if reply:
+            await message.answer(reply)
+        return
+
+    if intent == "news":
+        if reply:
+            await message.answer(reply)
+        await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
+        return
+
+    if intent == "content":
+        if reply:
+            await message.answer(reply)
+        await _send_content(message, user_id=chat_id, ingest_hours_n=None)
+        return
+
+    if intent == "web_search":
+        if reply:
+            await message.answer(reply)
+
+        q = (getattr(decision, "query", "") or "").strip()
+        if not q:
+            q = _extract_web_search_query(text)
+
+        await _run_web_search_for_message(message, q)
+        return
+
+    if reply:
+        await message.answer(reply)
+
+@dp.message(F.voice)
+async def on_voice(message: Message) -> None:
+    if not _chat_allowed(message):
+        return
+
+    if _relay_is_armed(message):
+        return
+
+    if message.chat.type in ("group", "supergroup"):
+        # В группе voice не должен включать Весю без reply на бота.
+        is_reply_to_bot = (
+            message.reply_to_message
+            and message.reply_to_message.from_user
+            and message.reply_to_message.from_user.is_bot
+        )
+        if not is_reply_to_bot:
+            return
+
+    try:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+        raw = await _download_tg_file_bytes(message.bot, message.voice.file_id)
+        text = await asyncio.to_thread(_transcribe_voice_ogg, raw)
+
+        if not text:
+            await message.answer("голос не разобрала.")
+            return
+
+        print(f"[voice] transcribed={text!r}", flush=True)
+
+        await _handle_text_core(message, text, event_type="voice")
+
+    except Exception as e:
+        print(f"[voice] handler failed: {type(e).__name__}: {e}", flush=True)
+        await message.answer(f"голос сломался: {type(e).__name__}: {e}")
 
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
