@@ -139,6 +139,7 @@ from aiogram.filters import Command
 
 import chatgpt_dialog
 import news_digest
+import memory as vesya_memory
 
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -428,6 +429,61 @@ def _chat_allowed(message: Message) -> bool:
 def _log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     print(f"[main] {ts} UTC {msg}", flush=True)
+
+
+def _record_memory_event(
+    message: Message,
+    *,
+    text: str,
+    intent: str = "",
+    reply: str = "",
+    event_type: str = "text",
+) -> None:
+    try:
+        from datetime import datetime, timezone
+
+        user = message.from_user
+        if not user:
+            return
+
+        user_id = int(user.id)
+        chat_id = int(message.chat.id)
+
+        profiles = vesya_memory.load_profiles()
+        profile = vesya_memory.ensure_user_profile(
+            profiles,
+            user_id=user_id,
+            display_name=getattr(user, "full_name", "") or "",
+            username=getattr(user, "username", "") or "",
+        )
+
+        if intent:
+            vesya_memory.bump_intent(profile, intent)
+
+        vesya_memory.update_night_owl(
+            profile,
+            hour_local=datetime.now().hour,
+        )
+
+        vesya_memory.save_profiles(profiles)
+
+        vesya_memory.append_event({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "chat_id": chat_id,
+            "chat_type": message.chat.type,
+            "user_id": user_id,
+            "message_id": int(message.message_id),
+            "type": event_type,
+            "intent": intent,
+            "text": (text or "")[:2000],
+            "reply": (reply or "")[:2000],
+        })
+
+        vesya_memory.prune_memory()
+
+    except Exception as e:
+        print(f"[memory] record failed: {type(e).__name__}: {e}", flush=True)
+
 def _img_should_react(chat_id: int) -> bool:
     now = time.time()
     last = float(IMG_REACT_LAST_TS.get(int(chat_id), 0.0))
@@ -2308,6 +2364,14 @@ async def vesya_handler(message: Message) -> None:
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
 
+    _record_memory_event(
+        message,
+        text=dialog_text,
+        intent=intent,
+        reply=reply,
+        event_type="text",
+    )
+
     if intent == "chat":
         # имитация "печатает..." + пауза 5–10 секунд
         wait_s = random.uniform(5, 10)
@@ -2994,3 +3058,71 @@ async def on_gmail_delete(cb):
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+def get_recent_user_events(
+    *,
+    chat_id: int,
+    user_id: int,
+    minutes: int = 60 * 24 * 7,
+    limit: int = 12,
+) -> List[Dict[str, Any]]:
+    events = get_recent_events(minutes=minutes)
+    out: List[Dict[str, Any]] = []
+
+    for e in events:
+        try:
+            if int(e.get("chat_id")) != int(chat_id):
+                continue
+            if int(e.get("user_id")) != int(user_id):
+                continue
+            out.append(e)
+        except Exception:
+            continue
+
+    return out[-max(1, int(limit)):]
+
+
+def render_user_memory_context(
+    *,
+    chat_id: int,
+    user_id: int,
+    minutes: int = 60 * 24 * 7,
+    limit: int = 8,
+) -> str:
+    events = get_recent_user_events(
+        chat_id=chat_id,
+        user_id=user_id,
+        minutes=minutes,
+        limit=limit,
+    )
+
+    if not events:
+        return ""
+
+    lines = []
+    for e in events:
+        intent = (e.get("intent") or "").strip()
+        text = (e.get("text") or "").strip().replace("\n", " ")
+        reply = (e.get("reply") or "").strip().replace("\n", " ")
+
+        if not text:
+            continue
+
+        if len(text) > 220:
+            text = text[:220].rstrip() + "…"
+        if len(reply) > 180:
+            reply = reply[:180].rstrip() + "…"
+
+        if reply:
+            lines.append(f"- intent={intent}; user: {text}; vesya: {reply}")
+        else:
+            lines.append(f"- intent={intent}; user: {text}")
+
+    if not lines:
+        return ""
+
+    return (
+        "Память последних взаимодействий с этим пользователем. "
+        "Используй только как контекст, не пересказывай память напрямую:\n"
+        + "\n".join(lines)
+    )

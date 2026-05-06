@@ -15,6 +15,11 @@ from openai import OpenAI
 
 import persona
 
+try:
+    import memory as vesya_memory
+except Exception:
+    vesya_memory = None
+
 # =============================================================================
 # CONFIG
 # =============================================================================
@@ -233,9 +238,29 @@ def add_assistant(chat_id: int, user_id: int, text: str) -> None:
         s.history.append({"role": "assistant", "content": text})
 
 
+def _memory_context_for_prompt(chat_id: int, user_id: int) -> str:
+    if vesya_memory is None:
+        return ""
+
+    try:
+        return vesya_memory.render_user_memory_context(
+            chat_id=chat_id,
+            user_id=user_id,
+            minutes=60 * 24 * 7,
+            limit=8,
+        )
+    except Exception:
+        return ""
+
 def get_history(chat_id: int, user_id: int) -> List[Dict[str, str]]:
     s = _sessions.get((chat_id, user_id))
-    return list(s.history) if s else []
+    history = list(s.history) if s else []
+
+    mem = _memory_context_for_prompt(chat_id, user_id)
+    if mem:
+        return [{"role": "system", "content": mem}] + history
+
+    return history
 
 def _irritation_instruction(chat_id: int, user_id: int) -> str:
     s = _sessions.get((chat_id, user_id))
