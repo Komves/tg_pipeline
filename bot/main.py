@@ -1709,19 +1709,6 @@ async def vesya_handler(message: Message) -> None:
 
     print(f"[route] text={text!r}", flush=True)
 
-    # === AUTO WEB SEARCH (новости / факты) ===
-    if any(x in text.lower() for x in (
-        "что случилось",
-        "что произошло",
-        "новости",
-        "что с ",
-        "что у ",
-        "что происходит",
-        "последние новости",
-    )):
-        await _run_web_search_for_message(message, text)
-        return
-
     # === GMAIL CONNECT COMMAND ===
     if "подключи почту" in text.lower():
         user_id = message.from_user.id
@@ -2186,7 +2173,8 @@ async def vesya_handler(message: Message) -> None:
 
     if is_reply_to_bot_content:
         decision = chatgpt_dialog.decide(chat_id, user_id, f"Веся, {text}")
-        decision.intent = "chat"
+        if decision.intent == "content":
+            decision.intent = "chat"
     else:
         decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
 
@@ -2224,7 +2212,10 @@ async def vesya_handler(message: Message) -> None:
         if reply:
             await message.answer(reply)
 
-        q = _extract_web_search_query(text)
+        q = (getattr(decision, "query", "") or "").strip()
+        if not q:
+            q = _extract_web_search_query(text)
+
         await _run_web_search_for_message(message, q)
         return
 

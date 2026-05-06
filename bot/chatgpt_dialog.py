@@ -50,12 +50,11 @@ _PERSONA_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # TYPES
 # =============================================================================
 
-
 @dataclass
 class DialogDecision:
     intent: str  # chat | news | content | web_search | end
     reply: str
-
+    query: str = ""
 
 # =============================================================================
 # IN-MEM DIALOG SESSIONS (used for "active" mode after name / photo)
@@ -428,25 +427,61 @@ def _deterministic_pick(options: List[str], seed_str: str) -> str:
         return ""
     return options[_deterministic_index(len(options), seed_str)]
 
-def looks_like_web_search_request(user_text: str) -> bool:
-    t = (user_text or "").strip().lower()
-    if not t:
-        return False
+def semantic_route(user_text: str) -> Optional[dict]:
+    """
+    Semantic intent router.
+    LLM decides intent only.
+    Executors still live in main.py.
+    """
+    t = (user_text or "").strip()
+    if not t or not _has_key():
+        return None
 
-    if any(x in t for x in (
-        "найди ",
-        "поищи ",
-        "посмотри в интернете",
-        "поищи в интернете",
-        "загугли",
-        "что известно про",
-        "что известно о",
-        "где найти",
-        "найти где",
-    )):
-        return True
+    try:
+        client = OpenAI()
 
-    return False
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты semantic-router для Telegram-бота Веси.\n"
+                        "Твоя задача — определить intent, а НЕ отвечать пользователю.\n"
+                        "Верни только JSON.\n\n"
+                        "Доступные intent:\n"
+                        "- chat: обычный разговор, мнение, шутка, обсуждение, риторика.\n"
+                        "- news: пользователь явно просит новостную сводку/дайджест.\n"
+                        "- content: пользователь явно просит прислать контент, мемы, видосы, get12/get24, жги/огня.\n"
+                        "- web_search: нужен свежий внешний поиск в интернете или конкретный поиск фактов/мест/событий.\n"
+                        "- end: пользователь явно завершает разговор.\n\n"
+                        "Правила:\n"
+                        "- Вопросы вида 'что сегодня случилось с X', 'что произошло с X', 'найди X', 'поищи X', "
+                        "'что известно про X', 'где найти X' => web_search.\n"
+                        "- Фраза без просьбы найти, например 'NVIDIA опять пампят на ИИ' => chat.\n"
+                        "- 'дай новости', 'собери дайджест', 'что нового в мире' => news.\n"
+                        "- 'жги', 'огня', 'дай мемы', 'дай видосы', 'get12', 'get24' => content.\n"
+                        "- Не запускай content только из-за слова 'видео', если пользователь обсуждает присланный ролик.\n"
+                        "- Не запускай news только потому что в сообщении есть слово 'новость', если пользователь обсуждает текст.\n\n"
+                        "JSON формат строго:\n"
+                        "{\"intent\":\"chat|news|content|web_search|end\",\"query\":\"строка для поиска или пусто\"}"
+                    ),
+                },
+                {"role": "user", "content": t},
+            ],
+        )
+
+        data = _parse_json_object(_extract_text(resp)) or {}
+        intent = str(data.get("intent") or "chat").strip().lower()
+        if intent not in {"chat", "news", "content", "web_search", "end"}:
+            intent = "chat"
+
+        query = str(data.get("query") or "").strip()
+        return {"intent": intent, "query": query}
+
+    except Exception as e:
+        _dbg(f"semantic_route EXC: {type(e).__name__}: {e}")
+        return None
 
 def _explicit_action_request(user_text: str, intent: str) -> bool:
     t = (user_text or "").lower()
@@ -605,7 +640,7 @@ _SYSTEM_PROMPT = (
     getattr(persona, "_SYSTEM_PROMPT", "").strip()
     + "\n\n"
     + """Ты НЕ исполняешь действия сам: только определяешь intent и коротко отвечаешь пользователю.
-Доступные intent: chat, news, content, end.
+Доступные intent: chat, news, content, web_search, end.
 
 Правила:
 - Ответ 1–3 строки.
@@ -631,10 +666,9 @@ _SYSTEM_PROMPT = (
 - Если запрос — обычный разговор, intent=chat.
 
 Верни JSON строго вида:
-{"intent":"chat|news|content|end","reply":"текст"}
+{"intent":"chat|news|content|web_search|end","reply":"текст"}
 """
 )
-
 
 # =============================================================================
 # PUBLIC API
@@ -650,22 +684,54 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     reply = ""
     add_user(chat_id, user_id, user_text)
     touch(chat_id, user_id)    
-    if looks_like_web_search_request(user_text):
-        reply = "Сейчас посмотрю. Без театра, просто факты."
-        add_assistant(chat_id, user_id, reply)
-        return DialogDecision(intent="web_search", reply=reply)
+    semantic_chat = False
+    semantic_query = ""
+
+    route = semantic_route(user_text)
+    if route:
+        r_intent = (route.get("intent") or "chat").strip().lower()
+        semantic_query = str(route.get("query") or "").strip()
+
+        if r_intent == "web_search":
+            reply = "Сейчас посмотрю. Без театра, просто факты."
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="web_search", reply=reply, query=semantic_query)
+
+        if r_intent == "news":
+            reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="news", reply=reply)
+
+        if r_intent == "content":
+            reply = _deterministic_pick(ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="content", reply=reply)
+
+        if r_intent == "end":
+            reply = "ладно."
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="end", reply=reply)
+
+        if r_intent == "chat":
+            semantic_chat = True
+
     tl = user_text.lower()
     if ("веся" in tl or "веслава" in tl) and ("новост" in tl or "дайджест" in tl):
         reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="news", reply=reply)
 
-    # 0) Fast routing using persona rules (restores character + stable behavior)
-    try:
-        ir = persona.detect_intent(user_text)
-    except Exception:
+    # 0) Legacy persona rules are fallback only.
+    # If semantic_route already classified this as chat, persona regex must not
+    # upgrade it back into news/content.
+    if semantic_chat:
         ir = None
-
+    else:
+        try:
+            ir = persona.detect_intent(user_text)
+        except Exception:
+            ir = None
+    
     if ir and ir.addressed and ir.intent == "ping":
         reply = random.choice(getattr(persona, "PING_ANSWERS", ["я тут", "слушаю"]))
         add_assistant(chat_id, user_id, reply)
@@ -805,7 +871,10 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             return DialogDecision(intent="chat", reply=reply)
 
         intent = (str(data.get("intent", "chat")) or "chat").strip().lower()
-        if intent not in {"chat", "news", "content", "end"}:
+        if intent not in {"chat", "news", "content", "web_search", "end"}:
+            intent = "chat"
+
+        if semantic_chat and intent != "chat":
             intent = "chat"
 
         # LLM-router не имеет права сам запускать контент/новости из обычной беседы.
