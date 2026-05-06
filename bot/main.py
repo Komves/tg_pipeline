@@ -896,26 +896,33 @@ def _tts_to_ogg_bytes(text: str) -> bytes:
     if not eleven_key:
         return b""
 
+    proxy_url = (os.getenv("ELEVENLABS_PROXY") or "").strip() or None
+
     try:
-        from elevenlabs.client import ElevenLabs
+        import httpx
 
-        client = ElevenLabs(api_key=eleven_key)
+        with httpx.Client(proxy=proxy_url, timeout=45) as client:
+            try:
+                ip = client.get("https://api.ipify.org").text.strip()
+                print(f"[voice] elevenlabs outbound_ip={ip}", flush=True)
+            except Exception as e:
+                print(f"[voice] outbound_ip check failed: {type(e).__name__}: {e}", flush=True)
 
-        try:
-            import httpx
-            ip = httpx.get("https://api.ipify.org", timeout=10).text.strip()
-            print(f"[voice] outbound_ip={ip}", flush=True)
-        except Exception as e:
-            print(f"[voice] outbound_ip check failed: {type(e).__name__}: {e}", flush=True)
+            r = client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
+                params={"output_format": "opus_48000_128"},
+                headers={
+                    "xi-api-key": eleven_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": t,
+                    "model_id": "eleven_multilingual_v2",
+                },
+            )
 
-        audio = client.text_to_speech.convert(
-            voice_id=ELEVENLABS_VOICE_ID,
-            output_format="opus_48000_128",
-            text=t,
-            model_id="eleven_multilingual_v2",
-        )
-
-        return b"".join(audio)
+            r.raise_for_status()
+            return r.content
 
     except Exception as e:
         print(f"[voice] elevenlabs tts failed: {type(e).__name__}: {e}", flush=True)
