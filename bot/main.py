@@ -884,30 +884,30 @@ def _tts_to_ogg_bytes(text: str) -> bytes:
     if not t:
         return b""
 
-    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+    api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
+    if not api_key:
         return b""
 
     try:
-        from openai import OpenAI
+        from elevenlabs.client import ElevenLabs
 
-        client = OpenAI()
+        client = ElevenLabs(api_key=api_key)
 
-        # Для голосового ответа режем длинный текст: voice должен быть коротким.
+        # voice reply должен быть компактным
         t = t[:900]
 
-        resp = client.audio.speech.create(
-            model=VOICE_TTS_MODEL,
-            voice=VOICE_TTS_VOICE,
-            input=t,
-            response_format="opus",
+        audio = client.text_to_speech.convert(
+            voice_id="EXAVITQu4vr4xnSDxMaL",
+            output_format="ogg_44100_128",
+            text=t,
+            model_id="eleven_multilingual_v2",
         )
 
-        return resp.read()
+        return b"".join(audio)
 
     except Exception as e:
-        print(f"[voice] tts failed: {type(e).__name__}: {e}", flush=True)
+        print(f"[voice] elevenlabs tts failed: {type(e).__name__}: {e}", flush=True)
         return b""
-
 
 async def _send_reply_for_event(message: Message, reply: str, *, event_type: str = "text") -> None:
     r = (reply or "").strip()
