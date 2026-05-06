@@ -345,7 +345,7 @@ BRAVE_SEARCH_API_KEY = (os.getenv("BRAVE_SEARCH_API_KEY") or "").strip()
 VOICE_STT_MODEL = os.getenv("V_VOICE_STT_MODEL", "gpt-4o-mini-transcribe")
 VOICE_TTS_MODEL = os.getenv("V_VOICE_TTS_MODEL", "gpt-4o-mini-tts")
 VOICE_TTS_VOICE = os.getenv("V_VOICE_TTS_VOICE", "verse")
-VOICE_REPLY_MODE = os.getenv("V_VOICE_REPLY_MODE", "voice").strip().lower()
+VOICE_REPLY_MODE = os.getenv("V_VOICE_REPLY_MODE", "text").strip().lower()
 
 # optional: restrict to one chat
 _CHAT_ID_ENV = (os.getenv("CHAT_ID") or "").strip()
@@ -1893,25 +1893,25 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
 
     if intent == "end":
         chatgpt_dialog.end(chat_id, user_id)
-    if reply:
-        await _send_reply_for_event(message, reply, event_type=event_type)
+        if reply:
+            await _send_reply_for_event(message, reply, event_type=event_type)
         return
 
     if intent == "news":
         if reply:
-            await message.answer(reply)
+            await _send_reply_for_event(message, reply, event_type=event_type)
         await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
         return
 
     if intent == "content":
         if reply:
-            await message.answer(reply)
+            await _send_reply_for_event(message, reply, event_type=event_type)
         await _send_content(message, user_id=chat_id, ingest_hours_n=None)
         return
 
     if intent == "web_search":
         if reply:
-            await message.answer(reply)
+            await _send_reply_for_event(message, reply, event_type=event_type)
 
         q = (getattr(decision, "query", "") or "").strip()
         if not q:
