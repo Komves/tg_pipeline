@@ -898,7 +898,7 @@ def _tts_to_ogg_bytes(text: str) -> bytes:
 
         audio = client.text_to_speech.convert(
             voice_id="EXAVITQu4vr4xnSDxMaL",
-            output_format="ogg_44100_128",
+            output_format="opus_48000_128",
             text=t,
             model_id="eleven_multilingual_v2",
         )
