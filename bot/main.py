@@ -884,32 +884,49 @@ def _tts_to_ogg_bytes(text: str) -> bytes:
     if not t:
         return b""
 
-    api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
-    if not api_key:
+    # voice reply должен быть коротким
+    t = t[:900]
+
+    # 1) Primary: ElevenLabs
+    eleven_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
+    if eleven_key:
+        try:
+            from elevenlabs.client import ElevenLabs
+
+            client = ElevenLabs(api_key=eleven_key)
+
+            audio = client.text_to_speech.convert(
+                voice_id="EXAVITQu4vr4xnSDxMaL",
+                output_format="opus_48000_128",
+                text=t,
+                model_id="eleven_multilingual_v2",
+            )
+
+            return b"".join(audio)
+
+        except Exception as e:
+            print(f"[voice] elevenlabs tts failed, fallback to openai: {type(e).__name__}: {e}", flush=True)
+
+    # 2) Fallback: OpenAI TTS
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
         return b""
 
     try:
-        from elevenlabs.client import ElevenLabs
+        from openai import OpenAI
 
-        client = ElevenLabs(api_key=api_key)
+        client = OpenAI()
 
-        # voice reply должен быть коротким
-        t = t[:900]
-
-        audio = client.text_to_speech.convert(
-            voice_id="EXAVITQu4vr4xnSDxMaL",
-            output_format="opus_48000_128",
-            text=t,
-            model_id="eleven_multilingual_v2",
+        resp = client.audio.speech.create(
+            model=VOICE_TTS_MODEL,
+            voice=VOICE_TTS_VOICE,
+            input=t,
+            response_format="opus",
         )
 
-        return b"".join(audio)
+        return resp.read()
 
     except Exception as e:
-        print(f"[voice] elevenlabs tts failed: {type(e).__name__}: {e}", flush=True)
-        return b""
-    except Exception as e:
-        print(f"[voice] elevenlabs tts failed: {type(e).__name__}: {e}", flush=True)
+        print(f"[voice] openai tts fallback failed: {type(e).__name__}: {e}", flush=True)
         return b""
 
 async def _send_reply_for_event(message: Message, reply: str, *, event_type: str = "text") -> None:
