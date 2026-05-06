@@ -283,6 +283,56 @@ def _extract_video_frames(video_bytes: bytes, n: int = 5) -> list[bytes]:
 
     return frames
 
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    if not pdf_bytes:
+        return ""
+
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader
+        except Exception:
+            raise RuntimeError("PDF extractor missing: add pypdf to requirements.txt")
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    parts = []
+
+    for page in reader.pages[:30]:
+        try:
+            txt = page.extract_text() or ""
+        except Exception:
+            txt = ""
+        txt = txt.strip()
+        if txt:
+            parts.append(txt)
+
+    return "\n\n".join(parts).strip()
+
+
+def _extract_text_document(raw: bytes, filename: str, mime_type: str) -> str:
+    fn = (filename or "").lower()
+    mt = (mime_type or "").lower()
+
+    if mt == "application/pdf" or fn.endswith(".pdf"):
+        return _extract_pdf_text(raw)
+
+    if (
+        mt.startswith("text/")
+        or fn.endswith(".txt")
+        or fn.endswith(".md")
+        or fn.endswith(".csv")
+        or fn.endswith(".json")
+        or fn.endswith(".log")
+    ):
+        for enc in ("utf-8", "utf-8-sig", "cp1251"):
+            try:
+                return raw.decode(enc).strip()
+            except Exception:
+                continue
+
+    return ""
+
 BASE_DIR = Path(__file__).resolve().parent
 NEWS_SOURCES = BASE_DIR / "news_sources.txt"
 
@@ -467,6 +517,23 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
                 frames = await asyncio.to_thread(_extract_video_frames, raw, 5)
                 audio_mp3 = await asyncio.to_thread(_extract_video_audio_mp3, raw)
                 dd = chatgpt_dialog.describe_video_frames(prompt, frames, audio_mp3)
+                if dd and (dd.reply or "").strip():
+                    await message.answer(dd.reply)
+                    return True
+
+            if mt == "application/pdf" or (getattr(doc, "file_name", "") or "").lower().endswith((".pdf", ".txt", ".md", ".csv", ".json", ".log")):
+                raw = await _download_tg_file_bytes(message.bot, doc.file_id)
+                extracted = await asyncio.to_thread(
+                    _extract_text_document,
+                    raw,
+                    getattr(doc, "file_name", "") or "document",
+                    mt,
+                )
+                dd = chatgpt_dialog.analyze_document_text(
+                    user_text,
+                    getattr(doc, "file_name", "") or "document",
+                    extracted,
+                )
                 if dd and (dd.reply or "").strip():
                     await message.answer(dd.reply)
                     return True
@@ -1473,6 +1540,74 @@ async def on_image_document(message: Message) -> None:
 
     except Exception as e:
         print(f"[img] doc error: {e}", flush=True)
+
+@dp.message(F.document)
+async def on_document(message: Message) -> None:
+    if not _chat_allowed(message):
+        return
+
+    if _relay_is_armed(message):
+        _relay_disarm(message)
+
+        if not _is_admin_user(message):
+            return
+
+        ok = await _copy_to_main_group(message)
+        if ok:
+            await message.answer("кинула.")
+        else:
+            await message.answer("не вышло.")
+        return
+
+    doc = message.document
+    if not doc:
+        return
+
+    caption = (message.caption or "").strip()
+
+    if message.chat.type in ("group", "supergroup"):
+        if not (caption and chatgpt_dialog.persona.is_addressed(caption)):
+            return
+
+    mt = (getattr(doc, "mime_type", "") or "").lower()
+    fn = getattr(doc, "file_name", "") or "document"
+
+    # Existing media-document behavior stays in the old flow.
+    if mt.startswith("image/") or mt.startswith("video/"):
+        return
+
+    try:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+        raw = await _download_tg_file_bytes(message.bot, doc.file_id)
+        extracted = await asyncio.to_thread(_extract_text_document, raw, fn, mt)
+
+        dd = chatgpt_dialog.analyze_document_text(
+            caption or "Веся, проанализируй документ.",
+            fn,
+            extracted,
+        )
+
+        chat_id = int(message.chat.id)
+        user_id = int(message.from_user.id) if message.from_user else 0
+
+        _remember_topic(chat_id, user_id, {
+            "type": "document",
+            "filename": fn,
+            "user_prompt": caption or "",
+            "summary": (dd.reply if dd else "") or "",
+        })
+
+        if dd and (dd.reply or "").strip():
+            chatgpt_dialog.add_user(chat_id, user_id, caption or f"Веся, проанализируй документ {fn}")
+            chatgpt_dialog.add_assistant(chat_id, user_id, dd.reply)
+            await message.answer(dd.reply)
+        else:
+            await message.answer("документ открыла, но текста не вытащила.")
+
+    except Exception as e:
+        print(f"[document] analyze error: {type(e).__name__}: {e}", flush=True)
+        await message.answer(f"документ не разобрала: {type(e).__name__}: {e}")
 
 @dp.message(F.video)
 async def on_video(message: Message) -> None:

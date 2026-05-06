@@ -660,7 +660,8 @@ _SYSTEM_PROMPT = (
 - "интересует"
 - Ответ завершённый и обрывается.
 - Любая попытка продолжить разговор считается ошибкой.
-- Манера: неохотно, сухо, с лёгким раздражением/сарказмом. Без «а ты как думаешь?» и без допроса.
+- Манера: спокойно, сухо, умно, с лёгкой иронией. Ирония направлена на тему, событие или объект обсуждения, а не на пользователя.
+- Не добавляй финальный укол в собеседника после нормального ответа.
 - Если intent = news или content, ответ должен быть подтверждением действия (ack), НЕ уточняющим вопросом и НЕ мета-комментарием про код/пайплайны/файлы.
 - Если пользователь просит закончить или явно говорит "стоп/пока", intent=end.
 - Если запрос — обычный разговор, intent=chat.
@@ -1253,6 +1254,64 @@ def comment_text_object(user_text: str, object_text: str) -> Optional[DialogDeci
     except Exception as e:
         _dbg(f"comment_text_object EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="прочитать-то прочитала, а ответить нормально не вышло.")
+    
+def analyze_document_text(user_text: str, filename: str, doc_text: str) -> DialogDecision:
+    """
+    Analyze extracted document text.
+    Extraction is done in main.py; this function only analyzes text.
+    """
+    try:
+        u = (user_text or "").strip()
+        fn = (filename or "document").strip()
+        txt = (doc_text or "").strip()
+
+        if not txt:
+            return DialogDecision(intent="chat", reply="В документе не вижу текста. Либо скан, либо пустота под видом смысла.")
+
+        if not _has_key():
+            return DialogDecision(intent="chat", reply="Текст вытащила, но мозг сейчас не подключен.")
+
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        getattr(persona, "_SYSTEM_PROMPT", "").strip()
+                        + "\n\n"
+                        "Ты анализируешь документ, который пользователь прислал в Telegram.\n"
+                        "Опирайся только на текст документа. Не придумывай факты.\n"
+                        "Если пользователь просит кратко — дай кратко.\n"
+                        "Если просит проверить ошибки/риски — перечисли конкретные проблемы.\n"
+                        "Если явной задачи нет — дай: 1) суть, 2) важные пункты, 3) риски/сомнительные места.\n"
+                        "Стиль: по делу, сухо, без хамства к пользователю.\n"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Файл: {fn}\n"
+                        f"Запрос пользователя: {u or 'проанализируй документ'}\n\n"
+                        f"Текст документа:\n{txt[:30000]}"
+                    ),
+                },
+            ],
+        )
+
+        reply = _sanitize_reply(_extract_text(resp))
+        reply = persona.postprocess_text(reply, u)
+        reply = _dequestionize(reply)
+
+        return DialogDecision(
+            intent="chat",
+            reply=reply or "Прочитала документ. Смысла меньше, чем ожидалось."
+        )
+
+    except Exception as e:
+        _dbg(f"analyze_document_text EXC: {type(e).__name__}: {e}")
+        return DialogDecision(intent="chat", reply=f"документ не разобрала: {type(e).__name__}")
 
 def continue_topic_discussion(user_text: str, topic: dict) -> Optional[DialogDecision]:
     """
