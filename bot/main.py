@@ -343,6 +343,9 @@ DEFAULT_NEWS_LIMIT = int(os.getenv("NEWS_LIMIT", "10"))
 BRAVE_SEARCH_API_KEY = (os.getenv("BRAVE_SEARCH_API_KEY") or "").strip()
 
 VOICE_STT_MODEL = os.getenv("V_VOICE_STT_MODEL", "gpt-4o-mini-transcribe")
+VOICE_TTS_MODEL = os.getenv("V_VOICE_TTS_MODEL", "gpt-4o-mini-tts")
+VOICE_TTS_VOICE = os.getenv("V_VOICE_TTS_VOICE", "verse")
+VOICE_REPLY_MODE = os.getenv("V_VOICE_REPLY_MODE", "voice").strip().lower()
 
 # optional: restrict to one chat
 _CHAT_ID_ENV = (os.getenv("CHAT_ID") or "").strip()
@@ -758,6 +761,65 @@ def _transcribe_voice_ogg(audio_bytes: bytes) -> str:
     except Exception as e:
         print(f"[voice] transcribe failed: {type(e).__name__}: {e}", flush=True)
         return ""
+    
+def _tts_to_ogg_bytes(text: str) -> bytes:
+    t = (text or "").strip()
+    if not t:
+        return b""
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return b""
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI()
+
+        # Для голосового ответа режем длинный текст: voice должен быть коротким.
+        t = t[:900]
+
+        resp = client.audio.speech.create(
+            model=VOICE_TTS_MODEL,
+            voice=VOICE_TTS_VOICE,
+            input=t,
+            response_format="opus",
+        )
+
+        return resp.read()
+
+    except Exception as e:
+        print(f"[voice] tts failed: {type(e).__name__}: {e}", flush=True)
+        return b""
+
+
+async def _send_reply_for_event(message: Message, reply: str, *, event_type: str = "text") -> None:
+    r = (reply or "").strip()
+    if not r:
+        return
+
+    if event_type == "voice" and VOICE_REPLY_MODE == "voice":
+        audio = await asyncio.to_thread(_tts_to_ogg_bytes, r)
+
+        if audio:
+            tmp_path = f"/tmp/vesya_voice_{uuid.uuid4().hex}.ogg"
+            try:
+                Path(tmp_path).write_bytes(audio)
+                await message.answer_voice(
+                    FSInputFile(tmp_path),
+                    caption=None,
+                )
+                return
+            finally:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        # fallback если TTS не сработал
+        await message.answer(r)
+        return
+
+    await message.answer(r)
 
 def _extract_web_search_query(text: str) -> str:
     q = _strip_vesya_prefix(text)
@@ -1831,8 +1893,8 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
 
     if intent == "end":
         chatgpt_dialog.end(chat_id, user_id)
-        if reply:
-            await message.answer(reply)
+    if reply:
+        await _send_reply_for_event(message, reply, event_type=event_type)
         return
 
     if intent == "news":
