@@ -1452,95 +1452,6 @@ async def on_photo(message: Message) -> None:
 
     except Exception as e:
         print(f"[img] photo error: {e}", flush=True)
-
-@dp.message(F.document)
-async def on_image_document(message: Message) -> None:
-    if not _chat_allowed(message):
-        return
-
-    if _relay_is_armed(message):
-        _relay_disarm(message)
-
-        if not _is_admin_user(message):
-            return
-
-        if not _is_relayable_document(message):
-            await message.answer("это не картинка и не видео.")
-            return
-
-        ok = await _copy_to_main_group(message)
-        if ok:
-            await message.answer("кинула.")
-        else:
-            await message.answer("не вышло.")
-        return
-
-    try:
-        doc = message.document
-
-        if not doc.mime_type.startswith("image/"):
-            return
-
-        raw = await _download_tg_file_bytes(message.bot, doc.file_id)
-
-        img_bytes = _shrink_jpeg_bytes(raw)
-
-        # save last image-document for "опиши фото"
-        uid = int(message.from_user.id) if message.from_user else 0
-        LAST_USER_IMAGE_ID[(int(message.chat.id), uid)] = doc.file_id
-
-        chatgpt_dialog.note_last_user_photo(
-            int(message.chat.id),
-            int(message.from_user.id) if message.from_user else 0,
-            img_bytes,
-        )
-
-        caption = (message.caption or "").strip()
-        if caption and (
-            chatgpt_dialog.persona.is_addressed(caption)
-            or (message.chat.type == "private" and _wants_context_comment(caption))
-        ):
-            dd = chatgpt_dialog.describe_or_compare_photo(
-                f"Веся, прокомментируй это в своём вкусе. Вопрос пользователя: {caption}",
-                img_bytes,
-            )
-            if dd and (dd.reply or "").strip():
-                await message.answer(dd.reply)
-                return
-        # In groups: react rarely (cooldown + probability)
-        if message.chat.type in ("group", "supergroup"):
-            if not _img_should_react(int(message.chat.id)):
-                return
-        res = chatgpt_dialog.image_react(
-            chat_id=int(message.chat.id),
-            user_id=int(message.from_user.id) if message.from_user else 0,
-            caption=(message.caption or ""),
-            img_bytes=img_bytes,
-        )
-
-        if not res:
-            return
-
-        action = (res.get("action") or "skip").lower()
-
-        reply = (res.get("reply") or "").strip()
-        kind = (res.get("kind") or "photo").lower()
-        # In groups: for non-meme images do only "like" (no comments)
-        if message.chat.type in ("group", "supergroup") and kind != "meme":
-            if action == "comment":
-                action = "like"
-        if kind == "meme" and action != "skip" and (not _img_should_react(int(message.chat.id))):
-            print("[IMG] meme skipped by limiter", flush=True)
-            return
-        if action == "like":
-            await message.reply(reply or "👍")
-
-        elif action == "comment":
-            await message.reply(reply or "ок")
-
-    except Exception as e:
-        print(f"[img] doc error: {e}", flush=True)
-
 @dp.message(F.document)
 async def on_document(message: Message) -> None:
     if not _chat_allowed(message):
@@ -1563,18 +1474,85 @@ async def on_document(message: Message) -> None:
     if not doc:
         return
 
+    mt = (getattr(doc, "mime_type", "") or "").lower()
+    fn = getattr(doc, "file_name", "") or "document"
     caption = (message.caption or "").strip()
 
+    # =========================
+    # IMAGE DOCUMENTS
+    # =========================
+    if mt.startswith("image/"):
+        try:
+            raw = await _download_tg_file_bytes(message.bot, doc.file_id)
+            img_bytes = _shrink_jpeg_bytes(raw)
+
+            uid = int(message.from_user.id) if message.from_user else 0
+            LAST_USER_IMAGE_ID[(int(message.chat.id), uid)] = doc.file_id
+
+            chatgpt_dialog.note_last_user_photo(
+                int(message.chat.id),
+                int(message.from_user.id) if message.from_user else 0,
+                img_bytes,
+            )
+
+            if caption and (
+                chatgpt_dialog.persona.is_addressed(caption)
+                or (message.chat.type == "private" and _wants_context_comment(caption))
+            ):
+                dd = chatgpt_dialog.describe_or_compare_photo(
+                    f"Веся, прокомментируй это в своём вкусе. Вопрос пользователя: {caption}",
+                    img_bytes,
+                )
+                if dd and (dd.reply or "").strip():
+                    await message.answer(dd.reply)
+                    return
+
+            if message.chat.type in ("group", "supergroup"):
+                if not _img_should_react(int(message.chat.id)):
+                    return
+
+            res = chatgpt_dialog.image_react(
+                chat_id=int(message.chat.id),
+                user_id=int(message.from_user.id) if message.from_user else 0,
+                caption=(message.caption or ""),
+                img_bytes=img_bytes,
+            )
+
+            if not res:
+                return
+
+            action = (res.get("action") or "skip").lower()
+            reply = (res.get("reply") or "").strip()
+            kind = (res.get("kind") or "photo").lower()
+
+            if message.chat.type in ("group", "supergroup") and kind != "meme":
+                if action == "comment":
+                    action = "like"
+
+            if kind == "meme" and action != "skip" and (not _img_should_react(int(message.chat.id))):
+                print("[IMG] meme skipped by limiter", flush=True)
+                return
+
+            if action == "like":
+                await message.reply(reply or "👍")
+            elif action == "comment":
+                await message.reply(reply or "ок")
+
+        except Exception as e:
+            print(f"[img] doc error: {e}", flush=True)
+
+        return
+
+    # Existing direct video files as documents are not analyzed here.
+    if mt.startswith("video/"):
+        return
+
+    # =========================
+    # TEXT / PDF DOCUMENTS
+    # =========================
     if message.chat.type in ("group", "supergroup"):
         if not (caption and chatgpt_dialog.persona.is_addressed(caption)):
             return
-
-    mt = (getattr(doc, "mime_type", "") or "").lower()
-    fn = getattr(doc, "file_name", "") or "document"
-
-    # Existing media-document behavior stays in the old flow.
-    if mt.startswith("image/") or mt.startswith("video/"):
-        return
 
     try:
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
