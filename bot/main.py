@@ -313,6 +313,34 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
 
 DOC_OCR_ENABLE = os.getenv("V_DOC_OCR_ENABLE", "1").strip().lower() in {"1", "true", "yes", "on"}
 DOC_OCR_MAX_PAGES = int(os.getenv("V_DOC_OCR_MAX_PAGES", "5"))
+def _looks_like_text_heavy_image(img_bytes: bytes) -> bool:
+    """
+    Cheap heuristic:
+    text screenshots/docs usually compress much smaller
+    and have large dimensions with low entropy.
+    """
+    try:
+        from PIL import Image
+        import io
+
+        im = Image.open(io.BytesIO(img_bytes))
+        w, h = im.size
+
+        # tiny meme/photo
+        if w < 500 or h < 300:
+            return False
+
+        # screenshots/docs are often PNG-ish and compact
+        size_kb = len(img_bytes) / 1024.0
+
+        # lots of text / white background
+        if size_kb < 900 and (w * h) >= 700_000:
+            return True
+
+    except Exception:
+        pass
+
+    return False
 
 
 def _ocr_image_bytes(img_bytes: bytes, *, filename: str = "image") -> str:
@@ -1644,7 +1672,18 @@ async def on_photo(message: Message) -> None:
             chatgpt_dialog.persona.is_addressed(caption)
             or (message.chat.type == "private" and _wants_context_comment(caption))
         ):
-            if any(x in caption.lower() for x in ("прочитай", "текст", "документ", "скрин", "ocr", "что написано", "разбери документ")):
+            if (
+                any(x in caption.lower() for x in (
+                    "прочитай",
+                    "текст",
+                    "документ",
+                    "скрин",
+                    "ocr",
+                    "что написано",
+                    "разбери документ",
+                ))
+                or _looks_like_text_heavy_image(img_bytes)
+            ):
                 extracted = await asyncio.to_thread(_ocr_image_bytes, img_bytes, filename="photo.jpg")
                 dd = chatgpt_dialog.analyze_document_text(caption, "photo.jpg", extracted)
             else:
@@ -1753,7 +1792,18 @@ async def on_document(message: Message) -> None:
                 chatgpt_dialog.persona.is_addressed(caption)
                 or (message.chat.type == "private" and _wants_context_comment(caption))
             ):
-                if any(x in caption.lower() for x in ("прочитай", "текст", "документ", "скрин", "ocr", "что написано", "разбери документ")):
+                if (
+                    any(x in caption.lower() for x in (
+                        "прочитай",
+                        "текст",
+                        "документ",
+                        "скрин",
+                        "ocr",
+                        "что написано",
+                        "разбери документ",
+                    ))
+                    or _looks_like_text_heavy_image(img_bytes)
+                ):
                     extracted = await asyncio.to_thread(_ocr_image_bytes, img_bytes, filename=fn)
                     dd = chatgpt_dialog.analyze_document_text(caption, fn, extracted)
                 else:
@@ -2666,75 +2716,12 @@ async def vesya_handler(message: Message) -> None:
             await message.answer(dd.reply)
             return
 
-    reply = ""
-    intent = "chat"
-
     if is_reply_to_bot_content:
-        decision = chatgpt_dialog.decide(chat_id, user_id, f"Веся, {text}")
-        if decision.intent == "content":
-            decision.intent = "chat"
-    else:
-        decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
-
-    print(f"[route] intent={decision.intent} reply={decision.reply!r}", flush=True)
-    intent = (decision.intent or "chat").strip().lower()
-    reply = (decision.reply or "").strip()
-
-    _record_memory_event(
-        message,
-        text=dialog_text,
-        intent=intent,
-        reply=reply,
-        event_type="text",
-    )
-
-    if intent == "chat":
-        # имитация "печатает..." + пауза 5–10 секунд
-        wait_s = random.uniform(5, 10)
-
-        # Telegram "typing" живёт недолго, поэтому поддерживаем его до отправки
-        end_at = time.time() + wait_s
-        while time.time() < end_at:
-            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-            await asyncio.sleep(min(4.0, end_at - time.time()))
-
-        await message.answer(reply or "слушаю")
+        await _handle_text_core(message, f"Веся, {text}", event_type="text")
         return
 
-    if intent == "news":
-        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-
-        if reply:
-            await message.answer(reply)
-        else:
-            await message.answer("ок. сейчас соберу сводку.")
-
-        await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
-        return
-
-    if intent == "web_search":
-        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-
-        if reply:
-            await message.answer(reply)
-
-        q = (getattr(decision, "query", "") or "").strip()
-        if not q:
-            q = _extract_web_search_query(text)
-
-        await _run_web_search_for_message(message, q)
-        return
-
-    if intent == "content":
-        await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-
-        if reply:
-            await message.answer(reply)
-        else:
-            await message.answer("сек, собираю горячее.")
-
-        await _send_content(message, user_id=chat_id, ingest_hours_n=None)
-        return
+    await _handle_text_core(message, dialog_text, event_type="text")
+    return
 
 # =====================
 # INGEST24 LOOP (06:00 MSK)
