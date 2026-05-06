@@ -901,6 +901,13 @@ def _tts_to_ogg_bytes(text: str) -> bytes:
 
         client = ElevenLabs(api_key=eleven_key)
 
+        try:
+            import httpx
+            ip = httpx.get("https://api.ipify.org", timeout=10).text.strip()
+            print(f"[voice] outbound_ip={ip}", flush=True)
+        except Exception as e:
+            print(f"[voice] outbound_ip check failed: {type(e).__name__}: {e}", flush=True)
+
         audio = client.text_to_speech.convert(
             voice_id=ELEVENLABS_VOICE_ID,
             output_format="opus_48000_128",
