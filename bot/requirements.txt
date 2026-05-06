@@ -11,3 +11,4 @@ google-auth-oauthlib
 requests
 supabase
 pypdf
+pymupdf

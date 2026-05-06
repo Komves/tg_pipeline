@@ -8,6 +8,7 @@ import json
 import shutil
 import uuid
 import html
+import base64
 import clip_embedder
 import re
 from pathlib import Path
@@ -310,13 +311,96 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
 
     return "\n\n".join(parts).strip()
 
+DOC_OCR_ENABLE = os.getenv("V_DOC_OCR_ENABLE", "1").strip().lower() in {"1", "true", "yes", "on"}
+DOC_OCR_MAX_PAGES = int(os.getenv("V_DOC_OCR_MAX_PAGES", "5"))
+
+
+def _ocr_image_bytes(img_bytes: bytes, *, filename: str = "image") -> str:
+    if not img_bytes or not DOC_OCR_ENABLE:
+        return ""
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return ""
+
+    try:
+        from openai import OpenAI
+
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=os.getenv("V_VISION_MODEL", os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini")),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты OCR-extractor. Извлеки весь видимый текст с изображения. "
+                        "Не анализируй, не комментируй, не исправляй. "
+                        "Сохрани порядок строк насколько возможно. "
+                        "Если текста нет — верни пустую строку."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": f"Файл: {filename}. Извлеки текст."},
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:image/jpeg;base64,{b64}",
+                        },
+                    ],
+                },
+            ],
+        )
+
+        return (getattr(resp, "output_text", "") or "").strip()
+
+    except Exception as e:
+        print(f"[ocr] image failed: {type(e).__name__}: {e}", flush=True)
+        return ""
+
+
+def _extract_pdf_ocr_text(pdf_bytes: bytes, *, filename: str = "document.pdf") -> str:
+    if not pdf_bytes or not DOC_OCR_ENABLE:
+        return ""
+
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        raise RuntimeError("OCR PDF extractor missing: add pymupdf to requirements.txt")
+
+    parts: list[str] = []
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        pages_n = min(len(doc), max(1, DOC_OCR_MAX_PAGES))
+
+        for i in range(pages_n):
+            page = doc.load_page(i)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            img_bytes = pix.tobytes("jpg")
+            txt = _ocr_image_bytes(img_bytes, filename=f"{filename} page {i + 1}")
+            if txt:
+                parts.append(f"--- page {i + 1} ---\n{txt}")
+
+        doc.close()
+
+    except Exception as e:
+        print(f"[ocr] pdf failed: {type(e).__name__}: {e}", flush=True)
+
+    return "\n\n".join(parts).strip()
 
 def _extract_text_document(raw: bytes, filename: str, mime_type: str) -> str:
     fn = (filename or "").lower()
     mt = (mime_type or "").lower()
 
     if mt == "application/pdf" or fn.endswith(".pdf"):
-        return _extract_pdf_text(raw)
+        txt = _extract_pdf_text(raw)
+        if len((txt or "").strip()) >= 100:
+            return txt
+
+        ocr_txt = _extract_pdf_ocr_text(raw, filename=filename or "document.pdf")
+        return ocr_txt or txt
 
     if (
         mt.startswith("text/")
@@ -1560,7 +1644,11 @@ async def on_photo(message: Message) -> None:
             chatgpt_dialog.persona.is_addressed(caption)
             or (message.chat.type == "private" and _wants_context_comment(caption))
         ):
-            dd = chatgpt_dialog.describe_or_compare_photo(caption, img_bytes)
+            if any(x in caption.lower() for x in ("прочитай", "текст", "документ", "скрин", "ocr", "что написано", "разбери документ")):
+                extracted = await asyncio.to_thread(_ocr_image_bytes, img_bytes, filename="photo.jpg")
+                dd = chatgpt_dialog.analyze_document_text(caption, "photo.jpg", extracted)
+            else:
+                dd = chatgpt_dialog.describe_or_compare_photo(caption, img_bytes)
             reply = ((dd.reply if dd else "") or "").strip()
 
             if not reply:
@@ -1665,10 +1753,14 @@ async def on_document(message: Message) -> None:
                 chatgpt_dialog.persona.is_addressed(caption)
                 or (message.chat.type == "private" and _wants_context_comment(caption))
             ):
-                dd = chatgpt_dialog.describe_or_compare_photo(
-                    f"Веся, прокомментируй это в своём вкусе. Вопрос пользователя: {caption}",
-                    img_bytes,
-                )
+                if any(x in caption.lower() for x in ("прочитай", "текст", "документ", "скрин", "ocr", "что написано", "разбери документ")):
+                    extracted = await asyncio.to_thread(_ocr_image_bytes, img_bytes, filename=fn)
+                    dd = chatgpt_dialog.analyze_document_text(caption, fn, extracted)
+                else:
+                    dd = chatgpt_dialog.describe_or_compare_photo(
+                        f"Веся, прокомментируй это в своём вкусе. Вопрос пользователя: {caption}",
+                        img_bytes,
+                    )
                 if dd and (dd.reply or "").strip():
                     await message.answer(dd.reply)
                     return
