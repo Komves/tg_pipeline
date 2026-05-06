@@ -465,6 +465,11 @@ def _record_memory_event(
         if intent:
             vesya_memory.bump_intent(profile, intent)
 
+        try:
+            vesya_memory.update_user_facts_from_text(profile, text)
+        except Exception as e:
+            print(f"[memory] facts update failed: {type(e).__name__}: {e}", flush=True)
+
         vesya_memory.update_night_owl(
             profile,
             hour_local=datetime.now().hour,

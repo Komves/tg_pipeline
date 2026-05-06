@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -192,3 +193,157 @@ def get_recent_events(minutes: int = 30) -> List[Dict[str, Any]]:
             break
     out.reverse()
     return out
+
+def _ensure_facts(profile: Dict[str, Any]) -> Dict[str, Any]:
+    facts = profile.get("facts")
+    if not isinstance(facts, dict):
+        facts = {}
+
+    for k in ("preferences", "music_preferences", "dislikes", "notes"):
+        if not isinstance(facts.get(k), list):
+            facts[k] = []
+
+    profile["facts"] = facts
+    return facts
+
+
+def _append_unique(xs: List[str], value: str, *, max_items: int = 50) -> None:
+    v = (value or "").strip(" .,:;—-\n\t").strip()
+    if not v:
+        return
+
+    low = v.lower()
+    for x in xs:
+        if str(x).lower() == low:
+            return
+
+    xs.append(v)
+    if len(xs) > max_items:
+        del xs[:-max_items]
+
+
+def update_user_facts_from_text(profile: Dict[str, Any], text: str) -> bool:
+    """
+    Deterministic semantic facts extractor.
+    No LLM call here: memory must be cheap and stable.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+
+    tl = t.lower()
+    facts = _ensure_facts(profile)
+    changed = False
+
+    # Strip Vesya address/prefix.
+    clean = re.sub(
+        r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
+        "",
+        t,
+        flags=re.I,
+    ).strip()
+
+    # Explicit remember/note.
+    m = re.search(r"\b(запомни|запиши|сохрани|учти)\b\s*[:\-]?\s*(.+)$", clean, flags=re.I)
+    if m:
+        note = m.group(2).strip()
+        if note:
+            _append_unique(facts["notes"], note)
+            changed = True
+
+    # Likes / preferences.
+    like_patterns = [
+        r"\bя\s+люблю\s+(.+)$",
+        r"\bмне\s+нрав(?:ится|ятся)\s+(.+)$",
+        r"\bмне\s+заход(?:ит|ят)\s+(.+)$",
+        r"\bпредпочитаю\s+(.+)$",
+    ]
+
+    for pat in like_patterns:
+        m = re.search(pat, clean, flags=re.I)
+        if not m:
+            continue
+
+        raw = m.group(1).strip()
+        parts = re.split(r"\s*(?:,|;|\s+и\s+|\s+или\s+)\s*", raw)
+
+        is_music = bool(re.search(
+            r"\b(metal|doom|rock|cover|кавер|каверы|музык|трек|песня|жанр|метал|рок)\b",
+            raw,
+            flags=re.I,
+        ))
+
+        for p in parts:
+            if not p:
+                continue
+            if is_music:
+                _append_unique(facts["music_preferences"], p)
+            else:
+                _append_unique(facts["preferences"], p)
+            changed = True
+
+    # Dislikes / irritants.
+    dislike_patterns = [
+        r"\bя\s+не\s+люблю\s+(.+)$",
+        r"\bмне\s+не\s+нрав(?:ится|ятся)\s+(.+)$",
+        r"\bменя\s+бес(?:ит|ят)\s+(.+)$",
+        r"\bненавижу\s+(.+)$",
+    ]
+
+    for pat in dislike_patterns:
+        m = re.search(pat, clean, flags=re.I)
+        if not m:
+            continue
+
+        raw = m.group(1).strip()
+        parts = re.split(r"\s*(?:,|;|\s+и\s+|\s+или\s+)\s*", raw)
+
+        for p in parts:
+            if not p:
+                continue
+            _append_unique(facts["dislikes"], p)
+            changed = True
+
+    if changed:
+        profile["facts_updated_at"] = _now_utc().isoformat()
+
+    return changed
+
+
+def render_profile_facts_context(profile: Dict[str, Any]) -> str:
+    facts = profile.get("facts")
+    if not isinstance(facts, dict):
+        return ""
+
+    lines: List[str] = []
+
+    prefs = [str(x) for x in facts.get("preferences") or [] if str(x).strip()]
+    music = [str(x) for x in facts.get("music_preferences") or [] if str(x).strip()]
+    dislikes = [str(x) for x in facts.get("dislikes") or [] if str(x).strip()]
+    notes = [str(x) for x in facts.get("notes") or [] if str(x).strip()]
+
+    if music:
+        lines.append("Музыкальные предпочтения пользователя: " + "; ".join(music[-12:]))
+    if prefs:
+        lines.append("Предпочтения пользователя: " + "; ".join(prefs[-12:]))
+    if dislikes:
+        lines.append("Не любит / раздражает: " + "; ".join(dislikes[-12:]))
+    if notes:
+        lines.append("Заметки, которые пользователь просил помнить: " + "; ".join(notes[-12:]))
+
+    if not lines:
+        return ""
+
+    return (
+        "Устойчивые факты о пользователе. "
+        "Используй как контекст, не пересказывай без необходимости:\n"
+        + "\n".join(f"- {x}" for x in lines)
+    )
+
+
+def render_user_profile_context(*, user_id: int) -> str:
+    profiles = load_profiles()
+    profile = profiles.get(str(int(user_id)))
+    if not isinstance(profile, dict):
+        return ""
+    return render_profile_facts_context(profile)

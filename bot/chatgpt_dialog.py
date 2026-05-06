@@ -237,20 +237,34 @@ def add_assistant(chat_id: int, user_id: int, text: str) -> None:
     if s:
         s.history.append({"role": "assistant", "content": text})
 
-
 def _memory_context_for_prompt(chat_id: int, user_id: int) -> str:
     if vesya_memory is None:
         return ""
 
+    parts = []
+
     try:
-        return vesya_memory.render_user_memory_context(
+        profile_ctx = vesya_memory.render_user_profile_context(
+            user_id=user_id,
+        )
+        if profile_ctx:
+            parts.append(profile_ctx)
+    except Exception:
+        pass
+
+    try:
+        recent_ctx = vesya_memory.render_user_memory_context(
             chat_id=chat_id,
             user_id=user_id,
             minutes=60 * 24 * 7,
             limit=8,
         )
+        if recent_ctx:
+            parts.append(recent_ctx)
     except Exception:
-        return ""
+        pass
+
+    return "\n\n".join(parts).strip()
 
 def get_history(chat_id: int, user_id: int) -> List[Dict[str, str]]:
     s = _sessions.get((chat_id, user_id))
