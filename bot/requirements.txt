@@ -13,3 +13,4 @@ supabase
 pypdf
 pymupdf
 elevenlabs>=1.0.0
+httpx[socks]
