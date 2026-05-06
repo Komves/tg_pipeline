@@ -659,6 +659,19 @@ def _strip_vesya_prefix(text: str) -> str:
         flags=re.I,
     ).strip()
 
+async def _answer_long(message: Message, text: str, *, chunk_size: int = 3500) -> None:
+    t = (text or "").strip()
+    if not t:
+        return
+
+    while t:
+        part = t[:chunk_size]
+        cut = max(part.rfind("\n\n"), part.rfind("\n"), part.rfind(". "))
+        if cut > 1200:
+            part = part[:cut + 1]
+
+        await message.answer(part.strip())
+        t = t[len(part):].strip()
 
 def _extract_web_search_query(text: str) -> str:
     q = _strip_vesya_prefix(text)
@@ -1579,7 +1592,7 @@ async def on_document(message: Message) -> None:
         if dd and (dd.reply or "").strip():
             chatgpt_dialog.add_user(chat_id, user_id, caption or f"Веся, проанализируй документ {fn}")
             chatgpt_dialog.add_assistant(chat_id, user_id, dd.reply)
-            await message.answer(dd.reply)
+            await _answer_long(message, dd.reply)
         else:
             await message.answer("документ открыла, но текста не вытащила.")
 
