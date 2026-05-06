@@ -675,7 +675,7 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
             img_bytes = _shrink_jpeg_bytes(raw)
             dd = chatgpt_dialog.describe_or_compare_photo(prompt, img_bytes)
             if dd and (dd.reply or "").strip():
-                await message.answer(dd.reply)
+                await _answer_long(message, dd.reply)
                 return True
 
         doc = getattr(r, "document", None)
@@ -687,7 +687,7 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
                 img_bytes = _shrink_jpeg_bytes(raw)
                 dd = chatgpt_dialog.describe_or_compare_photo(prompt, img_bytes)
                 if dd and (dd.reply or "").strip():
-                    await message.answer(dd.reply)
+                    await _answer_long(message, dd.reply)
                     return True
 
             if mt.startswith("video/"):
@@ -696,7 +696,7 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
                 audio_mp3 = await asyncio.to_thread(_extract_video_audio_mp3, raw)
                 dd = chatgpt_dialog.describe_video_frames(prompt, frames, audio_mp3)
                 if dd and (dd.reply or "").strip():
-                    await message.answer(dd.reply)
+                    await _answer_long(message, dd.reply)
                     return True
 
             if mt == "application/pdf" or (getattr(doc, "file_name", "") or "").lower().endswith((".pdf", ".txt", ".md", ".csv", ".json", ".log")):
@@ -713,7 +713,7 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
                     extracted,
                 )
                 if dd and (dd.reply or "").strip():
-                    await message.answer(dd.reply)
+                    await _answer_long(message, dd.reply)
                     return True
 
         if getattr(r, "video", None):
@@ -722,14 +722,14 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
             audio_mp3 = await asyncio.to_thread(_extract_video_audio_mp3, raw)
             dd = chatgpt_dialog.describe_video_frames(prompt, frames, audio_mp3)
             if dd and (dd.reply or "").strip():
-                await message.answer(dd.reply)
+                await _answer_long(message, dd.reply)
                 return True
 
         obj_text = (r.text or r.caption or "").strip()
         if obj_text:
             dd = chatgpt_dialog.comment_text_object(user_text, obj_text)
             if dd and (dd.reply or "").strip():
-                await message.answer(dd.reply)
+                await _answer_long(message, dd.reply)
                 return True
 
     except Exception as e:
@@ -933,10 +933,10 @@ async def _send_reply_for_event(message: Message, reply: str, *, event_type: str
                     pass
 
         # fallback если TTS не сработал
-        await message.answer(r)
+        await _answer_long(message, r)
         return
 
-    await message.answer(r)
+    await _answer_long(message, r)
 
 def _extract_web_search_query(text: str) -> str:
     q = _strip_vesya_prefix(text)
@@ -1031,7 +1031,7 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
             if url:
                 links.append(f"{i}. {title}\n{url}")
 
-        await message.answer((summary + "\n\n" + "\n".join(links))[:3900])
+        await _answer_long(message, summary + "\n\n" + "\n".join(links))
 
     except Exception as e:
         print(f"[web_search] failed: {type(e).__name__}: {e}", flush=True)
@@ -1812,7 +1812,7 @@ async def on_document(message: Message) -> None:
                         img_bytes,
                     )
                 if dd and (dd.reply or "").strip():
-                    await message.answer(dd.reply)
+                    await _answer_long(message, dd.reply)
                     return
 
             if message.chat.type in ("group", "supergroup"):
@@ -1971,7 +1971,7 @@ async def on_video(message: Message) -> None:
             )
             chatgpt_dialog.add_assistant(chat_id, user_id, dd.reply)
 
-            await message.answer(dd.reply)
+            await _answer_long(message, dd.reply)
         else:
             await message.answer("видео посмотрела. Ничего внятного не вытащила.")
 
@@ -2068,7 +2068,7 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         return
 
     if reply:
-        await message.answer(reply)
+        await _send_reply_for_event(message, reply, event_type=event_type)
 
 @dp.message(F.voice)
 async def on_voice(message: Message) -> None:
@@ -2661,7 +2661,7 @@ async def vesya_handler(message: Message) -> None:
         if img_bytes is not None:
             dd = chatgpt_dialog.describe_or_compare_photo(text, img_bytes)
             if dd and (dd.reply or "").strip():
-                await message.answer(dd.reply)
+                await _answer_long(message, dd.reply)
                 return
 
     except Exception as e:
@@ -2713,7 +2713,7 @@ async def vesya_handler(message: Message) -> None:
     if topic and _looks_like_topic_followup(text):
         dd = chatgpt_dialog.continue_topic_discussion(text, topic)
         if dd and (dd.reply or "").strip():
-            await message.answer(dd.reply)
+            await _answer_long(message, dd.reply)
             return
 
     if is_reply_to_bot_content:
