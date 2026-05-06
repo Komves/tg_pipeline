@@ -893,7 +893,7 @@ def _tts_to_ogg_bytes(text: str) -> bytes:
 
         client = ElevenLabs(api_key=api_key)
 
-        # voice reply должен быть компактным
+        # voice reply должен быть коротким
         t = t[:900]
 
         audio = client.text_to_speech.convert(
@@ -905,6 +905,9 @@ def _tts_to_ogg_bytes(text: str) -> bytes:
 
         return b"".join(audio)
 
+    except Exception as e:
+        print(f"[voice] elevenlabs tts failed: {type(e).__name__}: {e}", flush=True)
+        return b""
     except Exception as e:
         print(f"[voice] elevenlabs tts failed: {type(e).__name__}: {e}", flush=True)
         return b""
