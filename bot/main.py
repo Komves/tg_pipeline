@@ -1075,6 +1075,15 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
         if links:
             final_text += "\n\n" + "\n".join(links)
 
+        _remember_topic(
+            int(message.chat.id),
+            int(message.from_user.id) if message.from_user else 0,
+            {
+                "type": "web_search",
+                "query": query,
+                "summary": final_text[:1200],
+            },
+        )
         await _answer_long(message, final_text)
 
     except Exception as e:
@@ -2156,6 +2165,15 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         if not q:
             q = _extract_web_search_query(dialog_text)
 
+        topic = _get_topic(chat_id, user_id)
+        if topic and topic.get("type") == "web_search":
+            dtl = dialog_text.lower()
+            if any(x in dtl for x in ("они", "он ", "она ", "до этого", "раньше", "последний раз")):
+                q = (
+                    f"{q}\n\n"
+                    f"Контекст предыдущего вопроса: {topic.get('query', '')}\n"
+                    f"Предыдущий ответ: {topic.get('summary', '')}"
+                )
         await _run_web_search_for_message(message, q)
         return
 
@@ -2234,7 +2252,6 @@ async def vesya_handler(message: Message) -> None:
         "как тебе",
     }
 
-    # Команда перед следующей пересылкой.
     if (not _is_forwarded_message(message)) and clean_action in pending_action_words:
         PENDING_FORWARD_ACTION[(int(message.chat.id), int(message.from_user.id))] = {
             "action": clean_action,
@@ -2242,10 +2259,6 @@ async def vesya_handler(message: Message) -> None:
         }
         return
 
-    # Пересылка сама по себе не триггерит Весю.
-    # Но:
-    # 1) если перед ней была команда — применяем её;
-    # 2) если в самой пересылке уже есть вопрос к Весе — отвечаем сразу.
     if _is_forwarded_message(message):
         pending_key = (int(message.chat.id), int(message.from_user.id))
         pending = PENDING_FORWARD_ACTION.get(pending_key)
@@ -2271,36 +2284,6 @@ async def vesya_handler(message: Message) -> None:
 
         if pending_action:
             if pending_action.startswith("ответь"):
-                # Для "ответь" отвечаем на сам текст пересылки,
-                # а не на служебную команду.
-                pass
-            else:
-                text = f"Веся, {pending_action}:\n{text}"
-
-        elif not inline_action:
-            return
-
-    # Пересылка сама по себе не триггерит Весю.
-    # Но если перед ней была команда — применяем её к тексту пересылки.
-    if _is_forwarded_message(message):
-        pending_key = (int(message.chat.id), int(message.from_user.id))
-        pending = PENDING_FORWARD_ACTION.get(pending_key)
-
-        pending_action = ""
-        if pending:
-            pending_ts = float(pending.get("ts") or 0)
-            if (time.time() - pending_ts) <= PENDING_FORWARD_ACTION_TTL_SEC:
-                pending_action = str(pending.get("action") or "").strip()
-            PENDING_FORWARD_ACTION.pop(pending_key, None)
-
-        inline_action = bool(re.search(
-            r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+сути|прокомментируй|прокоммент|как\s+тебе|что\s+думаешь|что\s+скажешь|разбери|проверь)\b",
-            text,
-            flags=re.I,
-        ))
-
-        if pending_action:
-            if pending_action.startswith("ответь"):
                 await _handle_text_core(message, text, event_type="text")
             else:
                 await _handle_text_core(
@@ -2310,12 +2293,11 @@ async def vesya_handler(message: Message) -> None:
                 )
             return
 
-        elif inline_action:
+        if inline_action:
             await _handle_text_core(message, text, event_type="text")
             return
 
-        else:
-            return
+        return
 
     # =========================
     # ONE-SHOT RELAY MODE
