@@ -2835,6 +2835,50 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         }:
             dialog_text = replied_text
 
+    pending_research = _get_topic(chat_id, user_id)
+    if pending_research and pending_research.get("type") == "research_clarify":
+        choice_text = (dialog_text or "").strip().lower()
+        original_query = str(pending_research.get("query") or "").strip()
+
+        wants_count = any(x in choice_text for x in (
+            "отдель",
+            "случ",
+            "инцидент",
+            "дат",
+            "регион",
+            "подтвержд",
+            "заявлен",
+            "поданн",
+            "подан",
+            "заявк",
+            "собери",
+            "таблиц",
+        ))
+
+        wants_aggregate = any(x in choice_text for x in (
+            "общ",
+            "готов",
+            "оценк",
+            "статист",
+            "источник",
+            "диапазон",
+            "итог",
+        ))
+
+        if original_query and wants_count and not wants_aggregate:
+            _remember_topic(chat_id, user_id, {"type": "research_count", "query": original_query})
+            await _run_research_count_for_message(message, original_query)
+            return
+
+        if original_query and wants_aggregate and not wants_count:
+            _remember_topic(chat_id, user_id, {"type": "research_aggregate", "query": original_query})
+            await _run_research_aggregate_for_message(message, original_query)
+            return
+
+        if wants_count and wants_aggregate:
+            await message.answer("Выбери один метод: отдельные подтверждённые случаи или готовая общая оценка.")
+            return
+
     decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
 
     print(f"[route][{event_type}] intent={decision.intent} reply={decision.reply!r}", flush=True)
@@ -2866,6 +2910,25 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         if reply:
             await _send_reply_for_event(message, reply, event_type=event_type)
         await _send_content(message, user_id=chat_id, ingest_hours_n=None)
+        return
+
+    if intent == "research_clarify":
+        if reply:
+            await _send_reply_for_event(message, reply, event_type=event_type)
+
+        q = (getattr(decision, "query", "") or "").strip()
+        if not q:
+            q = dialog_text
+
+        _remember_topic(
+            chat_id,
+            user_id,
+            {
+                "type": "research_clarify",
+                "query": q,
+                "summary": reply[:1200] if reply else "",
+            },
+        )
         return
 
     if intent == "research_aggregate":

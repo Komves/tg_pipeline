@@ -801,11 +801,14 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
         if r_intent == "research_clarify":
             reply = semantic_reply or (
-                "Тут два способа считать: по отдельным подтверждённым случаям или по готовым общим оценкам источников. "
-                "Метод надо выбрать до поиска."
+                "Считать по отдельным подтверждённым случаям или искать готовую общую оценку по источникам."
             )
             add_assistant(chat_id, user_id, reply)
-            return DialogDecision(intent="chat", reply=reply)
+            return DialogDecision(
+                intent="research_clarify",
+                reply=reply,
+                query=semantic_query or user_text,
+            )
 
         if r_intent == "research_aggregate":
             return DialogDecision(
