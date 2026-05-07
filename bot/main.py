@@ -1590,15 +1590,98 @@ async def _run_research_count_for_message(message: Message, query: str) -> None:
         source_policy = str(plan.get("source_policy") or "").strip().lower()
         official_only = source_policy == "official_only"
 
-        aggregate = _research_aggregate_records(
+        incident_aggregate = _research_aggregate_records(
             records,
             official_only=official_only,
         )
 
-        final_text = _research_format_result(
+        incident_text = _research_format_result(
             query,
-            aggregate,
+            incident_aggregate,
             source_policy=source_policy,
+        )
+
+        aggregate_claims = []
+
+        try:
+            aggregate_extract_resp = client.responses.create(
+                model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты извлекаешь агрегированные статистические оценки.\n"
+                            "Нужны именно уже опубликованные ИТОГОВЫЕ цифры.\n"
+                            "Не список инцидентов.\n"
+                            "Опирайся только на переданные материалы.\n"
+                            "Не придумывай цифры.\n"
+                            "Верни только JSON.\n\n"
+                            "{"
+                            "\"claims\":["
+                            "{"
+                            "\"value\":число,"
+                            "\"value_text\":\"как указано\","
+                            "\"metric\":\"что считается\","
+                            "\"period\":\"период\","
+                            "\"source_name\":\"источник\","
+                            "\"source_type\":\"official|international_org|major_media|expert_estimate|media|unknown\","
+                            "\"source_url\":\"url\","
+                            "\"evidence\":\"основание\","
+                            "\"confidence\":\"high|medium|low\""
+                            "}"
+                            "]"
+                            "}"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Запрос пользователя:\n{query}\n\n"
+                            f"Материалы:\n{json.dumps(enriched, ensure_ascii=False)[:65000]}"
+                        ),
+                    },
+                ],
+            )
+
+            aggregate_extract_text = (
+                getattr(aggregate_extract_resp, "output_text", "") or ""
+            ).strip()
+
+            try:
+                aggregate_extracted = json.loads(
+                    re.search(
+                        r"\{.*\}",
+                        aggregate_extract_text,
+                        flags=re.DOTALL,
+                    ).group(0)
+                )
+            except Exception:
+                aggregate_extracted = {"claims": []}
+
+            aggregate_claims = (
+                aggregate_extracted.get("claims")
+                if isinstance(aggregate_extracted.get("claims"), list)
+                else []
+            )
+
+        except Exception as e:
+            print(
+                f"[research_count] aggregate extraction failed: "
+                f"{type(e).__name__}: {e}",
+                flush=True,
+            )
+
+        aggregate_text = _aggregate_format_claims(
+            query,
+            aggregate_claims,
+        )
+
+        final_text = (
+            "=== ГОТОВЫЕ ОЦЕНКИ ИЗ ИСТОЧНИКОВ ===\n\n"
+            + aggregate_text.strip()
+            + "\n\n"
+            + "=== СУММА НАЙДЕННЫХ ОТДЕЛЬНЫХ СООБЩЕНИЙ ===\n\n"
+            + incident_text.strip()
         )
 
         _remember_topic(
@@ -1609,7 +1692,8 @@ async def _run_research_count_for_message(message: Message, query: str) -> None:
                 "query": query,
                 "summary": final_text[:1200],
                 "search_queries": search_queries,
-                "aggregate": aggregate,
+                "aggregate": incident_aggregate,
+                "aggregate_claims": aggregate_claims[:20],
             },
         )
 
@@ -2837,46 +2921,18 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
 
     pending_research = _get_topic(chat_id, user_id)
     if pending_research and pending_research.get("type") == "research_clarify":
-        choice_text = (dialog_text or "").strip().lower()
         original_query = str(pending_research.get("query") or "").strip()
 
-        wants_count = any(x in choice_text for x in (
-            "отдель",
-            "случ",
-            "инцидент",
-            "дат",
-            "регион",
-            "подтвержд",
-            "заявлен",
-            "поданн",
-            "подан",
-            "заявк",
-            "собери",
-            "таблиц",
-        ))
-
-        wants_aggregate = any(x in choice_text for x in (
-            "общ",
-            "готов",
-            "оценк",
-            "статист",
-            "источник",
-            "диапазон",
-            "итог",
-        ))
-
-        if original_query and wants_count and not wants_aggregate:
-            _remember_topic(chat_id, user_id, {"type": "research_count", "query": original_query})
+        if original_query:
+            _remember_topic(
+                chat_id,
+                user_id,
+                {
+                    "type": "research_count",
+                    "query": original_query,
+                },
+            )
             await _run_research_count_for_message(message, original_query)
-            return
-
-        if original_query and wants_aggregate and not wants_count:
-            _remember_topic(chat_id, user_id, {"type": "research_aggregate", "query": original_query})
-            await _run_research_aggregate_for_message(message, original_query)
-            return
-
-        if wants_count and wants_aggregate:
-            await message.answer("Выбери один метод: отдельные подтверждённые случаи или готовая общая оценка.")
             return
 
     decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
@@ -2939,7 +2995,7 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         if not q:
             q = _extract_web_search_query(dialog_text)
 
-        await _run_research_aggregate_for_message(message, q)
+        await _run_research_count_for_message(message, q)
         return
 
     if intent == "research_count":
