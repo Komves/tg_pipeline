@@ -1092,6 +1092,175 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
         print(f"[web_search] failed: {type(e).__name__}: {e}", flush=True)
         await message.answer(f"поиск сломался: {type(e).__name__}: {e}")
 
+def _research_norm_text(value: str) -> str:
+    t = (value or "").strip().lower()
+    t = re.sub(r"https?://\S+", "", t)
+    t = re.sub(r"[^\wа-яё0-9\s-]+", " ", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _research_int(value) -> int:
+    try:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int):
+            return max(0, value)
+        if isinstance(value, float):
+            return max(0, int(value))
+        s = str(value or "").strip()
+        m = re.search(r"\d+", s)
+        return max(0, int(m.group(0))) if m else 0
+    except Exception:
+        return 0
+
+
+def _research_record_key(rec: dict) -> str:
+    date = _research_norm_text(str(rec.get("date") or ""))
+    location = _research_norm_text(str(rec.get("location") or ""))
+    event = _research_norm_text(str(rec.get("event") or ""))
+
+    # universal but conservative: same date + same place = likely same countable incident
+    if date and location:
+        return f"{date}|{location}"
+
+    # fallback when date/location missing
+    return f"{date}|{location}|{event[:90]}"
+
+
+def _research_aggregate_records(records: list[dict], *, official_only: bool = False) -> dict:
+    allowed_sources = {"official", "media_with_official_reference"}
+    allowed_conf = {"high", "medium"}
+
+    grouped: dict[str, dict] = {}
+    rejected = 0
+
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            rejected += 1
+            continue
+
+        value = _research_int(rec.get("metric_value"))
+        if value <= 0:
+            rejected += 1
+            continue
+
+        source_type = str(rec.get("source_type") or "unknown").strip().lower()
+        confidence = str(rec.get("confidence") or "low").strip().lower()
+
+        if confidence not in allowed_conf:
+            rejected += 1
+            continue
+
+        if official_only and source_type not in allowed_sources:
+            rejected += 1
+            continue
+
+        key = _research_record_key(rec)
+        if not key:
+            rejected += 1
+            continue
+
+        current = grouped.get(key)
+        if not current:
+            grouped[key] = {
+                "date": str(rec.get("date") or "").strip(),
+                "location": str(rec.get("location") or "").strip(),
+                "event": str(rec.get("event") or "").strip(),
+                "metric_value": value,
+                "metric_label": str(rec.get("metric_label") or "").strip(),
+                "source_type": source_type,
+                "confidence": confidence,
+                "urls": [],
+                "evidence": str(rec.get("evidence") or "").strip(),
+            }
+        else:
+            # If the same incident appears with different counts, keep the highest
+            # value as the latest/most complete count, not sum of duplicates.
+            if value > int(current.get("metric_value") or 0):
+                current["metric_value"] = value
+                current["event"] = str(rec.get("event") or current.get("event") or "").strip()
+                current["evidence"] = str(rec.get("evidence") or current.get("evidence") or "").strip()
+
+            # upgrade confidence/source if better
+            if current.get("confidence") != "high" and confidence == "high":
+                current["confidence"] = "high"
+            if current.get("source_type") != "official" and source_type == "official":
+                current["source_type"] = "official"
+
+        url = str(rec.get("source_url") or "").strip()
+        if url and url not in grouped[key]["urls"]:
+            grouped[key]["urls"].append(url)
+
+    items = list(grouped.values())
+    items.sort(key=lambda x: (x.get("date") or "9999-99-99", x.get("location") or ""))
+
+    return {
+        "items": items,
+        "total": sum(int(x.get("metric_value") or 0) for x in items),
+        "accepted": len(items),
+        "rejected": rejected,
+    }
+
+
+def _research_format_result(query: str, aggregate: dict, *, source_policy: str = "") -> str:
+    items = aggregate.get("items") or []
+    total = int(aggregate.get("total") or 0)
+    accepted = int(aggregate.get("accepted") or 0)
+    rejected = int(aggregate.get("rejected") or 0)
+
+    if not items:
+        return (
+            "Итог: подтверждённых счётных фактов по найденным материалам не вытащила.\n\n"
+            f"Запрос: {query}\n"
+            f"Отброшено слабых/неполных записей: {rejected}."
+        )
+
+    lines = []
+    lines.append(f"Итог: {total}.")
+    lines.append(f"Учтено уникальных записей: {accepted}.")
+    if rejected:
+        lines.append(f"Отброшено слабых/неполных записей: {rejected}.")
+    lines.append("")
+
+    lines.append("Список:")
+    for i, rec in enumerate(items, start=1):
+        date = rec.get("date") or "дата не указана"
+        location = rec.get("location") or "место не указано"
+        value = int(rec.get("metric_value") or 0)
+        event = rec.get("event") or "событие не описано"
+        source_type = rec.get("source_type") or "unknown"
+        confidence = rec.get("confidence") or "unknown"
+
+        lines.append(f"{i}) {date} — {location}")
+        lines.append(f"   Число: {value}")
+        lines.append(f"   Событие: {event}")
+        lines.append(f"   Источник: {source_type}, уверенность: {confidence}")
+
+        urls = rec.get("urls") or []
+        if urls:
+            lines.append(f"   Ссылка: {urls[0]}")
+        lines.append("")
+
+    all_urls = []
+    for rec in items:
+        for url in rec.get("urls") or []:
+            if url and url not in all_urls:
+                all_urls.append(url)
+
+    if all_urls:
+        lines.append("Источники:")
+        for url in all_urls[:10]:
+            lines.append(f"- {url}")
+        lines.append("")
+
+    if source_policy == "official_only":
+        lines.append("Оговорка: итог только по записям, где источник отмечен как official или media_with_official_reference.")
+    else:
+        lines.append("Оговорка: итог только по найденным и извлечённым записям, без гарантии полного государственного реестра.")
+
+    return "\n".join(lines).strip()
+
 async def _run_research_count_for_message(message: Message, query: str) -> None:
     """
     Universal multi-source research/count executor.
@@ -1292,39 +1461,19 @@ async def _run_research_count_for_message(message: Message, query: str) -> None:
 
         records = extracted.get("records") if isinstance(extracted.get("records"), list) else []
 
-        final_resp = client.responses.create(
-            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты делаешь финальный ответ Веси по универсальному исследовательскому подсчёту.\n"
-                        "Нужно дедуплицировать records, посчитать итог и дать таблицу.\n"
-                        "Опирайся только на records и исходный запрос.\n"
-                        "Не придумывай отсутствующие события.\n\n"
-                        "Формат ответа:\n"
-                        "1) короткий прямой итог;\n"
-                        "2) таблица: дата | место | число | событие | источник/уверенность;\n"
-                        "3) ссылки списком;\n"
-                        "4) короткая оговорка о полноте.\n\n"
-                        "Если records пустые — честно скажи, что подтверждённых счетных фактов по найденным материалам нет.\n"
-                        "Не обещай продолжить потом.\n"
-                        "Не пиши 'могу дальше'.\n"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Исходный запрос:\n{query}\n\n"
-                        f"Records JSON:\n{json.dumps(records, ensure_ascii=False)}"
-                    ),
-                },
-            ],
+        source_policy = str(plan.get("source_policy") or "").strip().lower()
+        official_only = source_policy == "official_only"
+
+        aggregate = _research_aggregate_records(
+            records,
+            official_only=official_only,
         )
 
-        final_text = (getattr(final_resp, "output_text", "") or "").strip()
-        if not final_text:
-            final_text = "Подтверждённых счетных фактов по найденным материалам не вытащила. Красиво, но пусто."
+        final_text = _research_format_result(
+            query,
+            aggregate,
+            source_policy=source_policy,
+        )
 
         _remember_topic(
             int(message.chat.id),
@@ -1334,6 +1483,7 @@ async def _run_research_count_for_message(message: Message, query: str) -> None:
                 "query": query,
                 "summary": final_text[:1200],
                 "search_queries": search_queries,
+                "aggregate": aggregate,
             },
         )
 
