@@ -1092,6 +1092,257 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
         print(f"[web_search] failed: {type(e).__name__}: {e}", flush=True)
         await message.answer(f"поиск сломался: {type(e).__name__}: {e}")
 
+async def _run_research_count_for_message(message: Message, query: str) -> None:
+    """
+    Universal multi-source research/count executor.
+    It is intentionally separate from quick web_search:
+    - builds multiple search queries;
+    - fetches several search result pages;
+    - extracts countable records;
+    - deduplicates incidents;
+    - returns a sourced table and total.
+    """
+    query = (query or "").strip()
+    query = re.sub(r"\s+", " ", query).strip()
+    query = query[:500]
+
+    if not query:
+        await message.answer("Считать нечего. Пустой запрос — плохой объект расследования.")
+        return
+
+    if not BRAVE_SEARCH_API_KEY:
+        await message.answer("Сложный поиск не подключён: нет BRAVE_SEARCH_API_KEY.")
+        return
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        await message.answer("Сложный поиск не подключён: нет OPENAI_API_KEY.")
+        return
+
+    try:
+        import requests
+        from openai import OpenAI
+
+        max_queries = int(os.getenv("V_RESEARCH_COUNT_QUERIES", "6"))
+        max_results_per_query = int(os.getenv("V_RESEARCH_COUNT_RESULTS_PER_QUERY", "10"))
+        max_pages = int(os.getenv("V_RESEARCH_COUNT_FETCH_PAGES", "12"))
+
+        client = OpenAI()
+
+        plan_resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты планировщик универсального фактологического поиска.\n"
+                        "Нужно превратить запрос пользователя в несколько поисковых запросов.\n"
+                        "Не отвечай пользователю.\n"
+                        "Верни только JSON.\n\n"
+                        "JSON:\n"
+                        "{"
+                        "\"objective\":\"что считаем\","
+                        "\"metric\":\"что суммировать\","
+                        "\"source_policy\":\"official_only|open_sources\","
+                        "\"queries\":[\"query1\",\"query2\"]"
+                        "}\n\n"
+                        "Правила:\n"
+                        "- Не зашивай частный домен.\n"
+                        "- Если пользователь просит официально — source_policy=official_only.\n"
+                        "- Делай разные формулировки запроса: по событию, по метрике, по периоду, по официальным сообщениям.\n"
+                        "- Максимум 6 queries.\n"
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+        )
+
+        plan_text = (getattr(plan_resp, "output_text", "") or "").strip()
+        try:
+            plan = json.loads(re.search(r"\{.*\}", plan_text, flags=re.DOTALL).group(0))
+        except Exception:
+            plan = {}
+
+        search_queries = plan.get("queries") if isinstance(plan.get("queries"), list) else []
+        search_queries = [str(x).strip() for x in search_queries if str(x).strip()]
+        if not search_queries:
+            search_queries = [query]
+
+        search_queries = search_queries[:max_queries]
+
+        def _brave_search(q: str) -> list[dict]:
+            r = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={
+                    "Accept": "application/json",
+                    "X-Subscription-Token": BRAVE_SEARCH_API_KEY,
+                },
+                params={
+                    "q": q,
+                    "count": max_results_per_query,
+                    "search_lang": "ru",
+                    "country": "RU",
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return (data.get("web") or {}).get("results") or []
+
+        raw_results: list[dict] = []
+        seen_urls: set[str] = set()
+
+        for sq in search_queries:
+            try:
+                items = await asyncio.to_thread(_brave_search, sq)
+            except Exception as e:
+                print(f"[research_count] search failed q={sq!r}: {type(e).__name__}: {e}", flush=True)
+                continue
+
+            for x in items:
+                url = (x.get("url") or "").strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                raw_results.append({
+                    "search_query": sq,
+                    "title": (x.get("title") or "").strip(),
+                    "url": url,
+                    "description": (x.get("description") or "").strip(),
+                })
+
+        if not raw_results:
+            await message.answer("Ничего пригодного не нашла. Пустая выдача — тоже ответ, но мерзкий.")
+            return
+
+        def _fetch_page_text(url: str) -> str:
+            try:
+                r = requests.get(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=15,
+                )
+                if not r.ok:
+                    return ""
+                text = r.text or ""
+                text = re.sub(r"(?is)<script.*?</script>", " ", text)
+                text = re.sub(r"(?is)<style.*?</style>", " ", text)
+                text = re.sub(r"(?is)<[^>]+>", " ", text)
+                text = html.unescape(text)
+                text = re.sub(r"\s+", " ", text).strip()
+                return text[:5000]
+            except Exception:
+                return ""
+
+        enriched: list[dict] = []
+        for x in raw_results[:max_pages]:
+            page_text = await asyncio.to_thread(_fetch_page_text, x["url"])
+            y = dict(x)
+            y["page_text"] = page_text
+            enriched.append(y)
+
+        extract_resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты извлекаешь счетные факты из поисковых результатов и текстов страниц.\n"
+                        "Опирайся только на переданные данные.\n"
+                        "Не придумывай факты.\n"
+                        "Если факт не подтверждён текстом — не включай его.\n"
+                        "Верни только JSON.\n\n"
+                        "JSON:\n"
+                        "{"
+                        "\"records\":["
+                        "{"
+                        "\"date\":\"YYYY-MM-DD или пусто\","
+                        "\"location\":\"место или пусто\","
+                        "\"event\":\"кратко что произошло\","
+                        "\"metric_value\":число,"
+                        "\"metric_label\":\"что посчитано\","
+                        "\"source_type\":\"official|media_with_official_reference|media|unknown\","
+                        "\"source_url\":\"url\","
+                        "\"evidence\":\"короткая цитата/пересказ опоры\","
+                        "\"confidence\":\"high|medium|low\""
+                        "}"
+                        "]"
+                        "}\n\n"
+                        "Правила:\n"
+                        "- Один record = один счетный инцидент/факт.\n"
+                        "- Не суммируй сам на этом этапе.\n"
+                        "- Если одно событие встретилось в нескольких источниках, можно вернуть несколько records; дедупликация будет позже.\n"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Исходный запрос пользователя:\n{query}\n\n"
+                        f"План поиска:\n{json.dumps(plan, ensure_ascii=False)}\n\n"
+                        f"Материалы:\n{json.dumps(enriched, ensure_ascii=False)[:55000]}"
+                    ),
+                },
+            ],
+        )
+
+        extract_text = (getattr(extract_resp, "output_text", "") or "").strip()
+        try:
+            extracted = json.loads(re.search(r"\{.*\}", extract_text, flags=re.DOTALL).group(0))
+        except Exception:
+            extracted = {"records": []}
+
+        records = extracted.get("records") if isinstance(extracted.get("records"), list) else []
+
+        final_resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты делаешь финальный ответ Веси по универсальному исследовательскому подсчёту.\n"
+                        "Нужно дедуплицировать records, посчитать итог и дать таблицу.\n"
+                        "Опирайся только на records и исходный запрос.\n"
+                        "Не придумывай отсутствующие события.\n\n"
+                        "Формат ответа:\n"
+                        "1) короткий прямой итог;\n"
+                        "2) таблица: дата | место | число | событие | источник/уверенность;\n"
+                        "3) ссылки списком;\n"
+                        "4) короткая оговорка о полноте.\n\n"
+                        "Если records пустые — честно скажи, что подтверждённых счетных фактов по найденным материалам нет.\n"
+                        "Не обещай продолжить потом.\n"
+                        "Не пиши 'могу дальше'.\n"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Исходный запрос:\n{query}\n\n"
+                        f"Records JSON:\n{json.dumps(records, ensure_ascii=False)}"
+                    ),
+                },
+            ],
+        )
+
+        final_text = (getattr(final_resp, "output_text", "") or "").strip()
+        if not final_text:
+            final_text = "Подтверждённых счетных фактов по найденным материалам не вытащила. Красиво, но пусто."
+
+        _remember_topic(
+            int(message.chat.id),
+            int(message.from_user.id) if message.from_user else 0,
+            {
+                "type": "research_count",
+                "query": query,
+                "summary": final_text[:1200],
+                "search_queries": search_queries,
+            },
+        )
+
+        await _answer_long(message, final_text)
+
+    except Exception as e:
+        print(f"[research_count] failed: {type(e).__name__}: {e}", flush=True)
+        await message.answer(f"сложный поиск сломался: {type(e).__name__}: {e}")
+
 async def _run_news_for_message(message: Message, *, hours: int, limit: int) -> None:
     try:
         async with TG_LOCK:
@@ -2116,6 +2367,17 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         if reply:
             await _send_reply_for_event(message, reply, event_type=event_type)
         await _send_content(message, user_id=chat_id, ingest_hours_n=None)
+        return
+
+    if intent == "research_count":
+        if reply:
+            await _send_reply_for_event(message, reply, event_type=event_type)
+
+        q = (getattr(decision, "query", "") or "").strip()
+        if not q:
+            q = _extract_web_search_query(dialog_text)
+
+        await _run_research_count_for_message(message, q)
         return
 
     if intent == "web_search":

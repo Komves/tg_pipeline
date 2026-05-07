@@ -57,7 +57,7 @@ _PERSONA_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
 @dataclass
 class DialogDecision:
-    intent: str  # chat | news | content | web_search | end
+    intent: str  # chat | news | content | web_search | research_count | end
     reply: str
     query: str = ""
 
@@ -466,6 +466,84 @@ def _deterministic_pick(options: List[str], seed_str: str) -> str:
         return ""
     return options[_deterministic_index(len(options), seed_str)]
 
+def _looks_like_research_count_request(user_text: str) -> bool:
+    """
+    Universal detector for complex factual counting/research tasks.
+    Does not encode any specific topic; it detects count-by-criteria tasks.
+    """
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    if any(x in t for x in (
+        "сколько стоит",
+        "цена",
+        "прайс",
+        "стоимость",
+        "курс",
+        "доллар",
+        "евро",
+    )):
+        return False
+
+    count_markers = (
+        "сколько",
+        "посчитай",
+        "сосчитай",
+        "подсчитай",
+        "найди и посчитай",
+        "собери и посчитай",
+    )
+
+    scope_markers = (
+        "с начала",
+        "за период",
+        "за год",
+        "за месяц",
+        "по всем",
+        "во всех",
+        "официально",
+        "официальных",
+        "подтвержден",
+        "подтверждён",
+        "таблиц",
+        "список",
+        "по датам",
+        "по регионам",
+    )
+
+    factual_markers = (
+        "погиб",
+        "пострада",
+        "ранен",
+        "убит",
+        "казнил",
+        "казнен",
+        "казнён",
+        "осуд",
+        "арест",
+        "атак",
+        "удар",
+        "беспилот",
+        "дрон",
+        "случа",
+        "инцидент",
+        "банкрот",
+        "лицензи",
+        "отозвал",
+        "компан",
+        "банк",
+        "человек",
+        "генерал",
+    )
+
+    has_count = any(x in t for x in count_markers)
+    has_scope = any(x in t for x in scope_markers)
+    has_fact = any(x in t for x in factual_markers)
+
+    return has_count and (has_scope or has_fact)
+
+
 def semantic_route(user_text: str) -> Optional[dict]:
     """
     Semantic intent router.
@@ -475,6 +553,9 @@ def semantic_route(user_text: str) -> Optional[dict]:
     t = (user_text or "").strip()
     if not t or not _has_key():
         return None
+
+    if _looks_like_research_count_request(t):
+        return {"intent": "research_count", "query": t}
 
     try:
         client = OpenAI()
@@ -492,18 +573,21 @@ def semantic_route(user_text: str) -> Optional[dict]:
                         "- chat: обычный разговор, мнение, шутка, обсуждение, риторика.\n"
                         "- news: пользователь явно просит новостную сводку/дайджест.\n"
                         "- content: пользователь явно просит прислать контент, мемы, видосы, get12/get24, жги/огня.\n"
-                        "- web_search: нужен свежий внешний поиск в интернете или конкретный поиск фактов/мест/событий.\n"
+                        "- web_search: нужен быстрый свежий внешний поиск в интернете или конкретный поиск факта.\n"
+                        "- research_count: пользователь просит найти, сверить, посчитать, собрать таблицу или итог по множеству событий/источников за период.\n"
                         "- end: пользователь явно завершает разговор.\n\n"
                         "Правила:\n"
                         "- Вопросы вида 'что сегодня случилось с X', 'что произошло с X', 'найди X', 'поищи X', "
                         "'что известно про X', 'где найти X' => web_search.\n"
+                        "- Запросы вида 'сколько', 'посчитай', 'по всем', 'во всех новостях', 'официально', "
+                        "'с начала года', 'за период', 'собери таблицу', 'сверь источники' => research_count.\n"
                         "- Фраза без просьбы найти, например 'NVIDIA опять пампят на ИИ' => chat.\n"
                         "- 'дай новости', 'собери дайджест', 'что нового в мире' => news.\n"
                         "- 'жги', 'огня', 'дай мемы', 'дай видосы', 'get12', 'get24' => content.\n"
                         "- Не запускай content только из-за слова 'видео', если пользователь обсуждает присланный ролик.\n"
                         "- Не запускай news только потому что в сообщении есть слово 'новость', если пользователь обсуждает текст.\n\n"
                         "JSON формат строго:\n"
-                        "{\"intent\":\"chat|news|content|web_search|end\",\"query\":\"строка для поиска или пусто\"}"
+                        "{\"intent\":\"chat|news|content|web_search|research_count|end\",\"query\":\"строка для поиска или пусто\"}"
                     ),
                 },
                 {"role": "user", "content": t},
@@ -512,7 +596,7 @@ def semantic_route(user_text: str) -> Optional[dict]:
 
         data = _parse_json_object(_extract_text(resp)) or {}
         intent = str(data.get("intent") or "chat").strip().lower()
-        if intent not in {"chat", "news", "content", "web_search", "end"}:
+        if intent not in {"chat", "news", "content", "web_search", "research_count", "end"}:
             intent = "chat"
 
         query = str(data.get("query") or "").strip()
@@ -731,6 +815,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     if route:
         r_intent = (route.get("intent") or "chat").strip().lower()
         semantic_query = str(route.get("query") or "").strip()
+
+        if r_intent == "research_count":
+            return DialogDecision(
+                intent="research_count",
+                reply="",
+                query=semantic_query or user_text,
+            )
 
         if r_intent == "web_search":
             return DialogDecision(
