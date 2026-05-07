@@ -2203,6 +2203,8 @@ async def vesya_handler(message: Message) -> None:
         "ответь на вопрос человеку",
         "ответь человеку",
         "ответь по сути",
+        "ответь нормально",
+        "ответь уже",
         "прокомментируй",
         "разбери",
         "проверь",
@@ -2231,7 +2233,7 @@ async def vesya_handler(message: Message) -> None:
 
         inline_action = (
             bool(re.search(
-                r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+сути|прокомментируй|прокоммент|как\s+тебе|что\s+думаешь|что\s+скажешь|разбери|проверь)\b",
+                r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+сути|ответь\s+нормально|ответь\s+уже|прокомментируй|прокоммент|как\s+тебе|что\s+думаешь|что\s+скажешь|разбери|проверь)\b",
                 text,
                 flags=re.I,
             ))
@@ -2241,18 +2243,7 @@ async def vesya_handler(message: Message) -> None:
             )
         )
 
-        if pending_action:
-            if pending_action.startswith("ответь"):
-                await _handle_text_core(message, text, event_type="text")
-            else:
-                await _handle_text_core(
-                    message,
-                    f"Веся, {pending_action}:\n{text}",
-                    event_type="text",
-                )
-            return
-
-        if inline_action:
+        if pending_action or inline_action:
             await _handle_text_core(message, text, event_type="text")
             return
 
