@@ -1709,6 +1709,16 @@ async def on_photo(message: Message) -> None:
             img_bytes,
         )
         caption = (message.caption or "").strip()
+
+        # Пересланные фото/новости в группе сами по себе не комментируем.
+        # Иначе Веся отвечает дважды: на forward-картинку и на реплику пользователя.
+        if (
+            message.chat.type in ("group", "supergroup")
+            and _is_forwarded_message(message)
+            and not (caption and chatgpt_dialog.persona.is_addressed(caption))
+        ):
+            return
+
         if caption and (
             chatgpt_dialog.persona.is_addressed(caption)
             or (message.chat.type == "private" and _wants_context_comment(caption))
