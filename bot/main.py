@@ -1261,6 +1261,132 @@ def _research_format_result(query: str, aggregate: dict, *, source_policy: str =
 
     return "\n".join(lines).strip()
 
+def _aggregate_claim_value(value) -> int | None:
+    try:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value >= 0 else None
+        if isinstance(value, float):
+            return int(value) if value >= 0 else None
+
+        s = str(value or "").replace(" ", "").replace("\u00a0", "")
+        m = re.search(r"\d+", s)
+        if not m:
+            return None
+        return int(m.group(0))
+    except Exception:
+        return None
+
+
+def _aggregate_source_weight(source_type: str) -> float:
+    st = (source_type or "").strip().lower()
+    weights = {
+        "official": 1.0,
+        "international_org": 0.9,
+        "major_media": 0.75,
+        "expert_estimate": 0.65,
+        "media": 0.55,
+        "telegram": 0.30,
+        "unknown": 0.20,
+    }
+    return weights.get(st, 0.20)
+
+
+def _aggregate_conf_weight(confidence: str) -> float:
+    c = (confidence or "").strip().lower()
+    if c == "high":
+        return 1.0
+    if c == "medium":
+        return 0.65
+    return 0.30
+
+
+def _aggregate_format_claims(query: str, claims: list[dict]) -> str:
+    clean = []
+
+    for claim in claims or []:
+        if not isinstance(claim, dict):
+            continue
+
+        value = _aggregate_claim_value(claim.get("value"))
+        if value is None:
+            continue
+
+        source_type = str(claim.get("source_type") or "unknown").strip().lower()
+        confidence = str(claim.get("confidence") or "low").strip().lower()
+        score = _aggregate_source_weight(source_type) * _aggregate_conf_weight(confidence)
+
+        clean.append({
+            "value": value,
+            "value_text": str(claim.get("value_text") or value).strip(),
+            "metric": str(claim.get("metric") or "").strip(),
+            "scope": str(claim.get("scope") or "").strip(),
+            "period": str(claim.get("period") or "").strip(),
+            "source_name": str(claim.get("source_name") or "").strip(),
+            "source_type": source_type,
+            "confidence": confidence,
+            "url": str(claim.get("source_url") or "").strip(),
+            "evidence": str(claim.get("evidence") or "").strip(),
+            "score": score,
+        })
+
+    if not clean:
+        return (
+            "Итог: в найденных материалах не вытащила пригодную агрегированную цифру.\n\n"
+            f"Запрос: {query}\n"
+            "Это не список инцидентов, тут нужен источник с уже опубликованной общей статистикой."
+        )
+
+    clean.sort(key=lambda x: x["score"], reverse=True)
+
+    high = [x for x in clean if x["score"] >= 0.55]
+    basis = high or clean
+
+    values = [int(x["value"]) for x in basis]
+    min_v = min(values)
+    max_v = max(values)
+    best = basis[0]
+
+    lines = []
+    if min_v == max_v:
+        lines.append(f"Итог: {min_v}.")
+    else:
+        lines.append(f"Итог: найденный диапазон оценок — от {min_v} до {max_v}.")
+        lines.append(f"Наиболее сильная найденная оценка: {best['value_text']}.")
+
+    lines.append("")
+    lines.append("Оценки по источникам:")
+
+    for i, item in enumerate(clean[:8], start=1):
+        name = item["source_name"] or item["source_type"]
+        metric = item["metric"] or "показатель"
+        period = item["period"] or "период не указан"
+
+        lines.append(f"{i}) {item['value_text']} — {name}")
+        lines.append(f"   Метрика: {metric}")
+        lines.append(f"   Период: {period}")
+        lines.append(f"   Тип: {item['source_type']}, уверенность: {item['confidence']}")
+        if item["evidence"]:
+            lines.append(f"   Основание: {item['evidence'][:220]}")
+        if item["url"]:
+            lines.append(f"   Ссылка: {item['url']}")
+        lines.append("")
+
+    urls = []
+    for item in clean:
+        if item["url"] and item["url"] not in urls:
+            urls.append(item["url"])
+
+    if urls:
+        lines.append("Источники:")
+        for url in urls[:10]:
+            lines.append(f"- {url}")
+        lines.append("")
+
+    lines.append("Оговорка: это агрегированные оценки из найденных источников, а не сумма отдельных инцидентов.")
+    return "\n".join(lines).strip()
+
 async def _run_research_count_for_message(message: Message, query: str) -> None:
     """
     Universal multi-source research/count executor.
@@ -1492,6 +1618,229 @@ async def _run_research_count_for_message(message: Message, query: str) -> None:
     except Exception as e:
         print(f"[research_count] failed: {type(e).__name__}: {e}", flush=True)
         await message.answer(f"сложный поиск сломался: {type(e).__name__}: {e}")
+
+async def _run_research_aggregate_for_message(message: Message, query: str) -> None:
+    """
+    Universal aggregate-statistics research executor.
+    Separate from incident counting:
+    - searches for already published totals/estimates;
+    - extracts aggregate claims;
+    - ranks sources;
+    - returns estimate/range with source disagreement.
+    """
+    query = (query or "").strip()
+    query = re.sub(r"\s+", " ", query).strip()
+    query = query[:500]
+
+    if not query:
+        await message.answer("Считать нечего. Пустой запрос — плохая статистика.")
+        return
+
+    if not BRAVE_SEARCH_API_KEY:
+        await message.answer("Агрегированный поиск не подключён: нет BRAVE_SEARCH_API_KEY.")
+        return
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        await message.answer("Агрегированный поиск не подключён: нет OPENAI_API_KEY.")
+        return
+
+    try:
+        import requests
+        from openai import OpenAI
+
+        max_queries = int(os.getenv("V_RESEARCH_AGG_QUERIES", "6"))
+        max_results_per_query = int(os.getenv("V_RESEARCH_AGG_RESULTS_PER_QUERY", "10"))
+        max_pages = int(os.getenv("V_RESEARCH_AGG_FETCH_PAGES", "12"))
+
+        client = OpenAI()
+
+        plan_resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты планировщик поиска агрегированной статистики.\n"
+                        "Нужно найти уже опубликованные общие цифры/оценки, а НЕ список отдельных инцидентов.\n"
+                        "Не отвечай пользователю.\n"
+                        "Верни только JSON.\n\n"
+                        "JSON:\n"
+                        "{"
+                        "\"objective\":\"что нужно узнать\","
+                        "\"metric\":\"какой показатель ищем\","
+                        "\"scope\":\"география/группа\","
+                        "\"period\":\"период\","
+                        "\"source_policy\":\"official_only|open_sources\","
+                        "\"queries\":[\"query1\",\"query2\"]"
+                        "}\n\n"
+                        "Правила:\n"
+                        "- Делай запросы под общие итоги, статистику, оценки, reports, official data.\n"
+                        "- Если пользователь просит официально — source_policy=official_only.\n"
+                        "- Не планируй сбор отдельных случаев.\n"
+                        "- Максимум 6 queries.\n"
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+        )
+
+        plan_text = (getattr(plan_resp, "output_text", "") or "").strip()
+        try:
+            plan = json.loads(re.search(r"\{.*\}", plan_text, flags=re.DOTALL).group(0))
+        except Exception:
+            plan = {}
+
+        search_queries = plan.get("queries") if isinstance(plan.get("queries"), list) else []
+        search_queries = [str(x).strip() for x in search_queries if str(x).strip()]
+        if not search_queries:
+            search_queries = [query]
+
+        search_queries = search_queries[:max_queries]
+
+        def _brave_search(q: str) -> list[dict]:
+            r = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={
+                    "Accept": "application/json",
+                    "X-Subscription-Token": BRAVE_SEARCH_API_KEY,
+                },
+                params={
+                    "q": q,
+                    "count": max_results_per_query,
+                    "search_lang": "ru",
+                    "country": "RU",
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return (data.get("web") or {}).get("results") or []
+
+        raw_results: list[dict] = []
+        seen_urls: set[str] = set()
+
+        for sq in search_queries:
+            try:
+                items = await asyncio.to_thread(_brave_search, sq)
+            except Exception as e:
+                print(f"[research_aggregate] search failed q={sq!r}: {type(e).__name__}: {e}", flush=True)
+                continue
+
+            for x in items:
+                url = (x.get("url") or "").strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                raw_results.append({
+                    "search_query": sq,
+                    "title": (x.get("title") or "").strip(),
+                    "url": url,
+                    "description": (x.get("description") or "").strip(),
+                })
+
+        if not raw_results:
+            await message.answer("Ничего пригодного не нашла. Статистика спряталась, трусливо.")
+            return
+
+        def _fetch_page_text(url: str) -> str:
+            try:
+                r = requests.get(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=15,
+                )
+                if not r.ok:
+                    return ""
+                text = r.text or ""
+                text = re.sub(r"(?is)<script.*?</script>", " ", text)
+                text = re.sub(r"(?is)<style.*?</style>", " ", text)
+                text = re.sub(r"(?is)<[^>]+>", " ", text)
+                text = html.unescape(text)
+                text = re.sub(r"\s+", " ", text).strip()
+                return text[:6000]
+            except Exception:
+                return ""
+
+        enriched: list[dict] = []
+        for x in raw_results[:max_pages]:
+            page_text = await asyncio.to_thread(_fetch_page_text, x["url"])
+            y = dict(x)
+            y["page_text"] = page_text
+            enriched.append(y)
+
+        extract_resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты извлекаешь агрегированные статистические утверждения из материалов.\n"
+                        "Это НЕ инциденты и НЕ список событий.\n"
+                        "Опирайся только на переданные материалы.\n"
+                        "Не придумывай цифры.\n"
+                        "Если цифра не является общей оценкой/итогом по запросу — не включай.\n"
+                        "Верни только JSON.\n\n"
+                        "JSON:\n"
+                        "{"
+                        "\"claims\":["
+                        "{"
+                        "\"value\":число,"
+                        "\"value_text\":\"как цифра написана в источнике\","
+                        "\"metric\":\"что измеряется\","
+                        "\"scope\":\"география/группа\","
+                        "\"period\":\"период\","
+                        "\"source_name\":\"название источника\","
+                        "\"source_type\":\"official|international_org|major_media|expert_estimate|media|telegram|unknown\","
+                        "\"source_url\":\"url\","
+                        "\"evidence\":\"короткая опора из материала\","
+                        "\"confidence\":\"high|medium|low\""
+                        "}"
+                        "]"
+                        "}\n\n"
+                        "Правила:\n"
+                        "- Не суммируй claims.\n"
+                        "- Не создавай claim, если в тексте нет числового значения.\n"
+                        "- Для диапазона верни два claims: нижняя и верхняя оценка, если обе явно есть.\n"
+                        "- Если пользователь просит официально, предпочитай official, но не выдумывай official.\n"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Исходный запрос пользователя:\n{query}\n\n"
+                        f"План поиска:\n{json.dumps(plan, ensure_ascii=False)}\n\n"
+                        f"Материалы:\n{json.dumps(enriched, ensure_ascii=False)[:65000]}"
+                    ),
+                },
+            ],
+        )
+
+        extract_text = (getattr(extract_resp, "output_text", "") or "").strip()
+        try:
+            extracted = json.loads(re.search(r"\{.*\}", extract_text, flags=re.DOTALL).group(0))
+        except Exception:
+            extracted = {"claims": []}
+
+        claims = extracted.get("claims") if isinstance(extracted.get("claims"), list) else []
+        final_text = _aggregate_format_claims(query, claims)
+
+        _remember_topic(
+            int(message.chat.id),
+            int(message.from_user.id) if message.from_user else 0,
+            {
+                "type": "research_aggregate",
+                "query": query,
+                "summary": final_text[:1200],
+                "search_queries": search_queries,
+                "claims": claims[:20],
+            },
+        )
+
+        await _answer_long(message, final_text)
+
+    except Exception as e:
+        print(f"[research_aggregate] failed: {type(e).__name__}: {e}", flush=True)
+        await message.answer(f"агрегированный поиск сломался: {type(e).__name__}: {e}")
 
 async def _run_news_for_message(message: Message, *, hours: int, limit: int) -> None:
     try:
@@ -2517,6 +2866,17 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         if reply:
             await _send_reply_for_event(message, reply, event_type=event_type)
         await _send_content(message, user_id=chat_id, ingest_hours_n=None)
+        return
+
+    if intent == "research_aggregate":
+        if reply:
+            await _send_reply_for_event(message, reply, event_type=event_type)
+
+        q = (getattr(decision, "query", "") or "").strip()
+        if not q:
+            q = _extract_web_search_query(dialog_text)
+
+        await _run_research_aggregate_for_message(message, q)
         return
 
     if intent == "research_count":

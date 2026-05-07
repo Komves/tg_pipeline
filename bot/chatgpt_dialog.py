@@ -57,10 +57,9 @@ _PERSONA_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
 @dataclass
 class DialogDecision:
-    intent: str  # chat | news | content | web_search | research_count | end
+    intent: str  # chat | news | content | web_search | research_count | research_aggregate | end
     reply: str
     query: str = ""
-
 # =============================================================================
 # IN-MEM DIALOG SESSIONS (used for "active" mode after name / photo)
 # =============================================================================
@@ -466,16 +465,17 @@ def _deterministic_pick(options: List[str], seed_str: str) -> str:
         return ""
     return options[_deterministic_index(len(options), seed_str)]
 
-def _looks_like_research_count_request(user_text: str) -> bool:
+def _cheap_search_blocker(user_text: str) -> bool:
     """
-    Universal detector for complex factual counting/research tasks.
-    Does not encode any specific topic; it detects count-by-criteria tasks.
+    Cheap non-domain guardrail only.
+    Prevents price/currency questions from being forced into research.
+    Domain classification is done by LLM in semantic_route().
     """
     t = (user_text or "").strip().lower()
     if not t:
-        return False
+        return True
 
-    if any(x in t for x in (
+    return any(x in t for x in (
         "сколько стоит",
         "цена",
         "прайс",
@@ -483,79 +483,17 @@ def _looks_like_research_count_request(user_text: str) -> bool:
         "курс",
         "доллар",
         "евро",
-    )):
-        return False
-
-    count_markers = (
-        "сколько",
-        "посчитай",
-        "сосчитай",
-        "подсчитай",
-        "найди и посчитай",
-        "собери и посчитай",
-    )
-
-    scope_markers = (
-        "с начала",
-        "за период",
-        "за год",
-        "за месяц",
-        "по всем",
-        "во всех",
-        "официально",
-        "официальных",
-        "подтвержден",
-        "подтверждён",
-        "таблиц",
-        "список",
-        "по датам",
-        "по регионам",
-    )
-
-    factual_markers = (
-        "погиб",
-        "пострада",
-        "ранен",
-        "убит",
-        "казнил",
-        "казнен",
-        "казнён",
-        "осуд",
-        "арест",
-        "атак",
-        "удар",
-        "беспилот",
-        "дрон",
-        "случа",
-        "инцидент",
-        "банкрот",
-        "лицензи",
-        "отозвал",
-        "компан",
-        "банк",
-        "человек",
-        "генерал",
-    )
-
-    has_count = any(x in t for x in count_markers)
-    has_scope = any(x in t for x in scope_markers)
-    has_fact = any(x in t for x in factual_markers)
-
-    return has_count and (has_scope or has_fact)
-
+    ))
 
 def semantic_route(user_text: str) -> Optional[dict]:
     """
     Semantic intent router.
-    LLM decides intent only.
+    LLM decides intent and research mode.
     Executors still live in main.py.
     """
     t = (user_text or "").strip()
     if not t or not _has_key():
         return None
-
-    if _looks_like_research_count_request(t):
-        return {"intent": "research_count", "query": t}
 
     try:
         client = OpenAI()
@@ -573,21 +511,40 @@ def semantic_route(user_text: str) -> Optional[dict]:
                         "- chat: обычный разговор, мнение, шутка, обсуждение, риторика.\n"
                         "- news: пользователь явно просит новостную сводку/дайджест.\n"
                         "- content: пользователь явно просит прислать контент, мемы, видосы, get12/get24, жги/огня.\n"
-                        "- web_search: нужен быстрый свежий внешний поиск в интернете или конкретный поиск факта.\n"
-                        "- research_count: пользователь просит найти, сверить, посчитать, собрать таблицу или итог по множеству событий/источников за период.\n"
+                        "- web_search: нужен быстрый внешний поиск одного факта, события, имени, даты или свежей новости.\n"
+                        "- research_count: нужно найти несколько отдельных событий/случаев/инцидентов, извлечь из них счетные факты и посчитать итог.\n"
+                        "- research_aggregate: нужно найти уже опубликованные общие цифры, статистику, оценки, диапазоны или итоги разных источников; НЕ список отдельных инцидентов.\n"
                         "- end: пользователь явно завершает разговор.\n\n"
-                        "Правила:\n"
-                        "- Вопросы вида 'что сегодня случилось с X', 'что произошло с X', 'найди X', 'поищи X', "
-                        "'что известно про X', 'где найти X' => web_search.\n"
-                        "- Запросы вида 'сколько', 'посчитай', 'по всем', 'во всех новостях', 'официально', "
-                        "'с начала года', 'за период', 'собери таблицу', 'сверь источники' => research_count.\n"
-                        "- Фраза без просьбы найти, например 'NVIDIA опять пампят на ИИ' => chat.\n"
-                        "- 'дай новости', 'собери дайджест', 'что нового в мире' => news.\n"
-                        "- 'жги', 'огня', 'дай мемы', 'дай видосы', 'get12', 'get24' => content.\n"
-                        "- Не запускай content только из-за слова 'видео', если пользователь обсуждает присланный ролик.\n"
-                        "- Не запускай news только потому что в сообщении есть слово 'новость', если пользователь обсуждает текст.\n\n"
+                        "Ключевое правило:\n"
+                        "- НЕ классифицируй по теме. Классифицируй по форме задачи.\n\n"
+                        "research_count выбирай, если пользователь просит:\n"
+                        "- найти и посчитать множество отдельных случаев;\n"
+                        "- собрать по датам, регионам, организациям, людям, объектам;\n"
+                        "- убрать дубли;\n"
+                        "- дать список/таблицу отдельных подтверждений;\n"
+                        "- посчитать итог из набора найденных событий.\n\n"
+                        "research_aggregate выбирай, если пользователь просит:\n"
+                        "- общую статистику;\n"
+                        "- сколько всего;\n"
+                        "- официальную общую цифру;\n"
+                        "- оценки разных источников;\n"
+                        "- диапазон оценок;\n"
+                        "- итог за большой период без требования собрать каждый отдельный случай.\n\n"
+                        "web_search выбирай, если нужен один быстрый ответ:\n"
+                        "- кто;\n"
+                        "- когда;\n"
+                        "- что произошло;\n"
+                        "- где найти;\n"
+                        "- свежая новость без подсчета и сверки множества источников.\n\n"
+                        "chat выбирай, если пользователь просто обсуждает, спорит, спрашивает мнение или продолжает обычный диалог.\n\n"
+                        "Если сомневаешься между web_search и research_*:\n"
+                        "- если есть подсчет/сверка/много источников/период/таблица — research_*;\n"
+                        "- если нужен один факт — web_search.\n\n"
+                        "Если сомневаешься между research_count и research_aggregate:\n"
+                        "- если итог надо сложить из отдельных событий — research_count;\n"
+                        "- если итог уже должен существовать как опубликованная статистика/оценка — research_aggregate.\n\n"
                         "JSON формат строго:\n"
-                        "{\"intent\":\"chat|news|content|web_search|research_count|end\",\"query\":\"строка для поиска или пусто\"}"
+                        "{\"intent\":\"chat|news|content|web_search|research_count|research_aggregate|end\",\"query\":\"строка для поиска или пусто\"}"
                     ),
                 },
                 {"role": "user", "content": t},
@@ -596,10 +553,15 @@ def semantic_route(user_text: str) -> Optional[dict]:
 
         data = _parse_json_object(_extract_text(resp)) or {}
         intent = str(data.get("intent") or "chat").strip().lower()
-        if intent not in {"chat", "news", "content", "web_search", "research_count", "end"}:
+        if intent not in {"chat", "news", "content", "web_search", "research_count", "research_aggregate", "end"}:
             intent = "chat"
 
         query = str(data.get("query") or "").strip()
+
+        if intent in {"research_count", "research_aggregate"} and _cheap_search_blocker(t):
+            intent = "web_search"
+            query = query or t
+
         return {"intent": intent, "query": query}
 
     except Exception as e:
@@ -763,7 +725,7 @@ _SYSTEM_PROMPT = (
     getattr(persona, "_SYSTEM_PROMPT", "").strip()
     + "\n\n"
     + """Ты НЕ исполняешь действия сам: только определяешь intent и коротко отвечаешь пользователю.
-Доступные intent: chat, news, content, web_search, end.
+Доступные intent: chat, news, content, web_search, research_count, research_aggregate, end.
 
 Правила:
 - Ответ 1–3 строки.
@@ -790,7 +752,7 @@ _SYSTEM_PROMPT = (
 - Если запрос — обычный разговор, intent=chat.
 
 Верни JSON строго вида:
-{"intent":"chat|news|content|web_search|end","reply":"текст"}
+{"intent":"chat|news|content|web_search|research_count|research_aggregate|end","reply":"текст"}
 """
 )
 
@@ -815,6 +777,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     if route:
         r_intent = (route.get("intent") or "chat").strip().lower()
         semantic_query = str(route.get("query") or "").strip()
+
+        if r_intent == "research_aggregate":
+            return DialogDecision(
+                intent="research_aggregate",
+                reply="",
+                query=semantic_query or user_text,
+            )
 
         if r_intent == "research_count":
             return DialogDecision(
