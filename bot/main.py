@@ -30,6 +30,9 @@ GMAIL_POLL_INTERVAL_SEC = int(os.getenv("GMAIL_POLL_INTERVAL_SEC", "900"))
 GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]# last image per (chat_id, user_id) to support "опиши фото" without reply
 LAST_USER_IMAGE_ID = {}
 
+PENDING_FORWARD_ACTION = {}  # (chat_id, user_id) -> {"action": str, "ts": float}
+PENDING_FORWARD_ACTION_TTL_SEC = 120
+
 # =========================
 # IMAGE REACTION LIMITER (moderate)
 # =========================
@@ -2151,7 +2154,7 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
 
         q = (getattr(decision, "query", "") or "").strip()
         if not q:
-            q = _extract_web_search_query(text)
+            q = _extract_web_search_query(dialog_text)
 
         await _run_web_search_for_message(message, q)
         return
@@ -2215,16 +2218,53 @@ async def vesya_handler(message: Message) -> None:
     if message.photo or message.video or message.document:
         return
 
+    clean_action = _strip_vesya_prefix(text).strip().lower()
+
+    pending_action_words = {
+        "ответь",
+        "ответь на вопрос",
+        "ответь на вопрос человеку",
+        "ответь человеку",
+        "ответь по сути",
+        "прокомментируй",
+        "разбери",
+        "проверь",
+        "что думаешь",
+        "что скажешь",
+        "как тебе",
+    }
+
+    # Если Telegram прислал сначала комментарий к forward отдельным text-апдейтом,
+    # запоминаем команду и применим её к следующей пересылке от этого пользователя.
+    if (not _is_forwarded_message(message)) and clean_action in pending_action_words:
+        PENDING_FORWARD_ACTION[(int(message.chat.id), int(message.from_user.id))] = {
+            "action": clean_action,
+            "ts": time.time(),
+        }
+        return
+
     # Пересылка сама по себе не триггерит Весю.
-    # Работаем только если в тексте пересылки есть явная просьба.
+    # Но если перед ней была команда — применяем её к тексту пересылки.
     if _is_forwarded_message(message):
-        forward_action = bool(re.search(
+        pending_key = (int(message.chat.id), int(message.from_user.id))
+        pending = PENDING_FORWARD_ACTION.get(pending_key)
+
+        pending_action = ""
+        if pending:
+            pending_ts = float(pending.get("ts") or 0)
+            if (time.time() - pending_ts) <= PENDING_FORWARD_ACTION_TTL_SEC:
+                pending_action = str(pending.get("action") or "").strip()
+            PENDING_FORWARD_ACTION.pop(pending_key, None)
+
+        inline_action = bool(re.search(
             r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+сути|прокомментируй|прокоммент|как\s+тебе|что\s+думаешь|что\s+скажешь|разбери|проверь)\b",
             text,
             flags=re.I,
         ))
 
-        if not forward_action:
+        if pending_action:
+            text = f"Веся, {pending_action}:\n{text}"
+        elif not inline_action:
             return
 
     # =========================
