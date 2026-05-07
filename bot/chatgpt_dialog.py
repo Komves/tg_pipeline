@@ -733,9 +733,11 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         semantic_query = str(route.get("query") or "").strip()
 
         if r_intent == "web_search":
-            reply = "Сейчас посмотрю. Без театра, просто факты."
-            add_assistant(chat_id, user_id, reply)
-            return DialogDecision(intent="web_search", reply=reply, query=semantic_query)
+            return DialogDecision(
+                intent="web_search",
+                reply="",
+                query=semantic_query,
+            )
 
         if r_intent == "news":
             reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")

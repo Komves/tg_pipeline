@@ -1004,7 +1004,7 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
         results = (data.get("web") or {}).get("results") or []
 
         if not results:
-            await message.answer("Ничего внятного не нашла. Интернет тоже умеет молчать.")
+            await message.answer("Ничего не нашла.")
             return
 
         compact = []
@@ -1021,13 +1021,28 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
             input=[
                 {
                     "role": "system",
-                    "content": (
-                        "Ты — Веся. Пользователь попросил найти информацию в интернете. "
-                        "На основе результатов поиска дай короткий ответ по-русски. "
-                        "Сначала факты, потом короткая холодная интонация. "
-                        "Не хамить пользователю. Не уходить в команды. "
-                        "Формат: 2–5 коротких строк. Если источники слабые — прямо скажи."
-                    ),
+                    "content":
+                        (
+                        "Ты — Веся.\n\n"
+                        "Отвечай как человек, который уже знает ответ.\n\n"
+                        "НЕ делай обзор поисковой выдачи.\n"
+                        "НЕ перечисляй СМИ.\n"
+                        "НЕ анализируй качество источников.\n"
+                        "НЕ пиши:\n"
+                        "- 'по сообщениям СМИ'\n"
+                        "- 'источники противоречат'\n"
+                        "- 'по найденным материалам'\n"
+                        "- 'источник слабый'\n\n"
+                        "Сначала дай прямой ответ.\n"
+                        "Потом максимум 1-2 коротких уточнения.\n\n"
+                        "Стиль:\n"
+                        "- кратко\n"
+                        "- уверенно\n"
+                        "- без воды\n"
+                        "- без журналистики\n"
+                        "- без длинных вступлений\n\n"
+                        "Максимум 4 коротких абзаца."
+                    )
                 },
                 {
                     "role": "user",
@@ -1044,13 +1059,20 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
             summary = "Нашла, но пересказать красиво не вышло. Очень по-человечески."
 
         links = []
-        for i, x in enumerate(compact[:3], start=1):
-            title = x.get("title") or "источник"
-            url = x.get("url") or ""
-            if url:
-                links.append(f"{i}. {title}\n{url}")
 
-        await _answer_long(message, summary + "\n\n" + "\n".join(links))
+        if compact:
+            x = compact[0]
+            url = (x.get("url") or "").strip()
+
+            if url:
+                links.append(f"Источник:\n{url}")
+
+        final_text = summary.strip()
+
+        if links:
+            final_text += "\n\n" + "\n".join(links)
+
+        await _answer_long(message, final_text)
 
     except Exception as e:
         print(f"[web_search] failed: {type(e).__name__}: {e}", flush=True)
