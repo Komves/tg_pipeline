@@ -2044,7 +2044,30 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
 
     dialog_text = text
 
+    # Если пользователь отвечает на пересланное/чужое сообщение фразой
+    # "Веся, ответь..." — берём вопрос из reply, а не саму команду.
     if message.reply_to_message:
+        replied_text_for_action = (
+            message.reply_to_message.text
+            or message.reply_to_message.caption
+            or ""
+        ).strip()
+
+        clean_action = _strip_vesya_prefix(text).strip().lower()
+
+        if replied_text_for_action and clean_action in {
+            "ответь",
+            "ответь на вопрос",
+            "ответь по сути",
+            "разбери",
+            "разбери вопрос",
+            "проверь",
+            "что скажешь",
+            "что думаешь",
+        }:
+            dialog_text = replied_text_for_action
+
+    if message.reply_to_message and dialog_text == text:
         r = message.reply_to_message
 
         current_author = (
@@ -2180,8 +2203,37 @@ async def vesya_handler(message: Message) -> None:
     # Пересланный текст сам по себе НЕ является вопросом к Весе.
     # Его комментируем только если пользователь явно спросил в этом же сообщении,
     # а обычный forward без просьбы просто кладём в контекст и молчим.
-    if _is_forwarded_message(message) and not _wants_context_comment(text):
-        return
+    # Forward сам по себе не триггерит Весю.
+    # Но если пользователь добавил инструкцию — работаем по ней.
+    if _is_forwarded_message(message):
+
+        clean_text = _strip_vesya_prefix(text).strip().lower()
+
+        direct_actions = {
+            "ответь",
+            "ответь на вопрос",
+            "прокомментируй",
+            "разбери",
+            "что скажешь",
+            "что думаешь",
+            "проверь",
+        }
+
+        # Есть явная команда к Весе — продолжаем обработку.
+        if clean_text in direct_actions:
+            pass
+
+        # Просто переслали что-то с обращением к Весе внутри —
+        # уточняем, что сделать.
+        elif chatgpt_dialog.persona.is_addressed(text):
+            await message.answer(
+                "Что сделать с этим: ответить, прокомментировать или проверить?"
+            )
+            return
+
+        # Обычный forward без команды — игнорируем.
+        else:
+            return
 
     # =========================
     # ONE-SHOT RELAY MODE
