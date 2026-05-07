@@ -57,7 +57,7 @@ _PERSONA_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
 @dataclass
 class DialogDecision:
-    intent: str  # chat | news | content | web_search | research_count | research_aggregate | end
+    intent: str  # chat | news | content | web_search | research_count | research_aggregate | research_clarify | end
     reply: str
     query: str = ""
 # =============================================================================
@@ -514,6 +514,7 @@ def semantic_route(user_text: str) -> Optional[dict]:
                         "- web_search: нужен быстрый внешний поиск одного факта, события, имени, даты или свежей новости.\n"
                         "- research_count: нужно найти несколько отдельных событий/случаев/инцидентов, извлечь из них счетные факты и посчитать итог.\n"
                         "- research_aggregate: нужно найти уже опубликованные общие цифры, статистику, оценки, диапазоны или итоги разных источников; НЕ список отдельных инцидентов.\n"
+                        "- research_clarify: запрос требует подсчёта, но метод подсчёта неоднозначен; нужно уточнить методологию перед поиском.\n"
                         "- end: пользователь явно завершает разговор.\n\n"
                         "Ключевое правило:\n"
                         "- НЕ классифицируй по теме. Классифицируй по форме задачи.\n\n"
@@ -555,10 +556,15 @@ def semantic_route(user_text: str) -> Optional[dict]:
                         "- если есть подсчет/сверка/много источников/период/таблица — research_*;\n"
                         "- если нужен один факт — web_search.\n\n"
                         "Если сомневаешься между research_count и research_aggregate:\n"
-                        "- если итог надо сложить из отдельных событий — research_count;\n"
-                        "- если итог уже должен существовать как опубликованная статистика/оценка — research_aggregate.\n\n"
+                        "- если пользователь явно просит список, таблицу, по датам, по регионам, по случаям — research_count;\n"
+                        "- если пользователь явно просит общую статистику, оценки, общий итог, данные источников — research_aggregate;\n"
+                        "- если оба метода возможны и пользователь не уточнил метод — research_clarify.\n\n"
+                        "research_clarify используй для запросов, где один и тот же вопрос можно считать двумя способами:\n"
+                        "1) суммой отдельных найденных инцидентов;\n"
+                        "2) готовой опубликованной общей оценкой.\n"
+                        "В этом случае верни reply с коротким выбором: 'Считать по отдельным подтверждённым случаям или искать готовую общую оценку по источникам.'\n\n"
                         "JSON формат строго:\n"
-                        "{\"intent\":\"chat|news|content|web_search|research_count|research_aggregate|end\",\"query\":\"строка для поиска или пусто\"}"
+                        "{\"intent\":\"chat|news|content|web_search|research_count|research_aggregate|research_clarify|end\",\"query\":\"строка для поиска или пусто\",\"reply\":\"короткое уточнение или пусто\"}"
                     ),
                 },
                 {"role": "user", "content": t},
@@ -567,16 +573,16 @@ def semantic_route(user_text: str) -> Optional[dict]:
 
         data = _parse_json_object(_extract_text(resp)) or {}
         intent = str(data.get("intent") or "chat").strip().lower()
-        if intent not in {"chat", "news", "content", "web_search", "research_count", "research_aggregate", "end"}:
+        if intent not in {"chat", "news", "content", "web_search", "research_count", "research_aggregate", "research_clarify", "end"}:
             intent = "chat"
 
         query = str(data.get("query") or "").strip()
-
+        reply = str(data.get("reply") or "").strip()
         if intent in {"research_count", "research_aggregate"} and _cheap_search_blocker(t):
             intent = "web_search"
             query = query or t
 
-        return {"intent": intent, "query": query}
+        return {"intent": intent, "query": query, "reply": reply}
 
     except Exception as e:
         _dbg(f"semantic_route EXC: {type(e).__name__}: {e}")
@@ -791,6 +797,15 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     if route:
         r_intent = (route.get("intent") or "chat").strip().lower()
         semantic_query = str(route.get("query") or "").strip()
+        semantic_reply = str(route.get("reply") or "").strip()
+
+        if r_intent == "research_clarify":
+            reply = semantic_reply or (
+                "Тут два способа считать: по отдельным подтверждённым случаям или по готовым общим оценкам источников. "
+                "Метод надо выбрать до поиска."
+            )
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="chat", reply=reply)
 
         if r_intent == "research_aggregate":
             return DialogDecision(
