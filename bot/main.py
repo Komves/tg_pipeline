@@ -2067,6 +2067,21 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         }:
             dialog_text = replied_text_for_action
 
+            # если пользователь ответил на сообщение Веси,
+            # которое само спрашивало "что сделать",
+            # то пытаемся взять исходный forward выше
+            rr = message.reply_to_message.reply_to_message
+
+            if rr:
+                rr_text = (
+                    rr.text
+                    or rr.caption
+                    or ""
+                ).strip()
+
+                if rr_text:
+                    dialog_text = rr_text
+
     if message.reply_to_message and dialog_text == text:
         r = message.reply_to_message
 
