@@ -2190,6 +2190,18 @@ async def vesya_handler(message: Message) -> None:
 
     text = (message.text or "").strip()
     orig_text = text
+    print(
+        "[TEXT_DEBUG] "
+        f"chat_type={message.chat.type!r} "
+        f"text={text!r} "
+        f"forward_origin={getattr(message, 'forward_origin', None)!r} "
+        f"forward_date={getattr(message, 'forward_date', None)!r} "
+        f"forward_from={getattr(message, 'forward_from', None)!r} "
+        f"forward_sender_name={getattr(message, 'forward_sender_name', None)!r} "
+        f"forward_from_chat={getattr(message, 'forward_from_chat', None)!r} "
+        f"is_forward={_is_forwarded_message(message)}",
+        flush=True,
+    )
 
     # Если это сообщение с медиа (фото/видео/документ) — НЕ обрабатываем как текст
     if message.photo or message.video or message.document:
