@@ -2056,58 +2056,12 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
 
     dialog_text = text
 
-    # Если пользователь отвечает на пересланное/чужое сообщение фразой
-    # "Веся, ответь..." — берём вопрос из reply, а не саму команду.
+    # =========================
+    # SIMPLE FORWARD / REPLY LOGIC
+    # =========================
+
     if message.reply_to_message:
-        replied_text_for_action = (
-            message.reply_to_message.text
-            or message.reply_to_message.caption
-            or ""
-        ).strip()
-
-        clean_action = _strip_vesya_prefix(text).strip().lower()
-
-        if replied_text_for_action and clean_action in {
-            "ответь",
-            "ответь на вопрос",
-            "ответь по сути",
-            "разбери",
-            "разбери вопрос",
-            "проверь",
-            "что скажешь",
-            "что думаешь",
-        }:
-            dialog_text = replied_text_for_action
-
-            # если пользователь ответил на сообщение Веси,
-            # которое само спрашивало "что сделать",
-            # то пытаемся взять исходный forward выше
-            rr = message.reply_to_message.reply_to_message
-
-            if rr:
-                rr_text = (
-                    rr.text
-                    or rr.caption
-                    or ""
-                ).strip()
-
-                if rr_text:
-                    dialog_text = rr_text
-
-    if message.reply_to_message and dialog_text == text:
         r = message.reply_to_message
-
-        current_author = (
-            message.from_user.full_name
-            if message.from_user
-            else "пользователь"
-        )
-
-        replied_author = (
-            r.from_user.full_name
-            if r.from_user
-            else "пользователь"
-        )
 
         replied_text = (
             r.text
@@ -2115,14 +2069,19 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
             or ""
         ).strip()
 
-        if replied_text:
-            dialog_text = (
-                f"Веся, сообщение от {current_author}. "
-                f"Он отвечает на сообщение пользователя {replied_author}: "
-                f"«{replied_text}». "
-                f"В его текущем сообщении местоимения вроде 'он', 'его', 'ему' относятся к {replied_author}. "
-                f"Текущий текст: «{text}»."
-            )
+        clean_text = _strip_vesya_prefix(text).strip().lower()
+
+        # пользователь отвечает командой на пересланный вопрос
+        if replied_text and clean_text in {
+            "ответь",
+            "ответь человеку",
+            "ответь нормально",
+            "ответь уже",
+            "прокомментируй",
+            "что думаешь",
+            "разбери",
+        }:
+            dialog_text = replied_text
 
     decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
 
