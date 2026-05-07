@@ -2218,7 +2218,7 @@ async def vesya_handler(message: Message) -> None:
     if message.photo or message.video or message.document:
         return
 
-    clean_action = _strip_vesya_prefix(text).strip().lower()
+    clean_action = _strip_vesya_prefix(text).strip().lower().strip(" ?!.,:;")
 
     pending_action_words = {
         "ответь",
@@ -2234,14 +2234,51 @@ async def vesya_handler(message: Message) -> None:
         "как тебе",
     }
 
-    # Если Telegram прислал сначала комментарий к forward отдельным text-апдейтом,
-    # запоминаем команду и применим её к следующей пересылке от этого пользователя.
+    # Команда перед следующей пересылкой.
     if (not _is_forwarded_message(message)) and clean_action in pending_action_words:
         PENDING_FORWARD_ACTION[(int(message.chat.id), int(message.from_user.id))] = {
             "action": clean_action,
             "ts": time.time(),
         }
         return
+
+    # Пересылка сама по себе не триггерит Весю.
+    # Но:
+    # 1) если перед ней была команда — применяем её;
+    # 2) если в самой пересылке уже есть вопрос к Весе — отвечаем сразу.
+    if _is_forwarded_message(message):
+        pending_key = (int(message.chat.id), int(message.from_user.id))
+        pending = PENDING_FORWARD_ACTION.get(pending_key)
+
+        pending_action = ""
+        if pending:
+            pending_ts = float(pending.get("ts") or 0)
+            if (time.time() - pending_ts) <= PENDING_FORWARD_ACTION_TTL_SEC:
+                pending_action = str(pending.get("action") or "").strip()
+            PENDING_FORWARD_ACTION.pop(pending_key, None)
+
+        inline_action = (
+            bool(re.search(
+                r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+сути|прокомментируй|прокоммент|как\s+тебе|что\s+думаешь|что\s+скажешь|разбери|проверь)\b",
+                text,
+                flags=re.I,
+            ))
+            or (
+                chatgpt_dialog.persona.is_addressed(text)
+                and "?" in text
+            )
+        )
+
+        if pending_action:
+            if pending_action.startswith("ответь"):
+                # Для "ответь" отвечаем на сам текст пересылки,
+                # а не на служебную команду.
+                pass
+            else:
+                text = f"Веся, {pending_action}:\n{text}"
+
+        elif not inline_action:
+            return
 
     # Пересылка сама по себе не триггерит Весю.
     # Но если перед ней была команда — применяем её к тексту пересылки.
