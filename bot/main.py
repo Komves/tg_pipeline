@@ -973,6 +973,8 @@ def _extract_web_search_query(text: str) -> str:
 
 async def _run_web_search_for_message(message: Message, query: str) -> None:
     query = (query or "").strip()
+    query = re.sub(r"\s+", " ", query).strip()
+    query = query[:250]
     if not query:
         await message.answer("Искать нечего. Пустой запрос — тоже диагноз.")
         return
@@ -2128,11 +2130,9 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         if topic and topic.get("type") == "web_search":
             dtl = dialog_text.lower()
             if any(x in dtl for x in ("они", "он ", "она ", "до этого", "раньше", "последний раз")):
-                q = (
-                    f"{q}\n\n"
-                    f"Контекст предыдущего вопроса: {topic.get('query', '')}\n"
-                    f"Предыдущий ответ: {topic.get('summary', '')}"
-                )
+                q = f"{q} {topic.get('query', '')}".strip()
+                q = re.sub(r"\s+", " ", q)
+                q = q[:250]
         await _run_web_search_for_message(message, q)
         return
 
