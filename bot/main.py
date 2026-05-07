@@ -2509,7 +2509,6 @@ async def vesya_handler(message: Message) -> None:
     # === GMAIL OPEN MESSAGE COMMAND ===
     if "письмо " in text.lower():
         try:
-            import re
             import base64
             import requests
 
@@ -2613,7 +2612,7 @@ async def vesya_handler(message: Message) -> None:
     # =========================
     # MANUAL YOUTUBE SEARCH
     # =========================
-    import re
+
 
     def _extract_manual_youtube_query(text: str) -> str | None:
         t = (text or "").strip()
