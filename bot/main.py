@@ -2096,17 +2096,7 @@ async def on_voice(message: Message) -> None:
 
     if _relay_is_armed(message):
         return
-
-    if message.chat.type in ("group", "supergroup"):
-        # В группе voice не должен включать Весю без reply на бота.
-        is_reply_to_bot = (
-            message.reply_to_message
-            and message.reply_to_message.from_user
-            and message.reply_to_message.from_user.is_bot
-        )
-        if not is_reply_to_bot:
-            return
-
+    
     try:
         await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
