@@ -2300,8 +2300,21 @@ async def vesya_handler(message: Message) -> None:
         ))
 
         if pending_action:
-            text = f"Веся, {pending_action}:\n{text}"
-        elif not inline_action:
+            if pending_action.startswith("ответь"):
+                await _handle_text_core(message, text, event_type="text")
+            else:
+                await _handle_text_core(
+                    message,
+                    f"Веся, {pending_action}:\n{text}",
+                    event_type="text",
+                )
+            return
+
+        elif inline_action:
+            await _handle_text_core(message, text, event_type="text")
+            return
+
+        else:
             return
 
     # =========================
