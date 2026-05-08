@@ -790,6 +790,7 @@ def polish_research_reply(
     Applies Vesya personality to already prepared factual/research answer.
     Does NOT change facts.
     Only changes tone/style.
+    Returns plain text only, never JSON.
     """
 
     rr = (raw_reply or "").strip()
@@ -808,16 +809,19 @@ def polish_research_reply(
                 {
                     "role": "system",
                     "content": (
-                        _SYSTEM_PROMPT
+                        getattr(persona, "_SYSTEM_PROMPT", "").strip()
                         + "\n\n"
                         + _irritation_instruction(chat_id, user_id)
                         + "\n\n"
-                        + "Ты получаешь уже ГОТОВЫЙ factual/research ответ.\n"
-                        + "Нельзя менять факты, цифры, ссылки, даты или выводы.\n"
-                        + "Нельзя добавлять новые данные.\n"
-                        + "Нужно только сделать подачу более живой и в стиле Веси.\n"
-                        + "Сделай ответ естественным, чуть ироничным, но не превращай в клоунаду.\n"
-                        + "Не делай длиннее исходного текста более чем на 20%.\n"
+                        "Ты редактируешь уже готовый factual/research ответ Веси.\n"
+                        "Верни только обычный текст ответа.\n"
+                        "JSON запрещён.\n"
+                        "Markdown-codeblock запрещён.\n"
+                        "Нельзя писать intent, reply или любые служебные поля.\n"
+                        "Нельзя менять факты, цифры, даты, ссылки и выводы.\n"
+                        "Нельзя добавлять новые данные.\n"
+                        "Нужно только сделать подачу более живой, сухой и в стиле Веси.\n"
+                        "Не делай длиннее исходного текста более чем на 20%.\n"
                     ),
                 },
                 {
@@ -830,7 +834,14 @@ def polish_research_reply(
             ],
         )
 
-        out = _sanitize_reply(_extract_text(resp))
+        out = _extract_text(resp).strip()
+        out = re.sub(r"```(?:json)?", "", out, flags=re.I).replace("```", "").strip()
+
+        parsed = _parse_json_object(out)
+        if isinstance(parsed, dict):
+            out = str(parsed.get("reply") or "").strip()
+
+        out = _sanitize_reply(out)
         return out or rr
 
     except Exception:
