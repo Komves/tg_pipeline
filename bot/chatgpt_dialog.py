@@ -780,6 +780,62 @@ _SYSTEM_PROMPT = (
 # PUBLIC API
 # =============================================================================
 
+def polish_research_reply(
+    chat_id: int,
+    user_id: int,
+    user_text: str,
+    raw_reply: str,
+) -> str:
+    """
+    Applies Vesya personality to already prepared factual/research answer.
+    Does NOT change facts.
+    Only changes tone/style.
+    """
+
+    rr = (raw_reply or "").strip()
+    if not rr:
+        return rr
+
+    if not _has_key():
+        return rr
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        _SYSTEM_PROMPT
+                        + "\n\n"
+                        + _irritation_instruction(chat_id, user_id)
+                        + "\n\n"
+                        + "Ты получаешь уже ГОТОВЫЙ factual/research ответ.\n"
+                        + "Нельзя менять факты, цифры, ссылки, даты или выводы.\n"
+                        + "Нельзя добавлять новые данные.\n"
+                        + "Нужно только сделать подачу более живой и в стиле Веси.\n"
+                        + "Сделай ответ естественным, чуть ироничным, но не превращай в клоунаду.\n"
+                        + "Не делай длиннее исходного текста более чем на 20%.\n"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Запрос пользователя:\n{user_text}\n\n"
+                        f"Готовый factual/research ответ:\n{rr}"
+                    ),
+                },
+            ],
+        )
+
+        out = _sanitize_reply(_extract_text(resp))
+        return out or rr
+
+    except Exception:
+        return rr
+
 def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     """
     Dialog layer: intent + short reply. No sending, no pipeline execution.
