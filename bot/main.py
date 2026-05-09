@@ -168,6 +168,131 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 TOPIC_TTL_SEC = int(os.getenv("V_TOPIC_TTL_SEC", str(7 * 24 * 3600)))
 TOPIC_PATH = DATA_DIR / "vesya_topics.json"
 
+TRANSLATOR_MODES_PATH = DATA_DIR / "vesya_translator_modes.json"
+
+def _translator_key(chat_id: int, user_id: int) -> str:
+    return f"{int(chat_id)}:{int(user_id)}"
+
+
+def _load_translator_modes() -> dict:
+    try:
+        if TRANSLATOR_MODES_PATH.exists():
+            data = json.loads(TRANSLATOR_MODES_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_translator_modes(data: dict) -> None:
+    try:
+        tmp = TRANSLATOR_MODES_PATH.with_suffix(TRANSLATOR_MODES_PATH.suffix + ".tmp")
+        tmp.write_text(json.dumps(data or {}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(TRANSLATOR_MODES_PATH)
+    except Exception:
+        pass
+
+
+def _get_translator_mode(chat_id: int, user_id: int) -> dict | None:
+    data = _load_translator_modes()
+    mode = data.get(_translator_key(chat_id, user_id))
+    return mode if isinstance(mode, dict) and mode.get("enabled") else None
+
+
+def _set_translator_mode(chat_id: int, user_id: int, lang_a: str, lang_b: str) -> None:
+    data = _load_translator_modes()
+    data[_translator_key(chat_id, user_id)] = {
+        "enabled": True,
+        "lang_a": (lang_a or "").strip(),
+        "lang_b": (lang_b or "").strip(),
+        "created_at": time.time(),
+    }
+    _save_translator_modes(data)
+
+
+def _clear_translator_mode(chat_id: int, user_id: int) -> None:
+    data = _load_translator_modes()
+    data.pop(_translator_key(chat_id, user_id), None)
+    _save_translator_modes(data)
+
+
+def _parse_translator_on_command(text: str) -> tuple[str, str] | None:
+    t = _strip_vesya_prefix(text).strip().lower()
+    t = re.sub(r"\s+", " ", t).strip(" .,!?:;")
+
+    m = re.search(
+        r"^(?:включи|активируй|запусти)\s+режим\s+переводчика\s+(?:с|из)\s+(.+?)\s+на\s+(.+?)(?:\s+и\s+обратно)?$",
+        t,
+        flags=re.I,
+    )
+    if not m:
+        return None
+
+    lang_a = (m.group(1) or "").strip()
+    lang_b = (m.group(2) or "").strip()
+
+    if not lang_a or not lang_b:
+        return None
+
+    return lang_a, lang_b
+
+
+def _is_translator_off_command(text: str) -> bool:
+    t = _strip_vesya_prefix(text).strip().lower()
+    t = re.sub(r"\s+", " ", t).strip(" .,!?:;")
+
+    return bool(re.search(
+        r"^(?:отключи|выключи|останови|заверши)\s+режим\s+переводчика$",
+        t,
+        flags=re.I,
+    ))
+
+
+def _translate_bidirectional(text: str, lang_a: str, lang_b: str) -> str:
+    src = (text or "").strip()
+    if not src:
+        return ""
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return ""
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты строгий онлайн-переводчик.\n"
+                        "Никакой личности, комментариев, пояснений, приветствий или шуток.\n"
+                        "Есть две стороны перевода:\n"
+                        f"A: {lang_a}\n"
+                        f"B: {lang_b}\n\n"
+                        "Определи, ближе ли входной текст к языку A или к языку B.\n"
+                        "Если текст на языке A — переведи на язык B.\n"
+                        "Если текст на языке B — переведи на язык A.\n"
+                        "Если язык смешанный, переведи на противоположный от преобладающего.\n"
+                        "Верни только перевод. Без кавычек. Без пометок языка."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": src,
+                },
+            ],
+        )
+
+        return (getattr(resp, "output_text", "") or "").strip()
+
+    except Exception as e:
+        print(f"[translator] translate failed: {type(e).__name__}: {e}", flush=True)
+        return ""
+
 # === PRIVATE USERS REGISTRY ===
 PRIVATE_USERS_PATH = DATA_DIR / "private_users.json"
 
@@ -879,7 +1004,6 @@ def _transcribe_voice_ogg(audio_bytes: bytes) -> str:
         tr = client.audio.transcriptions.create(
             model=VOICE_STT_MODEL,
             file=f,
-            language="ru",
         )
 
         return (getattr(tr, "text", "") or "").strip()
@@ -2925,7 +3049,21 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
             or ""
         ).strip()
 
-        clean_text = _strip_vesya_prefix(text).strip().lower()
+        clean_text = _strip_vesya_prefix(text).strip().lower().strip(" ?!.,:;")
+
+        if replied_text and re.search(
+            r"^(переведи|переведи это|переведи на русский|переведи это на русский|перевод|что значит|что означает)$",
+            clean_text,
+            flags=re.I,
+        ):
+            translated = chatgpt_dialog.translate_to_ru(replied_text)
+            translated = (translated or "").strip()
+
+            if translated:
+                await _answer_long(message, translated)
+            else:
+                await message.answer("перевести не вышло. Роскошно, конечно.")
+            return
 
         # пользователь отвечает командой на пересланный вопрос
         if replied_text and clean_text in {
@@ -3070,6 +3208,24 @@ async def on_voice(message: Message) -> None:
 
         print(f"[voice] transcribed={text!r}", flush=True)
 
+        chat_id = int(message.chat.id)
+        user_id = int(message.from_user.id) if message.from_user else 0
+
+        mode = _get_translator_mode(chat_id, user_id)
+        if mode:
+            translated = await asyncio.to_thread(
+                _translate_bidirectional,
+                text,
+                str(mode.get("lang_a") or ""),
+                str(mode.get("lang_b") or ""),
+            )
+
+            if translated:
+                await _answer_long(message, translated)
+            else:
+                await message.answer("Перевод не вышел.")
+            return
+
         await _handle_text_core(message, text, event_type="voice")
 
     except Exception as e:
@@ -3118,6 +3274,36 @@ async def vesya_handler(message: Message) -> None:
     if message.photo or message.video or message.document:
         return
 
+    chat_id = int(message.chat.id)
+    user_id = int(message.from_user.id) if message.from_user else 0
+
+    translator_on = _parse_translator_on_command(text)
+    if translator_on:
+        lang_a, lang_b = translator_on
+        _set_translator_mode(chat_id, user_id, lang_a, lang_b)
+        await message.answer(f"Режим переводчика включен: {lang_a} ⇄ {lang_b}.")
+        return
+
+    if _is_translator_off_command(text):
+        _clear_translator_mode(chat_id, user_id)
+        await message.answer("Режим переводчика отключен.")
+        return
+
+    mode = _get_translator_mode(chat_id, user_id)
+    if mode:
+        translated = await asyncio.to_thread(
+            _translate_bidirectional,
+            text,
+            str(mode.get("lang_a") or ""),
+            str(mode.get("lang_b") or ""),
+        )
+
+        if translated:
+            await _answer_long(message, translated)
+        else:
+            await message.answer("Перевод не вышел.")
+        return
+
     clean_action = _strip_vesya_prefix(text).strip().lower().strip(" ?!.,:;")
 
     pending_action_words = {
@@ -3134,6 +3320,13 @@ async def vesya_handler(message: Message) -> None:
         "что думаешь",
         "что скажешь",
         "как тебе",
+        "переведи",
+        "переведи это",
+        "переведи на русский",
+        "переведи это на русский",
+        "перевод",
+        "что значит",
+        "что означает",
     }
 
     if (not _is_forwarded_message(message)) and clean_action in pending_action_words:
@@ -3156,7 +3349,7 @@ async def vesya_handler(message: Message) -> None:
 
         inline_action = (
             bool(re.search(
-                r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+сути|ответь\s+нормально|ответь\s+уже|прокомментируй|прокоммент|как\s+тебе|что\s+думаешь|что\s+скажешь|разбери|проверь)\b",
+                r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+сути|ответь\s+нормально|ответь\s+уже|прокомментируй|прокоммент|как\s+тебе|что\s+думаешь|что\s+скажешь|разбери|проверь|переведи|перевод|что\s+значит|что\s+означает)\b",
                 text,
                 flags=re.I,
             ))
