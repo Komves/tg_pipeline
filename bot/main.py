@@ -3024,27 +3024,74 @@ async def on_video(message: Message) -> None:
 
 def _extract_manual_youtube_query(text: str) -> str | None:
     t = (text or "").strip()
-    t = re.sub(r"^\s*(веся|веслава|веська|vesya|сергеевна)\s*[,.:;-]?\s*", "", t, flags=re.I)
+
+    t = re.sub(
+        r"^\s*(веся|веслава|веська|vesya|сергеевна)\s*[,.:;!\-]?\s*",
+        "",
+        t,
+        flags=re.I,
+    ).strip()
+
     tl = t.lower()
 
-    triggers = [
-        "найди мне клип",
-        "найди клип",
-        "найди видео",
-        "найди на ютубе",
-        "найди в ютубе",
-        "поищи клип",
-        "поищи видео",
-    ]
+    # deterministic trigger only
+    if not re.search(
+        r"\b(клип|клипы|видео|видос|видосы|ютуб|youtube)\b",
+        tl,
+        flags=re.I,
+    ):
+        return None
 
-    for tr in triggers:
-        if tl.startswith(tr):
-            q = t[len(tr):].strip(" ,.:;-")
-            return q or None
+    if not re.search(
+        r"\b(найди|поищи|подбери|кинь|покажи)\b",
+        tl,
+        flags=re.I,
+    ):
+        return None
 
-    return None
+    # fallback raw query if no llm
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return t
 
+    try:
+        from openai import OpenAI
 
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты строишь короткий YouTube search query.\n"
+                        "Верни только строку запроса.\n"
+                        "Без комментариев.\n"
+                        "Без JSON.\n"
+                        "Без кавычек.\n"
+                        "Нужно понять, какие клипы/видео хочет пользователь.\n"
+                        "Убирай мусор вроде 'найди', 'покажи', 'Веся'.\n"
+                        "Сохраняй смысл и атмосферу.\n"
+                        "Максимум 12 слов."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": t,
+                },
+            ],
+        )
+
+        q = (getattr(resp, "output_text", "") or "").strip()
+
+        q = re.sub(r"\s+", " ", q).strip()
+        q = q[:120]
+
+        return q or t
+
+    except Exception:
+        return t
+    
 async def _youtube_manual_search_for_message(message: Message, query: str) -> dict | None:
     import urllib.parse
     import urllib.request
