@@ -3393,6 +3393,26 @@ async def vesya_handler(message: Message) -> None:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
+    yt_query = _extract_manual_youtube_query(text)
+    if yt_query:
+        try:
+            found = await _youtube_manual_search_for_message(message, yt_query)
+
+            if not found:
+                await message.answer("Не нашла.")
+                return
+
+            title = (found.get("title") or "").strip()
+            url = (found.get("url") or "").strip()
+
+            await _answer_long(message, f"{title}\n{url}".strip())
+            return
+
+        except Exception as e:
+            print(f"[yt_manual] error: {type(e).__name__}: {e}", flush=True)
+            await message.answer("Ошибка поиска.")
+            return
+
     translator_on = _parse_translator_on_command(text)
     if translator_on:
         lang_a, lang_b = translator_on
