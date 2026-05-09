@@ -3022,6 +3022,102 @@ async def on_video(message: Message) -> None:
         print(f"[video] discuss error: {type(e).__name__}: {e}", flush=True)
         await message.answer(f"видео не разобрала: {type(e).__name__}: {e}")
 
+def _extract_manual_youtube_query(text: str) -> str | None:
+    t = (text or "").strip()
+    t = re.sub(r"^\s*(веся|веслава|веська|vesya|сергеевна)\s*[,.:;-]?\s*", "", t, flags=re.I)
+    tl = t.lower()
+
+    triggers = [
+        "найди мне клип",
+        "найди клип",
+        "найди видео",
+        "найди на ютубе",
+        "найди в ютубе",
+        "поищи клип",
+        "поищи видео",
+    ]
+
+    for tr in triggers:
+        if tl.startswith(tr):
+            q = t[len(tr):].strip(" ,.:;-")
+            return q or None
+
+    return None
+
+
+async def _youtube_manual_search_for_message(message: Message, query: str) -> dict | None:
+    import urllib.parse
+    import urllib.request
+
+    api_key = (os.getenv("YT_API_KEY") or "").strip()
+    if not api_key:
+        print("[yt_manual] missing YT_API_KEY", flush=True)
+        return None
+
+    raw_query = (query or "").strip()
+    if not raw_query:
+        return None
+
+    print(f"[yt_manual] raw_query={raw_query!r}", flush=True)
+
+    params = urllib.parse.urlencode({
+        "part": "snippet",
+        "type": "video",
+        "maxResults": "10",
+        "q": raw_query,
+        "key": api_key,
+        "order": "relevance",
+        "videoDuration": "medium",
+        "safeSearch": "none",
+    })
+
+    url = "https://www.googleapis.com/youtube/v3/search?" + params
+
+    def _load():
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    data = await asyncio.to_thread(_load)
+    items = data.get("items") or []
+    if not items:
+        return None
+
+    sentyt_path = DATA_DIR / f"manual_yt_sent_{int(message.chat.id)}.json"
+    sentyt = _load_sent(sentyt_path)
+
+    selected = None
+    for item in items:
+        title0 = ((item.get("snippet") or {}).get("title") or "").lower()
+        desc0 = ((item.get("snippet") or {}).get("description") or "").lower()
+        vid0 = ((item.get("id") or {}).get("videoId") or "").strip()
+
+        if not vid0:
+            continue
+        if vid0 in sentyt:
+            continue
+        if "#shorts" in title0 or "#shorts" in desc0 or "shorts" in title0:
+            continue
+
+        selected = item
+        break
+
+    if selected is None:
+        selected = items[0]
+
+    vid = ((selected.get("id") or {}).get("videoId") or "").strip()
+    title = ((selected.get("snippet") or {}).get("title") or "").strip()
+
+    if not vid:
+        return None
+
+    sentyt.add(vid)
+    _save_sent(sentyt_path, sentyt, keep_last=200)
+
+    return {
+        "title": title,
+        "url": f"https://www.youtube.com/watch?v={vid}",
+    }
+
 async def _handle_text_core(message: Message, text: str, *, event_type: str = "text") -> None:
     """
     Shared semantic core for normal text and transcribed voice.
@@ -3076,6 +3172,26 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
             "разбери",
         }:
             dialog_text = replied_text
+
+    yt_query = _extract_manual_youtube_query(dialog_text)
+    if yt_query:
+        try:
+            found = await _youtube_manual_search_for_message(message, yt_query)
+
+            if not found:
+                await message.answer("Не нашла.")
+                return
+
+            title = (found.get("title") or "").strip()
+            url = (found.get("url") or "").strip()
+
+            await _answer_long(message, f"{title}\n{url}".strip())
+            return
+
+        except Exception as e:
+            print(f"[yt_manual] error: {type(e).__name__}: {e}", flush=True)
+            await message.answer("Ошибка поиска.")
+            return
 
     pending_research = _get_topic(chat_id, user_id)
     if pending_research and pending_research.get("type") == "research_clarify":
@@ -3713,123 +3829,6 @@ async def vesya_handler(message: Message) -> None:
 
         return
 
-    # =========================
-    # MANUAL YOUTUBE SEARCH
-    # =========================
-
-
-    def _extract_manual_youtube_query(text: str) -> str | None:
-        t = (text or "").strip()
-        t = re.sub(r"^\s*(веся|веслава|веська)\s*[,.:;-]?\s*", "", t, flags=re.I)
-        tl = t.lower()
-
-        triggers = [
-            "найди мне клип",
-            "найди клип",
-            "найди видео",
-            "найди на ютубе",
-            "найди в ютубе",
-            "поищи клип",
-            "поищи видео",
-        ]
-
-        for tr in triggers:
-            if tl.startswith(tr):
-                q = t[len(tr):].strip(" ,.:;-")
-                return q or None
-
-        return None
-
-
-    async def _youtube_manual_search(query: str) -> dict | None:
-        import urllib.parse, urllib.request, json
-        from openai import OpenAI
-
-        api_key = (os.getenv("YT_API_KEY") or "").strip()
-        if not api_key:
-            print("[yt_manual] missing YT_API_KEY", flush=True)
-            return None
-
-        raw_query = (query or "").strip()
-        clean_query = raw_query
-
-        print(f"[yt_manual] raw_query={raw_query!r} clean_query={clean_query!r}", flush=True)
-
-        params = urllib.parse.urlencode({
-            "part": "snippet",
-            "type": "video",
-            "maxResults": "10",
-            "q": clean_query,
-            "key": api_key,
-            "order": "relevance",
-            "videoDuration": "medium",
-            "safeSearch": "none",
-        })
-
-        url = "https://www.googleapis.com/youtube/v3/search?" + params
-
-        def _load():
-            with urllib.request.urlopen(url, timeout=10) as r:
-                return json.loads(r.read().decode("utf-8"))
-
-        data = await asyncio.to_thread(_load)
-        items = data.get("items") or []
-        if not items:
-            return None
-
-        sentyt_path = DATA_DIR / f"manual_yt_sent_{int(message.chat.id)}.json"
-        sentyt = _load_sent(sentyt_path)
-
-        x = None
-        for item in items:
-            title0 = ((item.get("snippet") or {}).get("title") or "").lower()
-            desc0 = ((item.get("snippet") or {}).get("description") or "").lower()
-            vid0 = ((item.get("id") or {}).get("videoId") or "").strip()
-
-            if not vid0:
-                continue
-            if vid0 in sentyt:
-                continue
-            if "#shorts" in title0 or "#shorts" in desc0 or "shorts" in title0:
-                continue
-
-            x = item
-            break
-
-        if x is None:
-            x = items[0]
-
-        vid = (x.get("id") or {}).get("videoId")
-        title = (x.get("snippet") or {}).get("title")
-
-        if not vid:
-            return None
-
-        sentyt.add(vid)
-        _save_sent(sentyt_path, sentyt, keep_last=200)
-
-        return {
-            "title": title,
-            "url": f"https://www.youtube.com/watch?v={vid}",
-        }
-
-    yt_query = _extract_manual_youtube_query(text)
-    if yt_query:
-        await message.answer("Ща найду...")
-
-        try:
-            found = await _youtube_manual_search(yt_query)
-            if not found:
-                await message.answer("Не нашла.")
-                return
-
-            await message.answer(f"{found['title']}\n{found['url']}")
-            return
-
-        except Exception as e:
-            print(f"[yt_manual] error: {e}", flush=True)
-            await message.answer("Ошибка поиска.")
-            return
 
     # =========================
     # PHOTO CONTEXT: describe only when user asked
