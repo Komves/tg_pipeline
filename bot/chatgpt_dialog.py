@@ -167,6 +167,108 @@ def translate_to_ru(text: str) -> str:
     except Exception:
         return t
 
+def _strip_vesya_address_for_language(text: str) -> str:
+    t = (text or "").strip()
+    t = re.sub(
+        r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
+        "",
+        t,
+        flags=re.I,
+    ).strip()
+    return t.strip(" «»\"'")
+
+
+def _explicit_translation_request(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return bool(re.search(
+        r"\b(переведи|перевод|translate|translation|на русском|по-русски|что значит|что означает)\b",
+        t,
+        flags=re.I,
+    ))
+
+
+def _has_foreign_signal(text: str) -> bool:
+    t = _strip_vesya_address_for_language(text)
+    if not t:
+        return False
+
+    cyr = len(re.findall(r"[А-Яа-яЁё]", t))
+    lat = len(re.findall(r"[A-Za-z]", t))
+    other_letters = len(re.findall(
+        r"[^\W\d_]",
+        t,
+        flags=re.UNICODE,
+    )) - cyr - lat
+
+    # obvious non-Cyrillic scripts: Hebrew, Arabic, Greek, CJK, etc.
+    if other_letters >= 3:
+        return True
+
+    # Latin-only phrase with enough letters, no Cyrillic:
+    # let the LLM decide the exact language and reply in it.
+    if cyr == 0 and lat >= 8:
+        return True
+
+    return False
+
+
+def _try_same_language_reply(chat_id: int, user_id: int, user_text: str) -> str:
+    """
+    Universal language mirror.
+    If the user wrote in a non-Russian language and did not ask to translate,
+    answer in the same language.
+    """
+    clean_text = _strip_vesya_address_for_language(user_text)
+
+    if not clean_text:
+        return ""
+
+    if _explicit_translation_request(user_text):
+        return ""
+
+    if not _has_foreign_signal(user_text):
+        return ""
+
+    if not _has_key():
+        return ""
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Vesya, a dry, sharp, confident Telegram persona.\n"
+                        "Detect the user's language from the message.\n"
+                        "Reply ONLY in the same language as the user's message.\n"
+                        "Do not translate into Russian unless the user explicitly asks for translation.\n"
+                        "Do not explain what language it is.\n"
+                        "Do not apologize.\n"
+                        "Do not ask follow-up questions.\n"
+                        "If the user wrote a joke, answer the joke naturally in the same language.\n"
+                        "If the user asked a question, answer it directly in the same language.\n"
+                        "Keep it short: 1-3 sentences.\n"
+                        "Style: dry, smart, lightly ironic, not theatrical."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": clean_text,
+                },
+            ],
+        )
+
+        reply = _sanitize_reply(_extract_text(resp))
+        reply = _dequestionize(reply)
+        return reply
+
+    except Exception as e:
+        _dbg(f"same_language_reply EXC: {type(e).__name__}: {e}")
+        return ""
+
 def _gc() -> None:
     now = _now()
     dead = [k for k, s in _sessions.items() if s.expires_at < now]
@@ -856,7 +958,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     intent = "chat"
     reply = ""
     add_user(chat_id, user_id, user_text)
-    touch(chat_id, user_id)    
+    touch(chat_id, user_id)
+
+    same_language_reply = _try_same_language_reply(chat_id, user_id, user_text)
+    if same_language_reply:
+        add_assistant(chat_id, user_id, same_language_reply)
+        return DialogDecision(intent="chat", reply=same_language_reply)
+
     semantic_chat = False
     semantic_query = ""
 
