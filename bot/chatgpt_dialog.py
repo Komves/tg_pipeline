@@ -1119,22 +1119,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             add_assistant(chat_id, user_id, reply)
             return DialogDecision(intent="chat", reply=reply)
 
-    if ir and ir.addressed and ir.intent == "info_q":
-        reply = persona.answer_info_fast(ir.question)
-        reply = _sanitize_reply(reply)
-        reply = persona.postprocess_text(reply, user_text)
-        reply = _dequestionize(reply)
-        if not reply:
-            reply = _pick_clarify(chat_id, user_id, user_text)
-        add_assistant(chat_id, user_id, reply)
-        return DialogDecision(intent="chat", reply=reply)
-    
-    if ir and ir.addressed and ir.intent == "group_rewrite":
-        reply = persona.answer_group_rewrite_pushback(ir.question or "")
-        reply = _sanitize_reply(reply)
-        reply = persona.postprocess_text(reply, user_text)
-        add_assistant(chat_id, user_id, reply)
-        return DialogDecision(intent="chat", reply=reply)
+    # ordinary addressed dialog must continue through history-aware fallback below
 
     if ir and ir.addressed and ir.intent == "add_youtube":
         video_id = ir.question

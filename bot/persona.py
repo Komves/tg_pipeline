@@ -335,6 +335,21 @@ class IntentResult:
 # =========================
 # INTENT DETECTION
 # =========================
+_CONTINUATION_RE = re.compile(
+    r"^(а\s+)?("
+    r"не понял|"
+    r"объясни( подробнее)?|"
+    r"про .* объясни|"
+    r"подробнее|"
+    r"раскрой|"
+    r"в каком смысле|"
+    r"почему\??|"
+    r"и что это значит|"
+    r"что ты имеешь в виду"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
 def detect_intent(text: str) -> IntentResult:
     raw = (text or "").strip()
     addressed = is_addressed(raw)
@@ -361,22 +376,11 @@ def detect_intent(text: str) -> IntentResult:
 
     if addressed and INFO_Q_RE.search(t):
         return IntentResult(addressed=True, intent="info_q", question=t)
-    
-    if addressed and GROUP_REWRITE_RE.search(t):
-        return IntentResult(addressed=True, intent="group_rewrite", question=t)
-
-    # Добавление YouTube в архив
-    yt_match = ADD_VIDEO_PATTERN.search(t)
-    if yt_match and addressed:
-        if any(phrase in t.lower() for phrase in ["добавь в архив", "сохрани", "запомни", "в коробку"]):
-            video_id = yt_match.group(1)
-            return IntentResult(addressed=True, intent="add_youtube", question=video_id)
 
     if addressed and t:
         return IntentResult(addressed=True, intent="chat", question=t)
 
     return IntentResult(addressed=addressed, intent="none", question=t)
-
 # =========================
 # LLM CALL
 # =========================
