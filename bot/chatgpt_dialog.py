@@ -567,6 +567,68 @@ def _deterministic_pick(options: List[str], seed_str: str) -> str:
         return ""
     return options[_deterministic_index(len(options), seed_str)]
 
+def _conversation_reply(
+    chat_id: int,
+    user_id: int,
+    user_text: str,
+) -> str:
+
+    if not _has_key():
+        try:
+            return persona.postprocess_text(
+                persona.answer_chat(user_text),
+                user_text,
+            )
+        except Exception:
+            return ""
+
+    hist = get_history(chat_id, user_id)
+
+    system = (
+        getattr(persona, "_SYSTEM_PROMPT", "").strip()
+        + "\n\n"
+        + _irritation_instruction(chat_id, user_id)
+        + "\n\n"
+        "Это обычный живой разговор.\n"
+        "Ты ОБЯЗАНА учитывать историю сообщений.\n"
+        "Если пользователь пишет:"
+        " 'не понял', 'объясни', 'а почему',"
+        " 'что значит', 'подробнее' —"
+        " это продолжение предыдущей темы.\n"
+        "Не классифицируй intent.\n"
+        "Не возвращай JSON.\n"
+        "Не запускай новости или контент.\n"
+        "Просто продолжай разговор.\n"
+    )
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {"role": "system", "content": system},
+                *hist,
+            ],
+        )
+
+        reply = _sanitize_reply(_extract_text(resp))
+        reply = _dequestionize(reply)
+        reply = persona.postprocess_text(reply, user_text)
+
+        return reply
+
+    except Exception as e:
+        _dbg(f"conversation EXC: {type(e).__name__}: {e}")
+
+        try:
+            return persona.postprocess_text(
+                persona.answer_chat(user_text),
+                user_text,
+            )
+        except Exception:
+            return ""
+
 def _cheap_search_blocker(user_text: str) -> bool:
     """
     Cheap non-domain guardrail only.
@@ -878,6 +940,63 @@ _SYSTEM_PROMPT = (
 """
 )
 
+def _conversation_reply(chat_id: int, user_id: int, user_text: str) -> str:
+    """
+    Normal Vesya dialog engine:
+    - uses persona prompt for character
+    - uses session history for context/follow-ups
+    - never returns action JSON
+    """
+    if not _has_key():
+        try:
+            return persona.postprocess_text(
+                persona.answer_chat(user_text),
+                user_text,
+            )
+        except Exception:
+            return ""
+
+    hist = get_history(chat_id, user_id)
+
+    system = (
+        getattr(persona, "_SYSTEM_PROMPT", "").strip()
+        + "\n\n"
+        + _irritation_instruction(chat_id, user_id)
+        + "\n\n"
+        "Это обычный живой диалог с пользователем.\n"
+        "Всегда учитывай историю сообщений выше.\n"
+        "Если последнее сообщение — уточнение вроде 'не понял', 'объясни подробнее', "
+        "'а почему', 'что значит', 'поясни', 'подробнее' — продолжай предыдущую тему, "
+        "а не начинай новую.\n"
+        "Не возвращай JSON.\n"
+        "Не классифицируй intent.\n"
+        "Не запускай контент, новости или подборки.\n"
+        "Отвечай в характере Веси, но по существу.\n"
+        "Ответ 1–5 коротких фраз, если тема сложная — можно чуть подробнее.\n"
+    )
+
+    try:
+        client = OpenAI()
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[{"role": "system", "content": system}, *hist],
+        )
+
+        reply = _sanitize_reply(_extract_text(resp))
+        reply = _dequestionize(reply)
+        reply = persona.postprocess_text(reply, user_text)
+        return reply
+
+    except Exception as e:
+        _dbg(f"conversation EXC: {type(e).__name__}: {e}")
+        try:
+            return persona.postprocess_text(
+                persona.answer_chat(user_text),
+                user_text,
+            )
+        except Exception:
+            return ""
+
 # =============================================================================
 # PUBLIC API
 # =============================================================================
@@ -1120,34 +1239,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             return DialogDecision(intent="chat", reply=reply)
 
     if ir and ir.addressed and ir.intent in {"info_q", "chat"}:
-        try:
-            client = OpenAI()
-            resp = client.responses.create(
-                model=DIALOG_MODEL,
-                input=[
-                    {
-                        "role": "system",
-                        "content": getattr(persona, "_SYSTEM_PROMPT", "").strip(),
-                    },
-                    *get_history(chat_id, user_id),
-                ],
-            )
+        reply = _conversation_reply(chat_id, user_id, user_text)
 
-            reply = _sanitize_reply(_extract_text(resp))
-            reply = persona.postprocess_text(reply, user_text)
-            reply = _dequestionize(reply)
+        if not reply:
+            reply = "Сформулируй нормально. Я не телепатка."
 
-            if not reply:
-                reply = "Сформулируй нормально. Я не телепатка."
-
-            add_assistant(chat_id, user_id, reply)
-            return DialogDecision(intent="chat", reply=reply)
-
-        except Exception as e:
-            print(f"[chatgpt_dialog] addressed chat EXC: {type(e).__name__}: {e}", flush=True)
-            reply = "Не вышло ответить нормально. Великолепно."
-            add_assistant(chat_id, user_id, reply)
-            return DialogDecision(intent="chat", reply=reply)
+        add_assistant(chat_id, user_id, reply)
+        return DialogDecision(intent="chat", reply=reply)
 
     if ir and ir.addressed and ir.intent == "add_youtube":
         video_id = ir.question
