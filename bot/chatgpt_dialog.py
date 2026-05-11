@@ -1119,7 +1119,35 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             add_assistant(chat_id, user_id, reply)
             return DialogDecision(intent="chat", reply=reply)
 
-    # ordinary addressed dialog must continue through history-aware fallback below
+    if ir and ir.addressed and ir.intent in {"info_q", "chat"}:
+        try:
+            client = OpenAI()
+            resp = client.responses.create(
+                model=DIALOG_MODEL,
+                input=[
+                    {
+                        "role": "system",
+                        "content": getattr(persona, "_SYSTEM_PROMPT", "").strip(),
+                    },
+                    *get_history(chat_id, user_id),
+                ],
+            )
+
+            reply = _sanitize_reply(_extract_text(resp))
+            reply = persona.postprocess_text(reply, user_text)
+            reply = _dequestionize(reply)
+
+            if not reply:
+                reply = "Сформулируй нормально. Я не телепатка."
+
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="chat", reply=reply)
+
+        except Exception as e:
+            print(f"[chatgpt_dialog] addressed chat EXC: {type(e).__name__}: {e}", flush=True)
+            reply = "Не вышло ответить нормально. Великолепно."
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="chat", reply=reply)
 
     if ir and ir.addressed and ir.intent == "add_youtube":
         video_id = ir.question
@@ -1128,12 +1156,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         reply = msg
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="chat", reply=reply)
-
-    if ir and ir.addressed and ir.intent == "chat":
-        # Обычная беседа/творческий запрос: не отвечаем заготовками persona.answer_chat.
-        # Пускаем ниже в free-chat LLM.
-        pass
-
+    
     # 1) If no key — just clarify (do NOT become generic assistant)
     if not _has_key():
         reply = _pick_clarify(chat_id, user_id, user_text)
