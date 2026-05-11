@@ -971,6 +971,29 @@ def _strip_vesya_prefix(text: str) -> str:
         flags=re.I,
     ).strip()
 
+def _looks_like_plain_dialog_followup(text: str) -> bool:
+    """
+    Plain conversation continuation.
+    Must NOT be hijacked by saved topic/document/image context.
+    """
+    t = _strip_vesya_prefix(text)
+    t = re.sub(r"\s+", " ", t).strip().lower()
+
+    return bool(re.fullmatch(
+        r"(а\s+)?("
+        r"не понял(а)?|"
+        r"не понял(а)?\s+объясни( подробнее)?|"
+        r"объясни( подробнее)?|"
+        r"поясни( подробнее)?|"
+        r"подробнее|"
+        r"в каком смысле|"
+        r"что значит|"
+        r"что это значит"
+        r")",
+        t,
+        flags=re.I,
+    ))
+
 async def _answer_long(message: Message, text: str, *, chunk_size: int = 3500) -> None:
     t = (text or "").strip()
     if not t:
@@ -3997,8 +4020,10 @@ async def vesya_handler(message: Message) -> None:
         )
     )
 
+    plain_dialog_followup = _looks_like_plain_dialog_followup(text)
+
     topic = _get_topic(chat_id, user_id)
-    if topic and _looks_like_topic_followup(text):
+    if topic and (not plain_dialog_followup) and _looks_like_topic_followup(text):
         dd = chatgpt_dialog.continue_topic_discussion(text, topic)
         if dd and (dd.reply or "").strip():
             await _answer_long(message, dd.reply)
@@ -4007,6 +4032,9 @@ async def vesya_handler(message: Message) -> None:
     if is_reply_to_bot_content:
         await _handle_text_core(message, f"Веся, {text}", event_type="text")
         return
+
+    if plain_dialog_followup:
+        dialog_text = text
 
     await _handle_text_core(message, dialog_text, event_type="text")
     return
