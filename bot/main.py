@@ -3968,8 +3968,11 @@ async def vesya_handler(message: Message) -> None:
                     raw = await _download_tg_file_bytes(message.bot, fid)
                     img_bytes = _shrink_jpeg_bytes(raw)
 
-        # If we have image bytes → call vision describe
-        if img_bytes is not None:
+        plain_dialog_followup_early = _looks_like_plain_dialog_followup(text)
+
+        # If we have image bytes → call vision describe,
+        # but never hijack plain dialog follow-ups like "не понял объясни подробнее".
+        if img_bytes is not None and not plain_dialog_followup_early:
             dd = chatgpt_dialog.describe_or_compare_photo(text, img_bytes)
             if dd and (dd.reply or "").strip():
                 await _answer_long(message, dd.reply)
