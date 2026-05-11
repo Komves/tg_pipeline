@@ -377,6 +377,35 @@ def get_history(chat_id: int, user_id: int) -> List[Dict[str, str]]:
 
     return history
 
+def _build_conversation_history(
+    chat_id: int,
+    user_id: int,
+    user_text: str,
+    *,
+    max_turns: int = 8,
+) -> List[Dict[str, str]]:
+    """
+    Context builder for ordinary live dialog.
+
+    Important:
+    - uses only current in-memory dialog session;
+    - does NOT inject persistent memory/system blocks;
+    - prevents old image/document/screenshot context from hijacking follow-ups;
+    - keeps enough recent turns for normal continuation.
+    """
+    s = _sessions.get((chat_id, user_id))
+    if not s:
+        return []
+
+    history = [
+        x for x in list(s.history)
+        if isinstance(x, dict)
+        and x.get("role") in {"user", "assistant"}
+        and (x.get("content") or "").strip()
+    ]
+
+    return history[-max_turns:]
+
 def _irritation_instruction(chat_id: int, user_id: int) -> str:
     s = _sessions.get((chat_id, user_id))
     level = int(getattr(s, "irritation", 0) or 0) if s else 0
@@ -582,7 +611,11 @@ def _conversation_reply(
         except Exception:
             return ""
 
-    hist = get_history(chat_id, user_id)
+    hist = _build_conversation_history(
+        chat_id=chat_id,
+        user_id=user_id,
+        user_text=user_text,
+    )
 
     system = (
         getattr(persona, "_SYSTEM_PROMPT", "").strip()
@@ -956,7 +989,11 @@ def _conversation_reply(chat_id: int, user_id: int, user_text: str) -> str:
         except Exception:
             return ""
 
-    hist = get_history(chat_id, user_id)
+    hist = _build_conversation_history(
+        chat_id=chat_id,
+        user_id=user_id,
+        user_text=user_text,
+    )
 
     system = (
         getattr(persona, "_SYSTEM_PROMPT", "").strip()
@@ -1218,7 +1255,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
                             + _irritation_instruction(chat_id, user_id)
                         ),
                     },
-                    *get_history(chat_id, user_id),
+                    *_build_conversation_history(chat_id, user_id, user_text),
                 ],
             )
 
@@ -1264,7 +1301,23 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
 
     # 2) Model-based decision (fallback for non-addressed active sessions etc.)
-    hist = get_history(chat_id, user_id)
+    full_hist = get_history(chat_id, user_id)
+
+    # memory/system blocks оставляем,
+    # но диалоговую историю режем до последних сообщений
+    system_blocks = [
+        x for x in full_hist
+        if x.get("role") == "system"
+    ]
+
+    dialog_blocks = [
+        x for x in full_hist
+        if x.get("role") != "system"
+    ]
+
+    dialog_blocks = dialog_blocks[-6:]
+
+    hist = system_blocks + dialog_blocks
     client = OpenAI()
 
     try:
