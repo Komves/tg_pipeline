@@ -994,15 +994,26 @@ def _looks_like_plain_dialog_followup(text: str) -> bool:
         flags=re.I,
     ))
 
-async def _answer_long(message: Message, text: str, *, chunk_size: int = 3500) -> None:
+async def _answer_long(message: Message, text: str, *, chunk_size: int = 3000) -> None:
     t = (text or "").strip()
     if not t:
         return
 
     while t:
         part = t[:chunk_size]
-        cut = max(part.rfind("\n\n"), part.rfind("\n"), part.rfind(". "))
-        if cut > 1200:
+
+        cut = max(
+            part.rfind("\n\n"),
+            part.rfind("\n"),
+            part.rfind(". "),
+            part.rfind("! "),
+            part.rfind("? "),
+            part.rfind("; "),
+            part.rfind(", "),
+            part.rfind(" "),
+        )
+
+        if cut > 1000:
             part = part[:cut + 1]
 
         await message.answer(part.strip())
@@ -4537,30 +4548,55 @@ async def on_gmail_open(cb):
             timeout=20,
         ).json()
 
-        def _walk(payload):
-            if not payload:
+        def _decode_gmail_body(data: str) -> str:
+            if not data:
+                return ""
+            try:
+                pad = "=" * (-len(data) % 4)
+                return base64.urlsafe_b64decode((data + pad).encode("utf-8")).decode("utf-8", errors="replace")
+            except Exception:
                 return ""
 
-            mime = payload.get("mimeType", "")
-            body = payload.get("body", {}) or {}
-            data = body.get("data")
+        def _html_to_text(s: str) -> str:
+            s = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", s or "")
+            s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+            s = re.sub(r"(?i)</p\s*>", "\n\n", s)
+            s = re.sub(r"(?s)<[^>]+>", " ", s)
+            s = html.unescape(s)
+            s = re.sub(r"[ \t]+", " ", s)
+            s = re.sub(r"\n\s+\n", "\n\n", s)
+            return s.strip()
 
-            if data and mime == "text/plain":
-                try:
-                    return base64.urlsafe_b64decode(data + "===").decode("utf-8", errors="replace")
-                except Exception:
-                    return ""
+        def _walk(payload):
+            plain_parts = []
+            html_parts = []
 
-            for p in payload.get("parts", []) or []:
-                if p.get("mimeType") == "text/plain":
-                    got = _walk(p)
-                    if got:
-                        return got
+            def rec(p):
+                if not p:
+                    return
 
-            for p in payload.get("parts", []) or []:
-                got = _walk(p)
-                if got:
-                    return got
+                mime = (p.get("mimeType") or "").lower()
+                body = p.get("body", {}) or {}
+                data = body.get("data")
+
+                if data:
+                    txt = _decode_gmail_body(data)
+                    if txt:
+                        if mime == "text/plain":
+                            plain_parts.append(txt)
+                        elif mime == "text/html":
+                            html_parts.append(_html_to_text(txt))
+
+                for child in p.get("parts", []) or []:
+                    rec(child)
+
+            rec(payload)
+
+            if plain_parts:
+                return "\n\n".join(x.strip() for x in plain_parts if x.strip()).strip()
+
+            if html_parts:
+                return "\n\n".join(x.strip() for x in html_parts if x.strip()).strip()
 
             return ""
 
@@ -4572,13 +4608,16 @@ async def on_gmail_open(cb):
             InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del_id:{msg_id}"),
         ]])
 
-        await cb.message.answer(
+        full_reply = (
             f"📩 {item.get('subject')}\n"
             f"От: {item.get('from')}\n"
             f"Дата: {item.get('date')}\n\n"
-            f"{translated[:3300]}",
-            reply_markup=kb,
+            f"{translated}"
         )
+
+        await _answer_long(cb.message, full_reply)
+
+        await cb.message.answer("Действие с письмом:", reply_markup=kb)
         await cb.answer()
 
     except Exception as e:
