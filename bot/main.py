@@ -707,21 +707,100 @@ def _log(msg: str) -> None:
     print(f"[main] {ts} UTC {msg}", flush=True)
 
 def _load_memory_events(limit: int = 500) -> list[dict]:
+    candidates = []
+
+    # 1) Явные имена из memory.py, если они есть
+    for attr in (
+        "MEMORY_EVENTS_PATH",
+        "EVENTS_PATH",
+        "EVENT_LOG_PATH",
+        "MEMORY_LOG_PATH",
+        "USER_EVENTS_PATH",
+    ):
+        try:
+            p = getattr(vesya_memory, attr, None)
+            if p:
+                candidates.append(Path(p))
+        except Exception:
+            pass
+
+    # 2) Частые варианты имён в DATA_DIR
+    for name in (
+        "vesya_memory_events.json",
+        "memory_events.json",
+        "events.json",
+        "vesya_events.json",
+        "user_events.json",
+        "memory_log.json",
+        "events.jsonl",
+        "vesya_memory_events.jsonl",
+        "memory_events.jsonl",
+    ):
+        candidates.append(DATA_DIR / name)
+
+    # 3) Широкий fallback по /data
     try:
-        path = getattr(vesya_memory, "MEMORY_EVENTS_PATH", None)
-        if path and Path(path).exists():
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                return data[-int(limit):]
+        candidates.extend(DATA_DIR.glob("*event*.json"))
+        candidates.extend(DATA_DIR.glob("*events*.json"))
+        candidates.extend(DATA_DIR.glob("*memory*.json"))
+        candidates.extend(DATA_DIR.glob("*event*.jsonl"))
+        candidates.extend(DATA_DIR.glob("*events*.jsonl"))
+        candidates.extend(DATA_DIR.glob("*memory*.jsonl"))
     except Exception:
         pass
 
-    # fallback: если в memory.py путь назван иначе
-    for p in DATA_DIR.glob("*memory*event*.json"):
+    seen = set()
+
+    for p in candidates:
         try:
+            p = Path(p)
+            key = str(p)
+            if key in seen or not p.exists() or not p.is_file():
+                continue
+            seen.add(key)
+
+            if p.suffix.lower() == ".jsonl":
+                rows = []
+                for line in p.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        if isinstance(obj, dict):
+                            rows.append(obj)
+                    except Exception:
+                        pass
+
+                rows = [
+                    x for x in rows
+                    if isinstance(x, dict)
+                    and ("chat_id" in x or "user_id" in x)
+                    and ("text" in x or "reply" in x)
+                ]
+
+                if rows:
+                    return rows[-int(limit):]
+
             data = json.loads(p.read_text(encoding="utf-8"))
+
+            if isinstance(data, dict):
+                for key in ("events", "items", "rows", "messages"):
+                    if isinstance(data.get(key), list):
+                        data = data[key]
+                        break
+
             if isinstance(data, list):
-                return data[-int(limit):]
+                rows = [
+                    x for x in data
+                    if isinstance(x, dict)
+                    and ("chat_id" in x or "user_id" in x)
+                    and ("text" in x or "reply" in x)
+                ]
+
+                if rows:
+                    return rows[-int(limit):]
+
         except Exception:
             pass
 
