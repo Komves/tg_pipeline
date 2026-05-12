@@ -816,49 +816,80 @@ def _admin_extract_id(text: str) -> int | None:
         return None
 
 def _admin_chat_list_text(limit: int = 20) -> str:
-    events = _load_memory_events(1500)
-    by_key = {}
+    events = _load_memory_events(3000)
+
+    chats = {}
 
     for e in events:
         try:
             chat_id = int(e.get("chat_id") or 0)
-            user_id = int(e.get("user_id") or 0)
-            if not chat_id and not user_id:
+            if not chat_id:
                 continue
 
-            key = f"{chat_id}:{user_id}"
-            by_key[key] = e
+            row = chats.get(chat_id)
+            if not row:
+                row = {
+                    "chat_id": chat_id,
+                    "chat_type": e.get("chat_type") or "?",
+                    "last_ts": "",
+                    "last_text": "",
+                    "last_reply": "",
+                    "users": set(),
+                    "count": 0,
+                }
+                chats[chat_id] = row
+
+            uid = int(e.get("user_id") or 0)
+            if uid:
+                row["users"].add(uid)
+
+            row["count"] += 1
+
+            ts = str(e.get("ts") or "")
+            if ts >= row["last_ts"]:
+                row["last_ts"] = ts
+                row["last_text"] = (e.get("text") or "").replace("\n", " ").strip()
+                row["last_reply"] = (e.get("reply") or "").replace("\n", " ").strip()
+
         except Exception:
             pass
 
-    rows = list(by_key.values())[-limit:]
+    rows = sorted(
+        chats.values(),
+        key=lambda x: x["last_ts"],
+        reverse=True,
+    )[:limit]
 
     if not rows:
-        return "Активных чатов не нашла. Либо тишина, либо журнал пустой."
+        return "Активных чатов не нашла."
 
-    out = [f"🗂 Активные/последние чаты: {len(rows)}"]
+    out = [f"🗂 Активные чаты: {len(rows)}"]
 
-    for i, e in enumerate(reversed(rows), start=1):
-        chat_id = e.get("chat_id")
-        user_id = e.get("user_id")
-        chat_type = e.get("chat_type") or "?"
-        intent = e.get("intent") or "-"
-        ts = (e.get("ts") or "")[:19].replace("T", " ")
+    for i, row in enumerate(rows, start=1):
+        text = row["last_text"]
+        reply = row["last_reply"]
 
-        text = (e.get("text") or "").replace("\n", " ").strip()
-        reply = (e.get("reply") or "").replace("\n", " ").strip()
+        if len(text) > 140:
+            text = text[:140].rstrip() + "…"
 
-        if len(text) > 120:
-            text = text[:120].rstrip() + "…"
-        if len(reply) > 120:
-            reply = reply[:120].rstrip() + "…"
+        if len(reply) > 140:
+            reply = reply[:140].rstrip() + "…"
+
+        users_preview = ", ".join(
+            str(x) for x in list(sorted(row["users"]))[:5]
+        )
+
+        if len(row["users"]) > 5:
+            users_preview += f" +{len(row['users']) - 5}"
+
+        ts = row["last_ts"][:19].replace("T", " ")
 
         out.append(
             "\n"
-            f"{i}. {chat_type}\n"
-            f"chat_id: `{chat_id}`\n"
-            f"user_id: `{user_id}`\n"
-            f"intent: {intent}\n"
+            f"{i}. {row['chat_type']}\n"
+            f"chat_id: {row['chat_id']}\n"
+            f"users: {len(row['users'])} [{users_preview or '-'}]\n"
+            f"messages: {row['count']}\n"
             f"time: {ts or '-'}\n"
             f"U: {text or '-'}\n"
             f"V: {reply or '-'}"
@@ -866,9 +897,9 @@ def _admin_chat_list_text(limit: int = 20) -> str:
 
     out.append(
         "\nКоманды:\n"
-        "• Веся покажи чат <chat_id или user_id>\n"
-        "• Веся закрой чат <id>\n"
-        "• Веся игнор <user_id>"
+        "• Веся покажи чат [chat_id]\n"
+        "• Веся закрой чат [chat_id]\n"
+        "• Веся игнор [user_id]"
     )
 
     return "\n".join(out)
