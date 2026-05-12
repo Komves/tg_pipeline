@@ -815,8 +815,8 @@ def _admin_extract_id(text: str) -> int | None:
     except Exception:
         return None
 
-def _admin_chat_list_text(limit: int = 30) -> str:
-    events = _load_memory_events(1000)
+def _admin_chat_list_text(limit: int = 20) -> str:
+    events = _load_memory_events(1500)
     by_key = {}
 
     for e in events:
@@ -825,22 +825,51 @@ def _admin_chat_list_text(limit: int = 30) -> str:
             user_id = int(e.get("user_id") or 0)
             if not chat_id and not user_id:
                 continue
+
             key = f"{chat_id}:{user_id}"
             by_key[key] = e
         except Exception:
             pass
 
     rows = list(by_key.values())[-limit:]
+
     if not rows:
         return "Активных чатов не нашла. Либо тишина, либо журнал пустой."
 
-    out = ["Активные/последние чаты:"]
-    for e in reversed(rows):
+    out = [f"🗂 Активные/последние чаты: {len(rows)}"]
+
+    for i, e in enumerate(reversed(rows), start=1):
+        chat_id = e.get("chat_id")
+        user_id = e.get("user_id")
+        chat_type = e.get("chat_type") or "?"
+        intent = e.get("intent") or "-"
+        ts = (e.get("ts") or "")[:19].replace("T", " ")
+
+        text = (e.get("text") or "").replace("\n", " ").strip()
+        reply = (e.get("reply") or "").replace("\n", " ").strip()
+
+        if len(text) > 120:
+            text = text[:120].rstrip() + "…"
+        if len(reply) > 120:
+            reply = reply[:120].rstrip() + "…"
+
         out.append(
-            f"- chat_id={e.get('chat_id')} user_id={e.get('user_id')} "
-            f"type={e.get('chat_type','')} intent={e.get('intent','')} "
-            f"text={(e.get('text') or '')[:80]}"
+            "\n"
+            f"{i}. {chat_type}\n"
+            f"chat_id: `{chat_id}`\n"
+            f"user_id: `{user_id}`\n"
+            f"intent: {intent}\n"
+            f"time: {ts or '-'}\n"
+            f"U: {text or '-'}\n"
+            f"V: {reply or '-'}"
         )
+
+    out.append(
+        "\nКоманды:\n"
+        "• Веся покажи чат <chat_id или user_id>\n"
+        "• Веся закрой чат <id>\n"
+        "• Веся игнор <user_id>"
+    )
 
     return "\n".join(out)
 
