@@ -169,6 +169,31 @@ TOPIC_TTL_SEC = int(os.getenv("V_TOPIC_TTL_SEC", str(7 * 24 * 3600)))
 TOPIC_PATH = DATA_DIR / "vesya_topics.json"
 
 TRANSLATOR_MODES_PATH = DATA_DIR / "vesya_translator_modes.json"
+BLOCKED_USERS_PATH = DATA_DIR / "vesya_blocked_users.json"
+
+def _load_blocked_users() -> set[int]:
+    try:
+        if BLOCKED_USERS_PATH.exists():
+            data = json.loads(BLOCKED_USERS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return {int(x) for x in data}
+    except Exception:
+        pass
+    return set()
+
+def _save_blocked_users(users: set[int]) -> None:
+    try:
+        tmp = BLOCKED_USERS_PATH.with_suffix(BLOCKED_USERS_PATH.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(sorted(int(x) for x in users), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(BLOCKED_USERS_PATH)
+    except Exception:
+        pass
+
+def _is_blocked_user(user_id: int) -> bool:
+    return int(user_id or 0) in _load_blocked_users()
 
 def _translator_key(chat_id: int, user_id: int) -> str:
     return f"{int(chat_id)}:{int(user_id)}"
@@ -681,6 +706,152 @@ def _log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     print(f"[main] {ts} UTC {msg}", flush=True)
 
+def _load_memory_events(limit: int = 500) -> list[dict]:
+    try:
+        path = getattr(vesya_memory, "MEMORY_EVENTS_PATH", None)
+        if path and Path(path).exists():
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data[-int(limit):]
+    except Exception:
+        pass
+
+    # fallback: если в memory.py путь назван иначе
+    for p in DATA_DIR.glob("*memory*event*.json"):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data[-int(limit):]
+        except Exception:
+            pass
+
+    return []
+
+def _admin_extract_id(text: str) -> int | None:
+    m = re.search(r"(-?\d{5,})", text or "")
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+def _admin_chat_list_text(limit: int = 30) -> str:
+    events = _load_memory_events(1000)
+    by_key = {}
+
+    for e in events:
+        try:
+            chat_id = int(e.get("chat_id") or 0)
+            user_id = int(e.get("user_id") or 0)
+            if not chat_id and not user_id:
+                continue
+            key = f"{chat_id}:{user_id}"
+            by_key[key] = e
+        except Exception:
+            pass
+
+    rows = list(by_key.values())[-limit:]
+    if not rows:
+        return "Активных чатов не нашла. Либо тишина, либо журнал пустой."
+
+    out = ["Активные/последние чаты:"]
+    for e in reversed(rows):
+        out.append(
+            f"- chat_id={e.get('chat_id')} user_id={e.get('user_id')} "
+            f"type={e.get('chat_type','')} intent={e.get('intent','')} "
+            f"text={(e.get('text') or '')[:80]}"
+        )
+
+    return "\n".join(out)
+
+def _admin_chat_tail_text(target_id: int, limit: int = 20) -> str:
+    events = _load_memory_events(2000)
+    rows = []
+
+    for e in events:
+        try:
+            chat_id = int(e.get("chat_id") or 0)
+            user_id = int(e.get("user_id") or 0)
+            if chat_id == int(target_id) or user_id == int(target_id):
+                rows.append(e)
+        except Exception:
+            pass
+
+    rows = rows[-limit:]
+    if not rows:
+        return f"По {target_id} ничего не нашла."
+
+    out = [f"Последние сообщения по {target_id}:"]
+    for e in rows:
+        text = (e.get("text") or "").replace("\n", " ")[:500]
+        reply = (e.get("reply") or "").replace("\n", " ")[:500]
+        out.append(f"\n[{e.get('ts','')}] user_id={e.get('user_id')} chat_id={e.get('chat_id')}")
+        if text:
+            out.append(f"U: {text}")
+        if reply:
+            out.append(f"V: {reply}")
+
+    return "\n".join(out)
+
+async def _try_admin_dialog_command(message: Message, text: str) -> bool:
+    t = _strip_vesya_prefix(text).strip().lower()
+
+    if not _is_admin_user(message):
+        return False
+
+    if re.search(r"\b(активные чаты|список чатов|последние чаты)\b", t):
+        await _answer_long(message, _admin_chat_list_text())
+        return True
+
+    if re.search(r"\b(покажи чат|открой чат|история чата)\b", t):
+        target_id = _admin_extract_id(t)
+        if not target_id:
+            await message.answer("ID чата или пользователя дай. Я не гадалка.")
+            return True
+        await _answer_long(message, _admin_chat_tail_text(target_id))
+        return True
+
+    if re.search(r"\b(закрой чат|сбрось чат|закрыть чат)\b", t):
+        target_id = _admin_extract_id(t)
+        if not target_id:
+            await message.answer("ID дай.")
+            return True
+
+        try:
+            chatgpt_dialog.end(target_id, target_id)
+            chatgpt_dialog.end(int(message.chat.id), target_id)
+        except Exception:
+            pass
+
+        await message.answer(f"Чат {target_id} закрыла.")
+        return True
+
+    if re.search(r"\b(игнор|забань|заблокируй)\b", t):
+        target_id = _admin_extract_id(t)
+        if not target_id:
+            await message.answer("ID дай.")
+            return True
+
+        users = _load_blocked_users()
+        users.add(int(target_id))
+        _save_blocked_users(users)
+        await message.answer(f"Пользователь {target_id} теперь в игноре.")
+        return True
+
+    if re.search(r"\b(разигнор|разбань|разблокируй)\b", t):
+        target_id = _admin_extract_id(t)
+        if not target_id:
+            await message.answer("ID дай.")
+            return True
+
+        users = _load_blocked_users()
+        users.discard(int(target_id))
+        _save_blocked_users(users)
+        await message.answer(f"Пользователь {target_id} снова доступен.")
+        return True
+
+    return False
 
 def _record_memory_event(
     message: Message,
@@ -3599,6 +3770,9 @@ async def vesya_handler(message: Message) -> None:
         return
     # photo is handled below via reply-photo or LAST_USER_IMAGE_ID
 
+    if message.from_user and _is_blocked_user(int(message.from_user.id)):
+        return
+
     # In groups: react only when bot is addressed (name/command/reply)
     if message.chat.type in ("group", "supergroup"):
         t = text.lower()
@@ -3633,6 +3807,9 @@ async def vesya_handler(message: Message) -> None:
             await message.answer("ладно, не шлём.")
         else:
             await message.answer("и не собирались.")
+        return
+    
+    if await _try_admin_dialog_command(message, text):
         return
 
     if _relay_command_text(text):
