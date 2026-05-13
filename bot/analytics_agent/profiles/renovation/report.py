@@ -162,10 +162,10 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
             "estimate_scope": "режим расчета",
         }
 
+        missing_text = ", ".join(field_labels.get(m, m) for m in missing)
+
         out.append("")
-        out.append("Не хватает для точности:")
-        for m in missing:
-            out.append(f"• {field_labels.get(m, m)}")
+        out.append(f"Не хватает для точности: {missing_text}.")
 
     return "\n".join(out)
 
