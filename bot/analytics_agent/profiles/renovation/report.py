@@ -21,7 +21,17 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     city = params.get("city") or "город не указан"
     property_type = params.get("property_type") or "тип квартиры не указан"
 
-    missing = list(params.get("missing") or [])
+    missing = [
+        m for m in list(params.get("missing") or [])
+        if (
+            (m == "area_m2" and not params.get("area_m2"))
+            or (m == "city" and not params.get("city"))
+            or (m == "repair_class" and not params.get("repair_class"))
+            or (m == "property_type" and not params.get("property_type"))
+            or (m == "ceiling_height" and not params.get("ceiling_height"))
+            or (m == "estimate_scope" and not params.get("estimate_scope"))
+        )
+    ]
 
     if not area:
         return (
