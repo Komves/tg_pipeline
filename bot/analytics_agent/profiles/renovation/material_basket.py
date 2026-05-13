@@ -5,39 +5,46 @@ import math
 
 CATEGORY_SPECS = {
     "flooring": {
-        "market_unit": "упаковка",
+        "market_unit": "м²",
         "pack_size": 2.1,
         "pack_unit": "м²",
+        "pricing_mode": "by_quantity",
     },
     "bathroom_tile": {
-        "market_unit": "упаковка",
+        "market_unit": "м²",
         "pack_size": 1.4,
         "pack_unit": "м²",
+        "pricing_mode": "by_quantity",
     },
     "plinth": {
-        "market_unit": "шт",
+        "market_unit": "м",
         "pack_size": 2.5,
         "pack_unit": "м",
+        "pricing_mode": "by_quantity",
     },
     "primer": {
         "market_unit": "канистра",
         "pack_size": 10,
         "pack_unit": "л",
+        "pricing_mode": "by_pack",
     },
     "putty": {
         "market_unit": "мешок",
         "pack_size": 25,
         "pack_unit": "кг",
+        "pricing_mode": "by_pack",
     },
     "paint_or_wallpaper": {
-        "market_unit": "ведро",
+        "market_unit": "м²",
         "pack_size": 10,
         "pack_unit": "л",
+        "pricing_mode": "by_quantity",
     },
     "rough_mix": {
         "market_unit": "мешок",
         "pack_size": 25,
         "pack_unit": "кг",
+        "pricing_mode": "by_pack",
     },
 }
 
@@ -129,6 +136,7 @@ def build_material_basket(params: Dict[str, Any], surfaces: Dict[str, Any]) -> L
         item["market_unit"] = spec["market_unit"]
         item["pack_size"] = spec["pack_size"]
         item["pack_unit"] = spec["pack_unit"]
+        item["pricing_mode"] = spec["pricing_mode"]
 
         qty = float(item.get("quantity") or 0)
         pack_size = float(spec["pack_size"])

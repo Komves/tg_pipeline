@@ -29,8 +29,31 @@ def _extract_price_rub(text: str) -> int | None:
 
     return sorted(candidates)[0]
 
+TRUSTED_SOURCES = [
+    ("petrovich.ru", "Петрович"),
+    ("leroymerlin.ru", "Лемана"),
+    ("vseinstrumenti.ru", "ВсеИнструменты"),
+    ("maxidom.ru", "Максидом"),
+]
 
-def _search_price(query: str, city: str) -> Dict[str, Any]:
+
+def _text_has_expected_unit(text: str, item: Dict[str, Any]) -> bool:
+    s = (text or "").lower()
+    expected = str(item.get("market_unit") or item.get("unit") or "").lower()
+
+    if expected in ("м²", "м2"):
+        return any(x in s for x in ("м²", "м2", "кв.м", "кв. м", "за м²", "за м2"))
+
+    if expected == "м":
+        return any(x in s for x in ("за м", "пог.м", "пог. м", "метр"))
+
+    if expected in ("мешок", "канистра", "ведро", "упаковка", "шт"):
+        return expected in s or "шт" in s or "упак" in s
+
+    return False
+
+
+def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]:
     api_key = (os.getenv("BRAVE_SEARCH_API_KEY") or "").strip()
     if not api_key:
         return {
@@ -38,56 +61,76 @@ def _search_price(query: str, city: str) -> Dict[str, Any]:
             "reason": "BRAVE_SEARCH_API_KEY is not set",
         }
 
-    q = f"{query} цена {city}".strip()
+    best_rejected = None
 
-    try:
-        r = requests.get(
-            "https://api.search.brave.com/res/v1/web/search",
-            headers={
-                "Accept": "application/json",
-                "X-Subscription-Token": api_key,
-            },
-            params={
-                "q": q,
-                "count": 5,
-                "search_lang": "ru",
-                "country": "RU",
-            },
-            timeout=12,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        return {
-            "status": "unavailable",
-            "reason": f"{type(e).__name__}: {e}",
-        }
+    for domain, source_name in TRUSTED_SOURCES:
+        q = f"{query} цена {city} site:{domain}".strip()
 
-    results = (data.get("web") or {}).get("results") or []
+        try:
+            r = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={
+                    "Accept": "application/json",
+                    "X-Subscription-Token": api_key,
+                },
+                params={
+                    "q": q,
+                    "count": 5,
+                    "search_lang": "ru",
+                    "country": "RU",
+                },
+                timeout=12,
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            continue
 
-    for item in results:
-        title = (item.get("title") or "").strip()
-        desc = (item.get("description") or "").strip()
-        url = (item.get("url") or "").strip()
+        results = (data.get("web") or {}).get("results") or []
 
-        price = _extract_price_rub(f"{title}\n{desc}")
+        for found_item in results:
+            title = (found_item.get("title") or "").strip()
+            desc = (found_item.get("description") or "").strip()
+            url = (found_item.get("url") or "").strip()
+            text = f"{title}\n{desc}"
 
-        if price:
+            price = _extract_price_rub(text)
+            if not price:
+                continue
+
+            rejected = {
+                "status": "unusable",
+                "query": q,
+                "unit_price": price,
+                "source_title": title,
+                "source_url": url,
+                "source": source_name,
+                "reason": "unit not confirmed",
+            }
+
+            if best_rejected is None:
+                best_rejected = rejected
+
+            if not _text_has_expected_unit(text, item):
+                continue
+
             return {
                 "status": "ok",
                 "query": q,
                 "unit_price": price,
                 "source_title": title,
                 "source_url": url,
-                "source": "Brave Search snippet",
+                "source": source_name,
             }
+
+    if best_rejected:
+        return best_rejected
 
     return {
         "status": "unavailable",
-        "query": q,
-        "reason": "price not found in search snippets",
+        "query": query,
+        "reason": "trusted source price not found",
     }
-
 
 def price_material_basket(
     basket: List[Dict[str, Any]],
@@ -105,7 +148,7 @@ def price_material_basket(
         if not query or quantity <= 0:
             continue
 
-        found = _search_price(query, city)
+        found = _search_price(query, city, item)
 
         row = dict(item)
         row["pricing_status"] = found.get("status")
@@ -119,12 +162,17 @@ def price_material_basket(
             unit_price = int(found.get("unit_price") or 0)
             row["unit_price_rub"] = unit_price
 
-            if required_packs > 0:
+            pricing_mode = str(item.get("pricing_mode") or "by_quantity")
+
+            if pricing_mode == "by_pack" and required_packs > 0:
                 row["total_price_rub"] = int(round(required_packs * unit_price))
             else:
                 row["total_price_rub"] = int(round(quantity * unit_price))
 
+            row["usable_for_total"] = True
             total += row["total_price_rub"]
+        else:
+            row["usable_for_total"] = False
 
         priced_items.append(row)
 

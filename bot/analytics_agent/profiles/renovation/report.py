@@ -84,7 +84,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     layout = params.get("layout") if isinstance(params.get("layout"), dict) else None
 
     out = [
-        "🧠 Черновая оценка материалов по ремонту",
+        "🧠 Черновая оценка материалов по ремонту v2-pricing-check",
         "",
         f"ID: {task_id}",
         f"Город: {city}",
@@ -184,11 +184,11 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
                 )
             )
 
-    if priced_basket.get("status") == "ok":
+    if priced_basket.get("items"):
         out.append("")
-        out.append("Рыночные цены по найденным источникам:")
+        out.append("Прайс-проверка по доверенным источникам:")
         for item in priced_basket.get("items") or []:
-            if item.get("pricing_status") != "ok":
+            if not item.get("usable_for_total"):
                 continue
 
             out.append(
@@ -200,8 +200,11 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
                 out.append(f"  источник: {item['source_title']}")
 
         total_market = priced_basket.get("total_price_rub")
+
         if total_market:
-            out.append(f"Итого по найденным рыночным позициям: ~{total_market:,} ₽".replace(",", " "))
+            out.append(f"Итого по подтверждённым рыночным позициям: ~{total_market:,} ₽".replace(",", " "))
+        else:
+            out.append("Рыночные цены пока недостаточно надёжны для включения в расчёт.")
     else:
         out.append("")
         out.append("Рыночные цены: не найдены или не подключён BRAVE_SEARCH_API_KEY.")
