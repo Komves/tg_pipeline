@@ -30,12 +30,8 @@ def _extract_price_rub(text: str) -> int | None:
     return sorted(candidates)[0]
 
 TRUSTED_SOURCES = [
-    ("petrovich.ru", "Петрович"),
-    ("leroymerlin.ru", "Лемана"),
-    ("vseinstrumenti.ru", "ВсеИнструменты"),
-    ("maxidom.ru", "Максидом"),
+    ("lemanapro.ru", "Лемана ПРО"),
 ]
-
 
 def _text_has_expected_unit(text: str, item: Dict[str, Any]) -> bool:
     s = (text or "").lower()
@@ -54,82 +50,72 @@ def _text_has_expected_unit(text: str, item: Dict[str, Any]) -> bool:
 
 
 def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]:
-    api_key = (os.getenv("BRAVE_SEARCH_API_KEY") or "").strip()
-    if not api_key:
+    search_url = (
+        "https://lemanapro.ru/search/"
+        f"?q={requests.utils.quote(query)}"
+    )
+
+    try:
+        r = requests.get(
+            search_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+                )
+            },
+            timeout=15,
+        )
+
+        r.raise_for_status()
+
+        html = r.text or ""
+
+    except Exception as e:
         return {
             "status": "unavailable",
-            "reason": "BRAVE_SEARCH_API_KEY is not set",
+            "query": query,
+            "reason": f"lemanapro request failed: {e}",
         }
 
-    best_rejected = None
+    prices = []
 
-    for domain, source_name in TRUSTED_SOURCES:
-        q = f"{query} цена {city} site:{domain}".strip()
+    for m in re.finditer(
+        r'(\d[\d\s]{1,10})\s*₽',
+        html,
+        flags=re.I,
+    ):
+        raw = re.sub(r"\D+", "", m.group(1) or "")
 
-        try:
-            r = requests.get(
-                "https://api.search.brave.com/res/v1/web/search",
-                headers={
-                    "Accept": "application/json",
-                    "X-Subscription-Token": api_key,
-                },
-                params={
-                    "q": q,
-                    "count": 5,
-                    "search_lang": "ru",
-                    "country": "RU",
-                },
-                timeout=12,
-            )
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:
+        if not raw:
             continue
 
-        results = (data.get("web") or {}).get("results") or []
+        try:
+            value = int(raw)
+        except Exception:
+            continue
 
-        for found_item in results:
-            title = (found_item.get("title") or "").strip()
-            desc = (found_item.get("description") or "").strip()
-            url = (found_item.get("url") or "").strip()
-            text = f"{title}\n{desc}"
+        if 50 <= value <= 500_000:
+            prices.append(value)
 
-            price = _extract_price_rub(text)
-            if not price:
-                continue
+    if not prices:
+        return {
+            "status": "unavailable",
+            "query": query,
+            "reason": "no catalog prices found in lemanapro html",
+        }
 
-            rejected = {
-                "status": "unusable",
-                "query": q,
-                "unit_price": price,
-                "source_title": title,
-                "source_url": url,
-                "source": source_name,
-                "reason": "unit not confirmed",
-            }
+    prices = sorted(prices)
 
-            if best_rejected is None:
-                best_rejected = rejected
-
-            if not _text_has_expected_unit(text, item):
-                continue
-
-            return {
-                "status": "ok",
-                "query": q,
-                "unit_price": price,
-                "source_title": title,
-                "source_url": url,
-                "source": source_name,
-            }
-
-    if best_rejected:
-        return best_rejected
+    median_price = prices[min(len(prices) // 2, len(prices) - 1)]
 
     return {
-        "status": "unavailable",
+        "status": "ok",
         "query": query,
-        "reason": "trusted source price not found",
+        "unit_price": median_price,
+        "source_title": "Каталог Лемана ПРО",
+        "source_url": search_url,
+        "source": "Лемана ПРО",
     }
 
 def price_material_basket(

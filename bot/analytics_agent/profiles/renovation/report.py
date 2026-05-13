@@ -84,7 +84,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     layout = params.get("layout") if isinstance(params.get("layout"), dict) else None
 
     out = [
-        "🧠 Черновая оценка материалов по ремонту v2-pricing-check",
+        "🧠 Черновая оценка материалов по ремонту",
         "",
         f"ID: {task_id}",
         f"Город: {city}",
@@ -109,8 +109,8 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         "• краска/обои/расходники;",
         "• двери и базовая фурнитура — если явно не исключены.",
         "",
-        "Статус: это пока нормативная оценка без подключения рыночных цен.",
-        "Следующий слой — market pricing collector по строймаркетам.",
+        "Статус: рыночная прайс-проверка выполняется по каталогу Лемана ПРО.",
+        "Цены являются ориентировочными и зависят от региона, бренда и наличия.",
         "",
         f"Режим расчета: {'материалы + работы' if estimate_scope == 'materials_and_labor' else 'только материалы'}",
     ]
@@ -186,7 +186,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
 
     if priced_basket.get("items"):
         out.append("")
-        out.append("Прайс-проверка по доверенным источникам:")
+        "Прайс-проверка по каталогу Лемана ПРО:"
         for item in priced_basket.get("items") or []:
             if not item.get("usable_for_total"):
                 continue
