@@ -144,7 +144,7 @@ from aiogram.filters import Command
 import chatgpt_dialog
 import news_digest
 import memory as vesya_memory
-from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo
+from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo, handle_analytics_callback
 
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -4827,6 +4827,11 @@ async def main() -> None:
     asyncio.create_task(ingest24_loop(bot))
     asyncio.create_task(gmail_poll_loop())
     await dp.start_polling(bot)
+
+@dp.callback_query(F.data.startswith("an:"))
+async def on_analytics_callback(cb):
+    if await handle_analytics_callback(cb, _answer_long):
+        return
 
 @dp.callback_query(F.data.startswith("fb:"))
 async def on_feedback(cb):

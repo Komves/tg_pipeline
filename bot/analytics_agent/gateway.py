@@ -73,6 +73,94 @@ def _renovation_followup_reply(task: ResearchTask, text: str) -> str:
 
     return build_renovation_followup(task.task_id, task.params, text)
 
+async def handle_analytics_callback(cb, answer_long) -> bool:
+    data = (cb.data or "").strip()
+
+    if not data.startswith("an:"):
+        return False
+
+    chat_id = int(cb.message.chat.id)
+    user_id = int(cb.from_user.id) if cb.from_user else 0
+    k = _key(chat_id, user_id)
+
+    session = _SESSIONS.get(k)
+    if not session or not session.get("active"):
+        await cb.answer("Сессия аналитика не найдена.")
+        return True
+
+    task = session.get("last_task")
+    if not isinstance(task, ResearchTask):
+        await cb.answer("Задача не найдена.")
+        return True
+
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from analytics_agent.profiles.renovation.parser import merge_renovation_params
+    from analytics_agent.profiles.renovation.report import build_renovation_report
+
+    parts = data.split(":")
+    if len(parts) < 3:
+        await cb.answer("Некорректный выбор.")
+        return True
+
+    kind = parts[1]
+    value = parts[2]
+
+    if kind == "repair":
+        if value not in ("economy", "middle", "premium"):
+            await cb.answer("Некорректный класс ремонта.")
+            return True
+
+        task.params = merge_renovation_params(
+            task.params or {},
+            {"repair_class": value},
+        )
+        task.status = "repair_class_selected"
+        _save_task(task)
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Только материалы", callback_data="an:scope:materials"),
+            ],
+            [
+                InlineKeyboardButton(text="Материалы + работы", callback_data="an:scope:materials_and_labor"),
+            ],
+        ])
+
+        await cb.message.answer("Класс ремонта выбран. Теперь выбери режим расчёта:", reply_markup=kb)
+        await cb.answer("Выбрано.")
+        return True
+
+    if kind == "scope":
+        if value not in ("materials", "materials_and_labor"):
+            await cb.answer("Некорректный режим расчёта.")
+            return True
+
+        task.params = merge_renovation_params(
+            task.params or {},
+            {"estimate_scope": value},
+        )
+        task.status = "scope_selected"
+        _save_task(task)
+
+        missing_city = not task.params.get("city")
+        missing_height = not task.params.get("ceiling_height")
+
+        if missing_city or missing_height:
+            await cb.message.answer(
+                "Режим расчёта выбран.\n\n"
+                "Теперь напиши город и высоту потолков.\n"
+                "Например: Нижневартовск, 2.7"
+            )
+        else:
+            session["mode"] = "READY"
+            result = build_renovation_report(task.task_id, task.params)
+            await answer_long(cb.message, result)
+
+        await cb.answer("Выбрано.")
+        return True
+
+    await cb.answer("Неизвестный выбор.")
+    return True
 
 async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool:
     chat_id = int(message.chat.id)
@@ -226,14 +314,23 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
 
     summary.append("")
     summary.append(
-        "Теперь напиши:\n"
-        "• город\n"
-        "• класс ремонта\n"
-        "• высоту потолков (например 2.7)\n"
-        "• нужны материалы или материалы+работы"
+        "Теперь выбери класс ремонта кнопкой.\n"
+        "Город и высоту потолков потом можно будет написать текстом."
     )
 
-    await answer_long(message, "\n".join(summary))
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Эконом", callback_data="an:repair:economy"),
+            InlineKeyboardButton(text="Средний", callback_data="an:repair:middle"),
+        ],
+        [
+            InlineKeyboardButton(text="Премиум", callback_data="an:repair:premium"),
+        ],
+    ])
+
+    await message.answer("\n".join(summary), reply_markup=kb)
     return True
 
 async def handle_analytics_message(message, text: str, answer_long) -> bool:

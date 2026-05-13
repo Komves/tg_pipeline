@@ -16,7 +16,8 @@ MATERIAL_RATES = {
 
 def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     area = params.get("area_m2")
-    repair_class = params.get("repair_class") or "middle"
+    repair_class_raw = params.get("repair_class")
+    repair_class = repair_class_raw or "middle"
     ceiling_height = params.get("ceiling_height") or 2.7
     city = params.get("city") or "город не указан"
     property_type = params.get("property_type") or "тип квартиры не указан"

@@ -33,7 +33,7 @@ def parse_renovation_task(text: str) -> Dict[str, Any]:
         "ceiling_height": None,
         "bathrooms": None,
         "rooms": None,
-        "estimate_scope": "materials",
+        "estimate_scope": None,
         "features": [],
         "missing": [],
     }
