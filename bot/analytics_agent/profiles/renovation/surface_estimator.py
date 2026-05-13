@@ -18,9 +18,12 @@ def estimate_surfaces(params: dict) -> dict:
         total_floor += area
 
         name = str(r.get("name") or "").lower()
+        room_type = str(r.get("room_type") or "").lower()
 
-        if any(x in name for x in ("сануз", "ванн")):
+        if room_type == "bathroom" or any(x in name for x in ("сануз", "с/у", "ванн", "туалет", "душ")):
             bathroom_floor += area
+        elif room_type == "balcony" or any(x in name for x in ("лодж", "балкон")):
+            pass
         else:
             living_floor += area
 

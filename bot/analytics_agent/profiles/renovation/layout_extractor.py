@@ -20,6 +20,93 @@ def _safe_json(text: str) -> Dict[str, Any]:
         return {}
 
 
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+
+    try:
+        if isinstance(value, str):
+            value = value.replace(",", ".")
+        return float(value)
+    except Exception:
+        return None
+
+
+def _room_type(name: str) -> str:
+    n = (name or "").strip().lower()
+
+    if any(x in n for x in ("сануз", "с/у", "ванн", "туалет", "душ")):
+        return "bathroom"
+    if any(x in n for x in ("лодж", "балкон")):
+        return "balcony"
+    if any(x in n for x in ("кух")):
+        return "kitchen"
+    if any(x in n for x in ("корид", "холл", "прихож")):
+        return "hall"
+    if any(x in n for x in ("спаль", "гостин", "детск", "комнат")):
+        return "living_room"
+
+    return "unknown"
+
+
+def _normalize_layout(data: Dict[str, Any]) -> Dict[str, Any]:
+    rooms = data.get("rooms") if isinstance(data.get("rooms"), list) else []
+    normalized_rooms = []
+
+    rooms_sum = 0.0
+    bathrooms = 0
+    has_balcony = False
+
+    for room in rooms:
+        if not isinstance(room, dict):
+            continue
+
+        name = str(room.get("name") or "").strip()
+        area = _to_float(room.get("area_m2"))
+        rtype = _room_type(name)
+
+        if area is not None:
+            rooms_sum += area
+
+        if rtype == "bathroom":
+            bathrooms += 1
+        elif rtype == "balcony":
+            has_balcony = True
+
+        normalized_rooms.append({
+            "name": name or "помещение",
+            "area_m2": round(area, 1) if area is not None else None,
+            "room_type": rtype,
+        })
+
+    data["rooms"] = normalized_rooms
+
+    total = _to_float(data.get("total_area_m2"))
+
+    if total is not None:
+        data["total_area_m2"] = round(total, 1)
+
+    if rooms_sum > 0:
+        rooms_sum = round(rooms_sum, 1)
+
+        if total is None:
+            data["total_area_m2"] = rooms_sum
+            data["notes"] = list(data.get("notes") or [])
+            data["notes"].append("total_area_m2 не был найден; использована сумма помещений")
+        elif total < rooms_sum:
+            data["total_area_m2"] = rooms_sum
+            data["notes"] = list(data.get("notes") or [])
+            data["notes"].append("total_area_m2 был меньше суммы помещений; заменён на сумму помещений")
+
+    if data.get("bathrooms") is None and bathrooms:
+        data["bathrooms"] = bathrooms
+
+    if data.get("balcony") is None and has_balcony:
+        data["balcony"] = True
+
+    return data
+
+
 def extract_layout_from_image(img_bytes: bytes) -> Dict[str, Any]:
     if not img_bytes:
         return {"status": "empty_image", "rooms": []}
@@ -84,25 +171,7 @@ def extract_layout_from_image(img_bytes: bytes) -> Dict[str, Any]:
         if "rooms" not in data or not isinstance(data.get("rooms"), list):
             data["rooms"] = []
 
-        rooms_sum = 0.0
-        for r in data.get("rooms") or []:
-            try:
-                v = r.get("area_m2")
-                if v is not None:
-                    rooms_sum += float(v)
-            except Exception:
-                pass
-
-        try:
-            total = data.get("total_area_m2")
-            if total is not None and rooms_sum > 0 and float(total) < rooms_sum:
-                data["notes"] = list(data.get("notes") or [])
-                data["notes"].append(
-                    "total_area_m2 был меньше суммы помещений; заменён на сумму помещений"
-                )
-                data["total_area_m2"] = round(rooms_sum, 1)
-        except Exception:
-            pass
+        data = _normalize_layout(data)
 
         return data
 

@@ -150,6 +150,8 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
         else:
             session["profile"] = "renovation"
 
+        task.profile = session["profile"]
+
     total_area = layout.get("total_area_m2")
 
     if total_area is None:
@@ -295,7 +297,7 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
     existing = session.get("last_task")
 
     if (
-        session.get("profile") == "renovation"
+        session.get("profile") in ("renovation", "commercial_renovation")
         and session.get("mode") == "WAIT_REQUIREMENTS"
         and isinstance(existing, ResearchTask)
     ):
