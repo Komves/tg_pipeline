@@ -4,6 +4,8 @@ from typing import Any, Dict
 
 from analytics_agent.profiles.renovation.surface_estimator import estimate_surfaces
 
+from analytics_agent.profiles.renovation.labor_estimator import estimate_labor
+
 
 MATERIAL_RATES = {
     "economy": 18000,
@@ -46,6 +48,13 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     reserve = int(base * 0.15)
 
     surfaces = estimate_surfaces(params)
+
+    estimate_scope = params.get("estimate_scope") or "materials"
+
+    labor = None
+
+    if estimate_scope == "materials_and_labor":
+        labor = estimate_labor(params)
     class_title = {
         "economy": "эконом",
         "middle": "средний",
@@ -93,6 +102,8 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         "",
         "Статус: это пока нормативная оценка без подключения рыночных цен.",
         "Следующий слой — market pricing collector по строймаркетам.",
+        "",
+        f"Режим расчета: {'материалы + работы' if estimate_scope == 'materials_and_labor' else 'только материалы'}",
     ]
 
     if layout:
@@ -119,6 +130,25 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
                 else:
                     out.append(f"  - {name}: площадь не прочитана")
     
+
+    if labor:
+        total_low = low + labor["labor_low"]
+        total_base = base + labor["labor_base"]
+        total_high = high + labor["labor_high"]
+
+        out.extend([
+            "",
+            "Оценка работ:",
+            f"• нижняя граница: {labor['labor_low']:,} ₽".replace(",", " "),
+            f"• реалистично: {labor['labor_base']:,} ₽".replace(",", " "),
+            f"• с запасом: {labor['labor_high']:,} ₽".replace(",", " "),
+            "",
+            "Материалы + работы:",
+            f"• нижняя граница: {total_low:,} ₽".replace(",", " "),
+            f"• реалистично: {total_base:,} ₽".replace(",", " "),
+            f"• с запасом: {total_high:,} ₽".replace(",", " "),
+        ])
+        
     if surfaces:
         out.extend([
             "",

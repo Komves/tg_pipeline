@@ -292,14 +292,6 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         await message.answer(profiles_help())
         return True
 
-    last_task = session.get("last_task")
-
-    if isinstance(last_task, ResearchTask) and _looks_like_followup(raw):
-        if last_task.profile == "renovation":
-            reply = _renovation_followup_reply(last_task, raw)
-            await answer_long(message, reply)
-            return True
-
     existing = session.get("last_task")
 
     if (
@@ -307,6 +299,43 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         and session.get("mode") == "WAIT_REQUIREMENTS"
         and isinstance(existing, ResearchTask)
     ):
+        from analytics_agent.profiles.renovation.parser import (
+            parse_renovation_task,
+            merge_renovation_params,
+        )
+        from analytics_agent.profiles.renovation.report import (
+            build_renovation_report,
+        )
+
+        upd = parse_renovation_task(raw)
+
+        existing.params = merge_renovation_params(
+            existing.params or {},
+            upd,
+        )
+
+        existing.status = "requirements_added"
+
+        session["mode"] = "READY"
+
+        _save_task(existing)
+
+        result = build_renovation_report(
+            existing.task_id,
+            existing.params,
+        )
+
+        await answer_long(message, result)
+        return True
+
+    last_task = session.get("last_task")
+
+    if isinstance(last_task, ResearchTask) and _looks_like_followup(raw):
+        if last_task.profile == "renovation":
+            reply = _renovation_followup_reply(last_task, raw)
+            await answer_long(message, reply)
+            return True
+    
         from analytics_agent.profiles.renovation.parser import (
             parse_renovation_task,
             merge_renovation_params,

@@ -17,7 +17,7 @@ def parse_renovation_task(text: str) -> Dict[str, Any]:
         "ceiling_height": None,
         "bathrooms": None,
         "rooms": None,
-        "materials_focus": True,
+        "estimate_scope": "materials",
         "features": [],
         "missing": [],
     }
@@ -69,6 +69,11 @@ def parse_renovation_task(text: str) -> Dict[str, Any]:
     if m:
         params["rooms"] = int(m.group(1))
 
+    if "материалы+работы" in tl or "материалы и работы" in tl:
+        params["estimate_scope"] = "materials_and_labor"
+    elif "работы" in tl:
+        params["estimate_scope"] = "materials_and_labor"
+
     feature_map = {
         "laminate": ["ламинат"],
         "tile": ["плитка", "керамогранит"],
@@ -107,6 +112,7 @@ def merge_renovation_params(base: Dict[str, Any], update: Dict[str, Any]) -> Dic
         "ceiling_height",
         "bathrooms",
         "rooms",
+        "estimate_scope",
     ):
         if update.get(key) not in (None, "", []):
             out[key] = update[key]
