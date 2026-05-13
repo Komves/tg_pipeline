@@ -217,7 +217,7 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
 
     rooms = layout.get("rooms") or []
     if rooms:
-        summary.append(f"Помещений распознано: {len(rooms)}")
+        summary.append(f"Распознанные зоны на плане: {len(rooms)}")
 
     if layout.get("bathrooms") is not None:
         summary.append(f"Санузлов: {layout.get('bathrooms')}")

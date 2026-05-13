@@ -19,7 +19,16 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     city = params.get("city") or "город не указан"
     property_type = params.get("property_type") or "тип квартиры не указан"
 
-    missing = params.get("missing") or []
+    missing = []
+
+    if not params.get("area_m2"):
+        missing.append("area_m2")
+    if not params.get("city"):
+        missing.append("city")
+    if not params.get("repair_class"):
+        missing.append("repair_class")
+    if not params.get("property_type"):
+        missing.append("property_type")
 
     if not area:
         return (
