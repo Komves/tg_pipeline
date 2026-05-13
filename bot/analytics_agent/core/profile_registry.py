@@ -19,12 +19,28 @@ PROFILES = {
 
 
 def detect_profile(text: str) -> str | None:
-    t = (text or "").lower()
+    t = (text or "").strip().lower()
+
+    # numeric shortcuts
+    if t in ("1", "1.", "ремонт"):
+        return "renovation"
+
+    if t in ("2", "2.", "автозапчасти", "авто"):
+        return "auto_parts"
+
+    if t in ("3", "3.", "недвижимость"):
+        return "real_estate"
+
+    if t in ("4", "4.", "электроника"):
+        return "electronics"
+
     for key, cfg in PROFILES.items():
         if key in t:
             return key
+
         if any(alias in t for alias in cfg["aliases"]):
             return key
+
     return None
 
 

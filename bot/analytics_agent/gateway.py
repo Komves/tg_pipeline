@@ -7,7 +7,7 @@ from typing import Dict, Tuple, Any
 
 from .core.models import ResearchTask
 from .core.profile_registry import detect_profile, profiles_help, PROFILES
-from .core.report_builder import build_mock_report
+from .core.task_runner import run_task
 
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
@@ -54,12 +54,16 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
     profile = session.get("profile")
 
     detected = detect_profile(raw)
-    if detected:
+
+    # profile selection allowed only before profile is chosen
+    if detected and not profile:
         session["profile"] = detected
+
         await message.answer(
             f"Профиль выбран: {PROFILES[detected]['title']}.\n"
             f"Теперь напиши аналитическую задачу."
         )
+
         return True
 
     if not profile:
@@ -74,6 +78,9 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
     task.status = "created"
     _save_task(task)
 
-    report = build_mock_report(task)
+    report = run_task(task)
+    task.status = "done"
+    _save_task(task)
+
     await answer_long(message, report)
     return True
