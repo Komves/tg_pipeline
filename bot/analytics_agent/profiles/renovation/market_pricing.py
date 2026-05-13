@@ -71,6 +71,15 @@ def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]
 
         html = r.text or ""
 
+        print(
+            "[lemanapro] "
+            f"query={query!r} "
+            f"url={search_url!r} "
+            f"status={r.status_code} "
+            f"html_len={len(html)}",
+            flush=True,
+        )
+
     except Exception as e:
         return {
             "status": "unavailable",
@@ -97,6 +106,14 @@ def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]
 
         if 50 <= value <= 500_000:
             prices.append(value)
+
+    print(
+        "[lemanapro] "
+        f"query={query!r} "
+        f"prices_count={len(prices)} "
+        f"prices_sample={prices[:10]}",
+        flush=True,
+    )
 
     if not prices:
         return {
