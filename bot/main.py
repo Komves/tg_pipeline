@@ -1305,7 +1305,7 @@ def _looks_like_plain_dialog_followup(text: str) -> bool:
         flags=re.I,
     ))
 
-async def _answer_long(message: Message, text: str, *, chunk_size: int = 3000) -> None:
+async def _answer_long(message: Message, text: str, *, chunk_size: int = 3900) -> None:
     t = (text or "").strip()
     if not t:
         return

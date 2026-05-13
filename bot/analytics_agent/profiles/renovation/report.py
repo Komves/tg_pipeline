@@ -5,6 +5,8 @@ from typing import Any, Dict
 from analytics_agent.profiles.renovation.surface_estimator import estimate_surfaces
 
 from analytics_agent.profiles.renovation.labor_estimator import estimate_labor
+from analytics_agent.profiles.renovation.material_basket import build_material_basket
+from analytics_agent.profiles.renovation.market_pricing import price_material_basket
 
 
 MATERIAL_RATES = {
@@ -50,6 +52,11 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     reserve = int(base * 0.15)
 
     surfaces = estimate_surfaces(params)
+    material_basket = build_material_basket(params, surfaces)
+    priced_basket = price_material_basket(
+        material_basket,
+        city=str(city),
+    )
 
     estimate_scope = params.get("estimate_scope") or "materials"
 
@@ -162,6 +169,37 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
             f"• плитка санузла: ~{surfaces.get('bathroom_tile_area', 0)} м²",
             f"• плинтус: ~{surfaces.get('plinth_m', 0)} м",
         ])
+
+    if material_basket:
+        out.append("")
+        out.append("Черновая корзина материалов:")
+        for item in material_basket:
+            out.append(
+                f"• {item['name']}: ~{item['quantity']} {item['unit']}"
+                f" ({item['basis']})"
+            )
+
+    if priced_basket.get("status") == "ok":
+        out.append("")
+        out.append("Рыночные цены по найденным источникам:")
+        for item in priced_basket.get("items") or []:
+            if item.get("pricing_status") != "ok":
+                continue
+
+            out.append(
+                f"• {item['name']}: ~{item['unit_price_rub']:,} ₽ за {item['unit']}, "
+                f"итого ~{item['total_price_rub']:,} ₽".replace(",", " ")
+            )
+
+            if item.get("source_title"):
+                out.append(f"  источник: {item['source_title']}")
+
+        total_market = priced_basket.get("total_price_rub")
+        if total_market:
+            out.append(f"Итого по найденным рыночным позициям: ~{total_market:,} ₽".replace(",", " "))
+    else:
+        out.append("")
+        out.append("Рыночные цены: не найдены или не подключён BRAVE_SEARCH_API_KEY.")
 
     if missing:
         field_labels = {
