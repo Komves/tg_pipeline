@@ -88,8 +88,15 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
 
     task = session.get("last_task")
     if not isinstance(task, ResearchTask):
-        await message.answer("План вижу, но сначала создай задачу по ремонту: город, площадь, класс ремонта.")
-        return True
+        from analytics_agent.profiles.renovation.parser import parse_renovation_task
+
+        task = ResearchTask.create(
+            profile="renovation",
+            user_text="План квартиры",
+            params=parse_renovation_task(""),
+        )
+        task.status = "created_from_layout"
+        session["last_task"] = task
 
     from analytics_agent.profiles.renovation.layout_extractor import extract_layout_from_image
     from analytics_agent.profiles.renovation.report import build_renovation_report
@@ -98,6 +105,21 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
 
     layout = extract_layout_from_image(img_bytes)
     task.params["layout"] = layout
+
+    if layout.get("total_area_m2") and not task.params.get("area_m2"):
+        task.params["area_m2"] = float(layout["total_area_m2"])
+
+    missing = []
+    if task.params.get("area_m2") is None:
+        missing.append("area_m2")
+    if not task.params.get("city"):
+        missing.append("city")
+    if not task.params.get("repair_class"):
+        missing.append("repair_class")
+    if not task.params.get("property_type"):
+        missing.append("property_type")
+    task.params["missing"] = missing
+
     task.status = "layout_added"
     _save_task(task)
 
