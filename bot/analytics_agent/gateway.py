@@ -106,8 +106,26 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
     layout = extract_layout_from_image(img_bytes)
     task.params["layout"] = layout
 
-    if layout.get("total_area_m2") and not task.params.get("area_m2"):
-        task.params["area_m2"] = float(layout["total_area_m2"])
+    total_area = layout.get("total_area_m2")
+
+    if total_area is None:
+        rooms = layout.get("rooms") or []
+
+        areas = []
+
+        for r in rooms:
+            try:
+                v = r.get("area_m2")
+                if v is not None:
+                    areas.append(float(v))
+            except Exception:
+                pass
+
+        if areas:
+            total_area = round(sum(areas), 1)
+
+    if total_area is not None and not task.params.get("area_m2"):
+        task.params["area_m2"] = float(total_area)
 
     missing = []
     if task.params.get("area_m2") is None:
@@ -129,8 +147,8 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
         "План обработан.",
     ]
 
-    if layout.get("total_area_m2"):
-        summary.append(f"Площадь: {layout.get('total_area_m2')} м²")
+    if total_area is not None:
+        summary.append(f"Площадь: {total_area} м²")
 
     rooms = layout.get("rooms") or []
     if rooms:
