@@ -101,8 +101,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
                     out.append(f"  - {name}: {area_r} м²")
                 else:
                     out.append(f"  - {name}: площадь не прочитана")
-    ]
-
+    
     if missing:
         out.append("")
         out.append("Не хватает для точности:")
