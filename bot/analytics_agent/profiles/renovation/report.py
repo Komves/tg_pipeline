@@ -177,6 +177,11 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
             out.append(
                 f"• {item['name']}: ~{item['quantity']} {item['unit']}"
                 f" ({item['basis']})"
+                + (
+                    f", примерно {item['required_packs']} {item['market_unit']}"
+                    if item.get("required_packs")
+                    else ""
+                )
             )
 
     if priced_basket.get("status") == "ok":
@@ -187,7 +192,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
                 continue
 
             out.append(
-                f"• {item['name']}: ~{item['unit_price_rub']:,} ₽ за {item['unit']}, "
+                f"• {item['name']}: ~{item['unit_price_rub']:,} ₽ за {item.get('market_unit') or item['unit']}, "
                 f"итого ~{item['total_price_rub']:,} ₽".replace(",", " ")
             )
 

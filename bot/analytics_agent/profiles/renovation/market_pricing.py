@@ -100,6 +100,7 @@ def price_material_basket(
     for item in basket or []:
         query = str(item.get("query") or item.get("name") or "").strip()
         quantity = float(item.get("quantity") or 0)
+        required_packs = int(item.get("required_packs") or 0)
 
         if not query or quantity <= 0:
             continue
@@ -117,7 +118,12 @@ def price_material_basket(
         if found.get("status") == "ok":
             unit_price = int(found.get("unit_price") or 0)
             row["unit_price_rub"] = unit_price
-            row["total_price_rub"] = int(round(quantity * unit_price))
+
+            if required_packs > 0:
+                row["total_price_rub"] = int(round(required_packs * unit_price))
+            else:
+                row["total_price_rub"] = int(round(quantity * unit_price))
+
             total += row["total_price_rub"]
 
         priced_items.append(row)

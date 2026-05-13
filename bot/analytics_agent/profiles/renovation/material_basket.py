@@ -1,7 +1,45 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+import math
 
+CATEGORY_SPECS = {
+    "flooring": {
+        "market_unit": "упаковка",
+        "pack_size": 2.1,
+        "pack_unit": "м²",
+    },
+    "bathroom_tile": {
+        "market_unit": "упаковка",
+        "pack_size": 1.4,
+        "pack_unit": "м²",
+    },
+    "plinth": {
+        "market_unit": "шт",
+        "pack_size": 2.5,
+        "pack_unit": "м",
+    },
+    "primer": {
+        "market_unit": "канистра",
+        "pack_size": 10,
+        "pack_unit": "л",
+    },
+    "putty": {
+        "market_unit": "мешок",
+        "pack_size": 25,
+        "pack_unit": "кг",
+    },
+    "paint_or_wallpaper": {
+        "market_unit": "ведро",
+        "pack_size": 10,
+        "pack_unit": "л",
+    },
+    "rough_mix": {
+        "market_unit": "мешок",
+        "pack_size": 25,
+        "pack_unit": "кг",
+    },
+}
 
 def build_material_basket(params: Dict[str, Any], surfaces: Dict[str, Any]) -> List[Dict[str, Any]]:
     repair_class = params.get("repair_class") or "middle"
@@ -81,5 +119,21 @@ def build_material_basket(params: Dict[str, Any], surfaces: Dict[str, Any]) -> L
             "unit": "м²",
             "basis": "общая площадь пола",
         })
+
+    for item in basket:
+        spec = CATEGORY_SPECS.get(item["category"])
+
+        if not spec:
+            continue
+
+        item["market_unit"] = spec["market_unit"]
+        item["pack_size"] = spec["pack_size"]
+        item["pack_unit"] = spec["pack_unit"]
+
+        qty = float(item.get("quantity") or 0)
+        pack_size = float(spec["pack_size"])
+
+        if pack_size > 0:
+            item["required_packs"] = math.ceil(qty / pack_size)
 
     return basket
