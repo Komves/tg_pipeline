@@ -51,7 +51,15 @@ def extract_layout_from_image(img_bytes: bytes) -> Dict[str, Any]:
                         "\"notes\":[\"строка\"]"
                         "}\n\n"
                         "Если площадь помещения не читается — ставь null. "
-                        "Не выдумывай точные площади, если их нет на плане."
+                        "Не выдумывай точные площади, если их нет на плане.\n\n"
+                        "КРИТИЧНО:\n"
+                        "1. total_area_m2 — это только общая площадь объекта, НЕ площадь отдельной комнаты.\n"
+                        "2. Ищи общую площадь в верхних надписях, заголовках, строках со словами: площадь, общая, проектная.\n"
+                        "3. Если видишь диапазон общей площади вида 40,7–42,1 м² — верни верхнюю границу диапазона как total_area_m2.\n"
+                        "4. Если рядом с числом указано название помещения: кухня, спальня, санузел, лоджия, холл — это площадь комнаты, НЕ total_area_m2.\n"
+                        "5. Таблицу помещений используй для rooms, а не для total_area_m2.\n"
+                        "6. Перед ответом проверь: total_area_m2 не должен быть меньше суммы площадей rooms.\n"
+                        "7. Если общая площадь не читается уверенно — ставь total_area_m2 null."
                     ),
                 },
                 {
@@ -75,6 +83,26 @@ def extract_layout_from_image(img_bytes: bytes) -> Dict[str, Any]:
 
         if "rooms" not in data or not isinstance(data.get("rooms"), list):
             data["rooms"] = []
+
+        rooms_sum = 0.0
+        for r in data.get("rooms") or []:
+            try:
+                v = r.get("area_m2")
+                if v is not None:
+                    rooms_sum += float(v)
+            except Exception:
+                pass
+
+        try:
+            total = data.get("total_area_m2")
+            if total is not None and rooms_sum > 0 and float(total) < rooms_sum:
+                data["notes"] = list(data.get("notes") or [])
+                data["notes"].append(
+                    "total_area_m2 был меньше суммы помещений; заменён на сумму помещений"
+                )
+                data["total_area_m2"] = round(rooms_sum, 1)
+        except Exception:
+            pass
 
         return data
 
