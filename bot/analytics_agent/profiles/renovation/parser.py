@@ -4,6 +4,22 @@ import re
 from typing import Any, Dict
 
 
+def _recompute_missing(params: Dict[str, Any]) -> Dict[str, Any]:
+    missing = []
+
+    if params.get("area_m2") is None:
+        missing.append("area_m2")
+    if not params.get("city"):
+        missing.append("city")
+    if not params.get("repair_class"):
+        missing.append("repair_class")
+    if not params.get("property_type"):
+        missing.append("property_type")
+
+    params["missing"] = missing
+    return params
+
+
 def parse_renovation_task(text: str) -> Dict[str, Any]:
     t = (text or "").strip()
     tl = t.lower()
@@ -90,16 +106,7 @@ def parse_renovation_task(text: str) -> Dict[str, Any]:
         if any(w in tl for w in words):
             params["features"].append(key)
 
-    if params["area_m2"] is None:
-        params["missing"].append("area_m2")
-    if not params["city"]:
-        params["missing"].append("city")
-    if not params["repair_class"]:
-        params["missing"].append("repair_class")
-    if not params["property_type"]:
-        params["missing"].append("property_type")
-
-    return params
+    return _recompute_missing(params)
 
 def merge_renovation_params(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(base or {})
@@ -123,15 +130,4 @@ def merge_renovation_params(base: Dict[str, Any], update: Dict[str, Any]) -> Dic
             old_features.append(f)
     out["features"] = old_features
 
-    missing = []
-    if out.get("area_m2") is None:
-        missing.append("area_m2")
-    if not out.get("city"):
-        missing.append("city")
-    if not out.get("repair_class"):
-        missing.append("repair_class")
-    if not out.get("property_type"):
-        missing.append("property_type")
-
-    out["missing"] = missing
-    return out
+    return _recompute_missing(out)

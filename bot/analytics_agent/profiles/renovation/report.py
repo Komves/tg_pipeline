@@ -21,16 +21,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     city = params.get("city") or "город не указан"
     property_type = params.get("property_type") or "тип квартиры не указан"
 
-    missing = []
-
-    if not params.get("area_m2"):
-        missing.append("area_m2")
-    if not params.get("city"):
-        missing.append("city")
-    if not params.get("repair_class"):
-        missing.append("repair_class")
-    if not params.get("property_type"):
-        missing.append("property_type")
+    missing = list(params.get("missing") or [])
 
     if not area:
         return (
@@ -148,7 +139,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
             f"• реалистично: {total_base:,} ₽".replace(",", " "),
             f"• с запасом: {total_high:,} ₽".replace(",", " "),
         ])
-        
+
     if surfaces:
         out.extend([
             "",
@@ -162,10 +153,19 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         ])
 
     if missing:
+        field_labels = {
+            "area_m2": "площадь квартиры",
+            "city": "город",
+            "repair_class": "класс ремонта",
+            "property_type": "тип объекта",
+            "ceiling_height": "высота потолков",
+            "estimate_scope": "режим расчета",
+        }
+
         out.append("")
         out.append("Не хватает для точности:")
         for m in missing:
-            out.append(f"• {m}")
+            out.append(f"• {field_labels.get(m, m)}")
 
     return "\n".join(out)
 
