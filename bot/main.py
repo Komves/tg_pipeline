@@ -144,7 +144,7 @@ from aiogram.filters import Command
 import chatgpt_dialog
 import news_digest
 import memory as vesya_memory
-from analytics_agent.gateway import handle_analytics_message
+from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo
 
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -3039,6 +3039,9 @@ async def on_photo(message: Message) -> None:
 
         raw = await _download_tg_file_bytes(message.bot, ph.file_id)
         img_bytes = _shrink_jpeg_bytes(raw)
+
+        if await handle_analytics_photo(message, img_bytes, _answer_long):
+            return
 
         chatgpt_dialog.note_last_user_photo(
             int(message.chat.id),

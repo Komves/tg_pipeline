@@ -86,3 +86,36 @@ def parse_renovation_task(text: str) -> Dict[str, Any]:
         params["missing"].append("property_type")
 
     return params
+
+def merge_renovation_params(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(base or {})
+
+    for key in (
+        "property_type",
+        "area_m2",
+        "city",
+        "repair_class",
+        "bathrooms",
+        "rooms",
+    ):
+        if update.get(key) not in (None, "", []):
+            out[key] = update[key]
+
+    old_features = list(out.get("features") or [])
+    for f in update.get("features") or []:
+        if f not in old_features:
+            old_features.append(f)
+    out["features"] = old_features
+
+    missing = []
+    if out.get("area_m2") is None:
+        missing.append("area_m2")
+    if not out.get("city"):
+        missing.append("city")
+    if not out.get("repair_class"):
+        missing.append("repair_class")
+    if not out.get("property_type"):
+        missing.append("property_type")
+
+    out["missing"] = missing
+    return out

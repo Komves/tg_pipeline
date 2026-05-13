@@ -47,6 +47,8 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     features = params.get("features") or []
     features_text = ", ".join(features) if features else "не уточнены"
 
+    layout = params.get("layout") if isinstance(params.get("layout"), dict) else None
+
     out = [
         "🧠 Черновая оценка материалов по ремонту",
         "",
@@ -76,6 +78,31 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         "Следующий слой — market pricing collector по строймаркетам.",
     ]
 
+    if layout:
+        out.append("")
+        out.append("Данные из плана квартиры:")
+        out.append(f"• статус распознавания: {layout.get('status', '-')}")
+        if layout.get("total_area_m2"):
+            out.append(f"• площадь по плану: {layout.get('total_area_m2')} м²")
+        if layout.get("bathrooms") is not None:
+            out.append(f"• санузлы по плану: {layout.get('bathrooms')}")
+        if layout.get("balcony") is not None:
+            out.append(f"• балкон/лоджия: {'да' if layout.get('balcony') else 'нет'}")
+        if layout.get("doors_count") is not None:
+            out.append(f"• дверей ориентировочно: {layout.get('doors_count')}")
+
+        rooms = layout.get("rooms") or []
+        if rooms:
+            out.append("• помещения:")
+            for r in rooms[:12]:
+                name = r.get("name") or "помещение"
+                area_r = r.get("area_m2")
+                if area_r:
+                    out.append(f"  - {name}: {area_r} м²")
+                else:
+                    out.append(f"  - {name}: площадь не прочитана")
+    ]
+
     if missing:
         out.append("")
         out.append("Не хватает для точности:")
@@ -83,3 +110,32 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
             out.append(f"• {m}")
 
     return "\n".join(out)
+
+def build_renovation_followup(task_id: str, params: Dict[str, Any], question: str) -> str:
+    q = (question or "").lower()
+
+    area = params.get("area_m2")
+    repair_class = params.get("repair_class") or "middle"
+    rate = MATERIAL_RATES.get(repair_class, MATERIAL_RATES["middle"])
+
+    if "источник" in q or "откуда" in q or "почему" in q:
+        return (
+            "По источникам сейчас честно:\n\n"
+            f"ID: {task_id}\n"
+            "Рыночные источники ещё не подключены.\n"
+            "Текущий расчёт — нормативная модель.\n\n"
+            f"Формула сейчас: площадь × ставка материалов.\n"
+            f"Площадь: {area or 'не указана'} м²\n"
+            f"Ставка класса ремонта: {rate:,} ₽/м²\n".replace(",", " ")
+            + "\nДальше нужно подключать pricing collector: Лемана / Петрович / Ozon / Яндекс Маркет."
+        )
+
+    return (
+        "По текущей задаче могу уточнять расчёт, добавлять параметры и пересчитывать.\n\n"
+        f"ID: {task_id}\n"
+        "Примеры:\n"
+        "• добавь 2 санузла\n"
+        "• учти ламинат и плитку в санузле\n"
+        "• загружу план квартиры\n"
+        "• подробнее по источникам"
+    )

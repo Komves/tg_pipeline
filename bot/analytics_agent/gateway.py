@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, Tuple, Any
 
@@ -29,6 +30,82 @@ def _save_task(task: ResearchTask) -> None:
     )
 
 
+def is_analytics_active(chat_id: int, user_id: int) -> bool:
+    s = _SESSIONS.get(_key(chat_id, user_id))
+    return bool(s and s.get("active"))
+
+
+def _looks_like_followup(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return bool(re.search(
+        r"\b("
+        r"подробнее|подробней|по источникам|что входит|расшифруй|"
+        r"почему так|откуда цифры|что учтено|что не учтено|"
+        r"добавь|учти|измени|пересчитай|сануз|ламинат|плитк|"
+        r"двер|электрик|сантехник|план|планировку"
+        r")\b",
+        t,
+        flags=re.I,
+    ))
+
+
+def _renovation_followup_reply(task: ResearchTask, text: str) -> str:
+    from analytics_agent.profiles.renovation.parser import (
+        parse_renovation_task,
+        merge_renovation_params,
+    )
+    from analytics_agent.profiles.renovation.report import (
+        build_renovation_report,
+        build_renovation_followup,
+    )
+
+    t = (text or "").strip().lower()
+
+    if re.search(r"\b(подробнее|подробней|по источникам|откуда цифры|почему так)\b", t):
+        return build_renovation_followup(task.task_id, task.params, text)
+
+    if re.search(r"\b(добавь|учти|измени|пересчитай|сануз|ламинат|плитк|двер|электрик|сантехник)\b", t):
+        upd = parse_renovation_task(text)
+        task.params = merge_renovation_params(task.params or {}, upd)
+        task.status = "updated"
+        _save_task(task)
+        return build_renovation_report(task.task_id, task.params)
+
+    return build_renovation_followup(task.task_id, task.params, text)
+
+
+async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool:
+    chat_id = int(message.chat.id)
+    user_id = int(message.from_user.id) if message.from_user else 0
+    k = _key(chat_id, user_id)
+
+    session = _SESSIONS.get(k)
+    if not session or not session.get("active"):
+        return False
+
+    if session.get("profile") != "renovation":
+        return False
+
+    task = session.get("last_task")
+    if not isinstance(task, ResearchTask):
+        await message.answer("План вижу, но сначала создай задачу по ремонту: город, площадь, класс ремонта.")
+        return True
+
+    from analytics_agent.profiles.renovation.layout_extractor import extract_layout_from_image
+    from analytics_agent.profiles.renovation.report import build_renovation_report
+
+    await message.answer("План получила. Извлекаю помещения и метражи.")
+
+    layout = extract_layout_from_image(img_bytes)
+    task.params["layout"] = layout
+    task.status = "layout_added"
+    _save_task(task)
+
+    report = build_renovation_report(task.task_id, task.params)
+    await answer_long(message, report)
+    return True
+
+
 async def handle_analytics_message(message, text: str, answer_long) -> bool:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
@@ -42,8 +119,17 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         await message.answer("Режим аналитика выключен.")
         return True
 
-    if "включи аналитика" in t or "аналитик" == t:
-        _SESSIONS[k] = {"active": True, "profile": None}
+    if (
+        "включи аналитика" in t
+        or "включи режим аналитика" in t
+        or "режим аналитика" in t
+        or t == "аналитик"
+    ):
+        _SESSIONS[k] = {
+            "active": True,
+            "profile": None,
+            "last_task": None,
+        }
         await message.answer("Режим аналитика включен.\n\n" + profiles_help())
         return True
 
@@ -55,20 +141,25 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
 
     detected = detect_profile(raw)
 
-    # profile selection allowed only before profile is chosen
     if detected and not profile:
         session["profile"] = detected
-
         await message.answer(
             f"Профиль выбран: {PROFILES[detected]['title']}.\n"
             f"Теперь напиши аналитическую задачу."
         )
-
         return True
 
     if not profile:
         await message.answer(profiles_help())
         return True
+
+    last_task = session.get("last_task")
+
+    if isinstance(last_task, ResearchTask) and _looks_like_followup(raw):
+        if last_task.profile == "renovation":
+            reply = _renovation_followup_reply(last_task, raw)
+            await answer_long(message, reply)
+            return True
 
     task = ResearchTask.create(
         profile=profile,
@@ -81,6 +172,8 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
     report = run_task(task)
     task.status = "done"
     _save_task(task)
+
+    session["last_task"] = task
 
     await answer_long(message, report)
     return True
