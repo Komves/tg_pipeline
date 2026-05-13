@@ -82,7 +82,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         f"Город: {city}",
         f"Тип: {type_title}",
         f"Площадь: {area:g} м²",
-        f"Класс ремонта: {class_title}",
+        f"Класс ремонта: {class_title}" + ("" if repair_class_raw else " (по умолчанию)"),
         f"Высота потолков: {ceiling_height} м",
         f"Особенности: {features_text}",
         "",
@@ -183,7 +183,8 @@ def build_renovation_followup(task_id: str, params: Dict[str, Any], question: st
     q = (question or "").lower()
 
     area = params.get("area_m2")
-    repair_class = params.get("repair_class") or "middle"
+    repair_class_raw = params.get("repair_class")
+    repair_class = repair_class_raw or "middle"
     rate = MATERIAL_RATES.get(repair_class, MATERIAL_RATES["middle"])
 
     if "источник" in q or "откуда" in q or "почему" in q:
