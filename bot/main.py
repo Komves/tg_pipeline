@@ -144,6 +144,7 @@ from aiogram.filters import Command
 import chatgpt_dialog
 import news_digest
 import memory as vesya_memory
+from analytics_agent.gateway import handle_analytics_message
 
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -3946,6 +3947,9 @@ async def vesya_handler(message: Message) -> None:
             await message.answer("ладно, не шлём.")
         else:
             await message.answer("и не собирались.")
+        return
+    
+    if await handle_analytics_message(message, text, _answer_long):
         return
     
     if await _try_admin_dialog_command(message, text):
