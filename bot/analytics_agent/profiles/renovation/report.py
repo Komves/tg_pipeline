@@ -53,11 +53,21 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
 
     surfaces = estimate_surfaces(params)
     material_basket = build_material_basket(params, surfaces)
-    priced_basket = price_material_basket(
-        material_basket,
-        city=str(city),
+    print("[REPORT] calling price_material_basket", flush=True)
+    print(
+        "[REPORT] calling price_material_basket",
+        flush=True,
     )
 
+    priced_basket = price_material_basket(
+        basket_items=basket,
+        city=city,
+    )
+
+    print(
+        f"[REPORT] priced_basket_count={len(priced_basket)}",
+        flush=True,
+    )
     estimate_scope = params.get("estimate_scope") or "materials"
 
     labor = None

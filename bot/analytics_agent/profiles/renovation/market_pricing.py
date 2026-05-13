@@ -147,10 +147,14 @@ def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]
     }
 
 def price_material_basket(
-    basket: List[Dict[str, Any]],
-    *,
+    basket_items: List[Dict[str, Any]],
     city: str,
-) -> Dict[str, Any]:
+) -> List[Dict[str, Any]]:
+
+    print(
+        "[PRICING] entered price_material_basket",
+        flush=True,
+    )
     priced_items = []
     total = 0
 
