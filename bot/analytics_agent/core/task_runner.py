@@ -9,7 +9,19 @@ def run_task(task: ResearchTask) -> str:
         from analytics_agent.profiles.renovation.parser import parse_renovation_task
         from analytics_agent.profiles.renovation.report import build_renovation_report
 
-        task.params = parse_renovation_task(task.user_text)
+        parsed = parse_renovation_task(task.user_text)
+
+        if task.params:
+            from analytics_agent.profiles.renovation.parser import (
+                merge_renovation_params,
+            )
+
+            task.params = merge_renovation_params(
+                task.params,
+                parsed,
+            )
+        else:
+            task.params = parsed
         task.status = "parsed"
         return build_renovation_report(task.task_id, task.params)
 

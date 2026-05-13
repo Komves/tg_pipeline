@@ -123,10 +123,32 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
     task.status = "layout_added"
     _save_task(task)
 
-    report = build_renovation_report(task.task_id, task.params)
-    await answer_long(message, report)
-    return True
+    session["mode"] = "WAIT_REQUIREMENTS"
 
+    summary = [
+        "План обработан.",
+    ]
+
+    if layout.get("total_area_m2"):
+        summary.append(f"Площадь: {layout.get('total_area_m2')} м²")
+
+    rooms = layout.get("rooms") or []
+    if rooms:
+        summary.append(f"Помещений распознано: {len(rooms)}")
+
+    if layout.get("bathrooms") is not None:
+        summary.append(f"Санузлов: {layout.get('bathrooms')}")
+
+    summary.append("")
+    summary.append(
+        "Теперь напиши:\n"
+        "• город\n"
+        "• класс ремонта\n"
+        "• нужны материалы или материалы+работы"
+    )
+
+    await answer_long(message, "\n".join(summary))
+    return True
 
 async def handle_analytics_message(message, text: str, answer_long) -> bool:
     chat_id = int(message.chat.id)
@@ -150,6 +172,7 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         _SESSIONS[k] = {
             "active": True,
             "profile": None,
+            "mode": "WAIT_PROFILE",
             "last_task": None,
         }
         await message.answer("Режим аналитика включен.\n\n" + profiles_help())
@@ -165,9 +188,19 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
 
     if detected and not profile:
         session["profile"] = detected
+
+        if detected == "renovation":
+            session["mode"] = "WAIT_LAYOUT"
+
+            await message.answer(
+                f"Профиль выбран: {PROFILES[detected]['title']}.\n\n"
+                "Теперь загрузи план квартиры.\n"
+                "Я извлеку помещения, площадь и структуру."
+            )
+            return True
+
         await message.answer(
-            f"Профиль выбран: {PROFILES[detected]['title']}.\n"
-            f"Теперь напиши аналитическую задачу."
+            f"Профиль выбран: {PROFILES[detected]['title']}."
         )
         return True
 
@@ -183,19 +216,52 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             await answer_long(message, reply)
             return True
 
+    existing = session.get("last_task")
+
+    if (
+        session.get("profile") == "renovation"
+        and session.get("mode") == "WAIT_REQUIREMENTS"
+        and isinstance(existing, ResearchTask)
+    ):
+        from analytics_agent.profiles.renovation.parser import (
+            parse_renovation_task,
+            merge_renovation_params,
+        )
+        from analytics_agent.profiles.renovation.report import (
+            build_renovation_report,
+        )
+
+        upd = parse_renovation_task(raw)
+
+        existing.params = merge_renovation_params(
+            existing.params or {},
+            upd,
+        )
+
+        existing.status = "requirements_added"
+
+        session["mode"] = "READY"
+
+        _save_task(existing)
+
+        result = build_renovation_report(
+            existing.task_id,
+            existing.params,
+        )
+
+        await answer_long(message, result)
+        return True
+
     task = ResearchTask.create(
         profile=profile,
         user_text=raw,
-        params={},
     )
-    task.status = "created"
-    _save_task(task)
 
-    report = run_task(task)
+    result = run_task(task)
+
     task.status = "done"
+    session["last_task"] = task
     _save_task(task)
 
-    session["last_task"] = task
-
-    await answer_long(message, report)
+    await answer_long(message, result)
     return True
