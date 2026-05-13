@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from analytics_agent.profiles.renovation.surface_estimator import estimate_surfaces
+
 
 MATERIAL_RATES = {
     "economy": 18000,
@@ -13,6 +15,7 @@ MATERIAL_RATES = {
 def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     area = params.get("area_m2")
     repair_class = params.get("repair_class") or "middle"
+    ceiling_height = params.get("ceiling_height") or 2.7
     city = params.get("city") or "город не указан"
     property_type = params.get("property_type") or "тип квартиры не указан"
 
@@ -33,6 +36,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     high = int(base * 1.25)
     reserve = int(base * 0.15)
 
+    surfaces = estimate_surfaces(params)
     class_title = {
         "economy": "эконом",
         "middle": "средний",
@@ -42,6 +46,9 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
     type_title = {
         "new_building": "новостройка",
         "secondary": "вторичка",
+        "one_room_apartment": "однокомнатная квартира",
+        "two_room_apartment": "двухкомнатная квартира",
+        "multi_room_apartment": "многокомнатная квартира",
     }.get(property_type, property_type)
 
     features = params.get("features") or []
@@ -57,6 +64,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         f"Тип: {type_title}",
         f"Площадь: {area:g} м²",
         f"Класс ремонта: {class_title}",
+        f"Высота потолков: {ceiling_height} м",
         f"Особенности: {features_text}",
         "",
         "Оценка материалов:",
@@ -102,6 +110,18 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
                 else:
                     out.append(f"  - {name}: площадь не прочитана")
     
+    if surfaces:
+        out.extend([
+            "",
+            "Предварительные объемы:",
+            f"• полы: ~{surfaces.get('total_floor_area', 0)} м²",
+            f"• потолки: ~{surfaces.get('ceiling_area', 0)} м²",
+            f"• стены под отделку: ~{surfaces.get('wall_area', 0)} м²",
+            f"  (площадь × высота потолков {ceiling_height} м × коэффициент стен)",
+            f"• плитка санузла: ~{surfaces.get('bathroom_tile_area', 0)} м²",
+            f"• плинтус: ~{surfaces.get('plinth_m', 0)} м",
+        ])
+
     if missing:
         out.append("")
         out.append("Не хватает для точности:")

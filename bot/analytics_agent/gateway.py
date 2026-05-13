@@ -83,7 +83,12 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
     if not session or not session.get("active"):
         return False
 
-    if session.get("profile") != "renovation":
+    profile = session.get("profile")
+
+    if profile and profile not in (
+        "renovation",
+        "commercial_renovation",
+    ):
         return False
 
     task = session.get("last_task")
@@ -106,6 +111,45 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
     layout = extract_layout_from_image(img_bytes)
     task.params["layout"] = layout
 
+    if not session.get("profile"):
+        rooms = layout.get("rooms") or []
+
+        residential_score = 0
+        commercial_score = 0
+
+        residential_words = (
+            "спаль",
+            "гостин",
+            "детск",
+            "кух",
+            "квартира",
+        )
+
+        commercial_words = (
+            "офис",
+            "кабинет",
+            "open space",
+            "торгов",
+            "склад",
+            "ресепшен",
+            "пвз",
+            "магазин",
+        )
+
+        for r in rooms:
+            name = str(r.get("name") or "").strip().lower()
+
+            if any(w in name for w in residential_words):
+                residential_score += 1
+
+            if any(w in name for w in commercial_words):
+                commercial_score += 1
+
+        if commercial_score > residential_score:
+            session["profile"] = "commercial_renovation"
+        else:
+            session["profile"] = "renovation"
+
     total_area = layout.get("total_area_m2")
 
     if total_area is None:
@@ -127,6 +171,22 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
     if total_area is not None and not task.params.get("area_m2"):
         task.params["area_m2"] = float(total_area)
 
+    if not task.params.get("property_type"):
+        rooms = layout.get("rooms") or []
+        living_rooms = []
+
+        for r in rooms:
+            name = str(r.get("name") or "").strip().lower()
+            if any(x in name for x in ("спаль", "гостин", "комнат")):
+                living_rooms.append(r)
+
+        if len(living_rooms) == 1:
+            task.params["property_type"] = "one_room_apartment"
+        elif len(living_rooms) == 2:
+            task.params["property_type"] = "two_room_apartment"
+        elif len(living_rooms) >= 3:
+            task.params["property_type"] = "multi_room_apartment"
+
     missing = []
     if task.params.get("area_m2") is None:
         missing.append("area_m2")
@@ -147,6 +207,11 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
         "План обработан.",
     ]
 
+    if session.get("profile") == "commercial_renovation":
+        summary.append("Тип объекта: коммерческое помещение")
+    else:
+        summary.append("Тип объекта: жилое помещение")
+
     if total_area is not None:
         summary.append(f"Площадь: {total_area} м²")
 
@@ -162,6 +227,7 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
         "Теперь напиши:\n"
         "• город\n"
         "• класс ремонта\n"
+        "• высоту потолков (например 2.7)\n"
         "• нужны материалы или материалы+работы"
     )
 
@@ -207,12 +273,12 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
     if detected and not profile:
         session["profile"] = detected
 
-        if detected == "renovation":
+        if detected in ("renovation", "commercial_renovation"):
             session["mode"] = "WAIT_LAYOUT"
 
             await message.answer(
                 f"Профиль выбран: {PROFILES[detected]['title']}.\n\n"
-                "Теперь загрузи план квартиры.\n"
+                "Теперь загрузи план помещения.\n"
                 "Я извлеку помещения, площадь и структуру."
             )
             return True

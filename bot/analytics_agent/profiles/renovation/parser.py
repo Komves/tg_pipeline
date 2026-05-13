@@ -14,6 +14,7 @@ def parse_renovation_task(text: str) -> Dict[str, Any]:
         "area_m2": None,
         "city": None,
         "repair_class": None,
+        "ceiling_height": None,
         "bathrooms": None,
         "rooms": None,
         "materials_focus": True,
@@ -29,6 +30,14 @@ def parse_renovation_task(text: str) -> Dict[str, Any]:
     m = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:м2|м²|кв\.?\s*м|метр)", tl)
     if m:
         params["area_m2"] = float(m.group(1).replace(",", "."))
+
+    mh = re.search(
+        r"\b(2\.[3-9]|3\.[0-5])\b",
+        tl,
+    )
+
+    if mh:
+        params["ceiling_height"] = float(mh.group(1))
 
     city_patterns = [
         r"\b(москва|санкт-петербург|спб|нижневартовск|тюмень|екатеринбург|новосибирск|казань|сургут)\b",
@@ -95,6 +104,7 @@ def merge_renovation_params(base: Dict[str, Any], update: Dict[str, Any]) -> Dic
         "area_m2",
         "city",
         "repair_class",
+        "ceiling_height",
         "bathrooms",
         "rooms",
     ):
