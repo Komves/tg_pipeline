@@ -186,7 +186,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
 
     if priced_basket.get("items"):
         out.append("")
-        "Прайс-проверка по каталогу Лемана ПРО:"
+        out.append("Прайс-проверка по каталогу Лемана ПРО:")
         for item in priced_basket.get("items") or []:
             if not item.get("usable_for_total"):
                 continue

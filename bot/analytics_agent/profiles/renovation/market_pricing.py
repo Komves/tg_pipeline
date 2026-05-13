@@ -5,7 +5,7 @@ import re
 from typing import Any, Dict, List
 
 import requests
-
+from pathlib import Path
 
 def _extract_price_rub(text: str) -> int | None:
     s = (text or "").replace("\u00a0", " ")
@@ -70,6 +70,17 @@ def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]
         r.raise_for_status()
 
         html = r.text or ""
+
+        try:
+            debug_dir = Path(os.getenv("DATA_DIR", "/data")) / "market_debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            safe_query = re.sub(r"[^a-zA-Zа-яА-ЯёЁ0-9_-]+", "_", query)[:80]
+            (debug_dir / f"lemanapro_{safe_query}.html").write_text(
+                html[:300_000],
+                encoding="utf-8",
+            )
+        except Exception as e:
+            print(f"[lemanapro] debug html save failed: {type(e).__name__}: {e}", flush=True)
 
         print(
             "[lemanapro] "
