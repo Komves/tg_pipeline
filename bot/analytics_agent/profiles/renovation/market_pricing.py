@@ -158,7 +158,7 @@ def price_material_basket(
     priced_items = []
     total = 0
 
-    for item in basket or []:
+    for item in basket_items or []:
         query = str(item.get("query") or item.get("name") or "").strip()
         quantity = float(item.get("quantity") or 0)
         required_packs = int(item.get("required_packs") or 0)
