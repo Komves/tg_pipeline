@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Dict, List
@@ -32,6 +33,78 @@ def _extract_price_rub(text: str) -> int | None:
 TRUSTED_SOURCES = [
     ("lemanapro.ru", "Лемана ПРО"),
 ]
+
+
+def _market_cache_path() -> Path:
+    return Path(os.getenv("DATA_DIR", ".")) / "analytics_agent" / "data" / "market_cache.json"
+
+
+def _load_market_cache() -> Dict[str, Any]:
+    path = _market_cache_path()
+
+    try:
+        if not path.exists():
+            return {}
+
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(
+            f"[MARKET_CACHE_LOAD_ERROR] path={str(path)!r} error={type(e).__name__}: {e}",
+            flush=True,
+        )
+        return {}
+
+
+def _price_from_market_cache(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    cache = _load_market_cache()
+    items = cache.get("items") or {}
+
+    category = str(item.get("category") or "").strip()
+    cached = items.get(category)
+
+    if not cached:
+        return {
+            "status": "unavailable",
+            "query": query,
+            "reason": f"market cache miss for category={category!r}",
+        }
+
+    if cached.get("status") != "ok":
+        return {
+            "status": "unavailable",
+            "query": query,
+            "reason": f"market cache item unavailable for category={category!r}",
+            "source": cached.get("source"),
+            "source_title": cached.get("title"),
+            "source_url": cached.get("source_url"),
+            "market_updated_at": cache.get("updated_at"),
+        }
+
+    unit_price = cached.get("median_price_rub")
+
+    if not unit_price:
+        return {
+            "status": "unavailable",
+            "query": query,
+            "reason": f"market cache item has no median_price_rub for category={category!r}",
+            "source": cached.get("source"),
+            "source_title": cached.get("title"),
+            "source_url": cached.get("source_url"),
+            "market_updated_at": cache.get("updated_at"),
+        }
+
+    return {
+        "status": "ok",
+        "query": cached.get("query") or query,
+        "unit_price": int(unit_price),
+        "source": cached.get("source") or cache.get("source"),
+        "source_title": cached.get("title"),
+        "source_url": cached.get("source_url"),
+        "market_updated_at": cache.get("updated_at"),
+        "market_city": cache.get("city"),
+        "market_schema": cache.get("schema"),
+    }
+
 
 def _text_has_expected_unit(text: str, item: Dict[str, Any]) -> bool:
     s = (text or "").lower()
@@ -248,7 +321,17 @@ def price_material_basket(
             flush=True,
         )
 
-        found = _search_price(query, city, item)
+        found = _price_from_market_cache(query, city, item)
+
+        if found.get("status") != "ok":
+            print(
+                "[MARKET_CACHE_FALLBACK_TO_SEARCH] "
+                f"query={query!r} "
+                f"category={item.get('category')!r} "
+                f"reason={found.get('reason')!r}",
+                flush=True,
+            )
+            found = _search_price(query, city, item)
 
         print(
             "[PRICING_AFTER_SEARCH] "
@@ -270,6 +353,8 @@ def price_material_basket(
         row["pricing_reason"] = found.get("reason")
         row["source_title"] = found.get("source_title")
         row["source_url"] = found.get("source_url")
+        row["market_updated_at"] = found.get("market_updated_at")
+        row["market_city"] = found.get("market_city")
 
         if found.get("status") == "ok":
             unit_price = int(found.get("unit_price") or 0)
