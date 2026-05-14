@@ -43,17 +43,34 @@ def _load_market_cache() -> Dict[str, Any]:
     path = _market_cache_path()
 
     try:
+        print(
+            f"[MARKET_CACHE_CHECK] path={str(path)!r} exists={path.exists()}",
+            flush=True,
+        )
+
         if not path.exists():
             return {}
 
-        return json.loads(path.read_text(encoding="utf-8"))
+        cache = json.loads(path.read_text(encoding="utf-8"))
+        items = cache.get("items") or {}
+
+        print(
+            "[MARKET_CACHE_LOADED] "
+            f"schema={cache.get('schema')!r} "
+            f"updated_at={cache.get('updated_at')!r} "
+            f"items_count={len(items)} "
+            f"items_keys={list(items.keys())!r}",
+            flush=True,
+        )
+
+        return cache
+
     except Exception as e:
         print(
             f"[MARKET_CACHE_LOAD_ERROR] path={str(path)!r} error={type(e).__name__}: {e}",
             flush=True,
         )
         return {}
-
 
 def _price_from_market_cache(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]:
     cache = _load_market_cache()
