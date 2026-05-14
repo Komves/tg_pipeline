@@ -5,38 +5,8 @@ import os
 import re
 from typing import Any, Dict, List
 
-import requests
 from pathlib import Path
 
-def _extract_price_rub(text: str) -> int | None:
-    s = (text or "").replace("\u00a0", " ")
-    candidates = []
-
-    for m in re.finditer(r"(\d[\d\s]{1,10})\s*(?:₽|руб\.?|р\.)", s, flags=re.I):
-        raw = re.sub(r"\D+", "", m.group(1) or "")
-        if not raw:
-            continue
-
-        try:
-            value = int(raw)
-        except Exception:
-            continue
-
-        if 10 <= value <= 2_000_000:
-            candidates.append(value)
-
-    if not candidates:
-        return None
-
-    return sorted(candidates)[0]
-
-TRUSTED_SOURCES = [
-    ("lemanapro.ru", "Лемана ПРО"),
-]
-
-print(f"[MARKET_DEBUG] __file__={__file__!r}", flush=True)
-print(f"[MARKET_DEBUG] cwd={os.getcwd()!r}", flush=True)
-print(f"[MARKET_DEBUG] DATA_DIR={os.getenv('DATA_DIR')!r}", flush=True)
 
 def _market_cache_path() -> Path:
     candidates = [
@@ -91,7 +61,7 @@ def _load_market_cache() -> Dict[str, Any]:
         )
         return {}
 
-def _price_from_market_cache(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]:
+def _price_from_market_cache(query: str, item: Dict[str, Any]) -> Dict[str, Any]:
     cache = _load_market_cache()
     items = cache.get("items") or {}
 
@@ -154,181 +124,9 @@ def _price_from_market_cache(query: str, city: str, item: Dict[str, Any]) -> Dic
         "source_title": cached.get("title"),
         "source_url": cached.get("source_url"),
         "market_updated_at": cache.get("updated_at"),
-        "market_city": cache.get("city"),
         "market_schema": cache.get("schema"),
     }
 
-
-def _text_has_expected_unit(text: str, item: Dict[str, Any]) -> bool:
-    s = (text or "").lower()
-    expected = str(item.get("market_unit") or item.get("unit") or "").lower()
-
-    if expected in ("м²", "м2"):
-        return any(x in s for x in ("м²", "м2", "кв.м", "кв. м", "за м²", "за м2"))
-
-    if expected == "м":
-        return any(x in s for x in ("за м", "пог.м", "пог. м", "метр"))
-
-    if expected in ("мешок", "канистра", "ведро", "упаковка", "шт"):
-        return expected in s or "шт" in s or "упак" in s
-
-    return False
-
-
-def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]:
-    print(
-        "[LEMANAPRO_SEARCH_START] "
-        f"query={query!r} "
-        f"city={city!r} "
-        f"item_name={item.get('name')!r} "
-        f"category={item.get('category')!r} "
-        f"expected_unit={item.get('market_unit')!r}",
-        flush=True,
-    )
-
-    search_url = (
-        "https://lemanapro.ru/search/"
-        f"?q={requests.utils.quote(query)}"
-    )
-
-    print(
-        f"[LEMANAPRO_SEARCH_URL] {search_url}",
-        flush=True,
-    )
-
-    try:
-        print("[LEMANAPRO_HTTP_BEFORE]", flush=True)
-
-        r = requests.get(
-            search_url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
-                ),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-            },
-            timeout=15,
-        )
-
-        print(
-            "[LEMANAPRO_HTTP_AFTER] "
-            f"status={r.status_code} "
-            f"content_type={r.headers.get('content-type')!r} "
-            f"final_url={r.url!r}",
-            flush=True,
-        )
-
-        r.raise_for_status()
-
-        html = r.text or ""
-
-        print(
-            "[LEMANAPRO_HTML] "
-            f"len={len(html)} "
-            f"has_ruble={'₽' in html} "
-            f"has_query={query.lower() in html.lower()} "
-            f"head={html[:200].replace(chr(10), ' ')!r}",
-            flush=True,
-        )
-
-        try:
-            debug_dir = Path(os.getenv("DATA_DIR", "/data")) / "market_debug"
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            safe_query = re.sub(r"[^a-zA-Zа-яА-ЯёЁ0-9_-]+", "_", query)[:80]
-            (debug_dir / f"lemanapro_{safe_query}.html").write_text(
-                html[:300_000],
-                encoding="utf-8",
-            )
-        except Exception as e:
-            print(f"[lemanapro] debug html save failed: {type(e).__name__}: {e}", flush=True)
-
-        print(
-            "[lemanapro] "
-            f"query={query!r} "
-            f"url={search_url!r} "
-            f"status={r.status_code} "
-            f"html_len={len(html)}",
-            flush=True,
-        )
-
-    except Exception as e:
-        print(
-            f"[LEMANAPRO_ERROR] {type(e).__name__}: {e}",
-            flush=True,
-        )
-        return {
-            "status": "unavailable",
-            "query": query,
-            "reason": f"lemanapro request failed: {type(e).__name__}: {e}",
-        }
-
-    prices = []
-
-    print(
-        "[LEMANAPRO_PRICE_SCAN_START]",
-        flush=True,
-    )
-
-    for m in re.finditer(
-        r'(\d[\d\s]{1,10})\s*₽',
-        html,
-        flags=re.I,
-    ):
-        raw = re.sub(r"\D+", "", m.group(1) or "")
-
-        if not raw:
-            continue
-
-        try:
-            value = int(raw)
-        except Exception:
-            continue
-
-        if 50 <= value <= 500_000:
-            prices.append(value)
-
-    print(
-        "[lemanapro] "
-        f"query={query!r} "
-        f"prices_count={len(prices)} "
-        f"prices_sample={prices[:10]}",
-        flush=True,
-    )
-
-    if not prices:
-        print(
-            "[LEMANAPRO_NO_PRICES] "
-            f"query={query!r}",
-            flush=True,
-        )
-        return {
-            "status": "unavailable",
-            "query": query,
-            "reason": "no catalog prices found in lemanapro html",
-        }
-
-    prices = sorted(prices)
-
-    median_price = prices[min(len(prices) // 2, len(prices) - 1)]
-
-    print(
-        "[LEMANAPRO_SEARCH_OK] "
-        f"query={query!r} "
-        f"median_price={median_price} "
-        f"prices_count={len(prices)}",
-        flush=True,
-    )
-
-    return {
-        "status": "ok",
-        "query": query,
-        "unit_price": median_price,
-        "source_title": "Каталог Лемана ПРО",
-        "source_url": search_url,
-        "source": "Лемана ПРО",
-    }
 
 def price_material_basket(
     basket_items: List[Dict[str, Any]],
@@ -365,29 +163,28 @@ def price_material_basket(
             continue
 
         print(
-            f"[PRICING] BEFORE _search_price query={query!r}",
+            f"[PRICING] BEFORE market_cache query={query!r}",
             flush=True,
         )
 
         print(
-            f"[PRICING_BEFORE_SEARCH] query={query!r}",
+            f"[PRICING_BEFORE_MARKET_CACHE] query={query!r}",
             flush=True,
         )
 
-        found = _price_from_market_cache(query, city, item)
+        found = _price_from_market_cache(query, item)
 
         if found.get("status") != "ok":
             print(
-                "[MARKET_CACHE_FALLBACK_TO_SEARCH] "
+                "[MARKET_CACHE_NO_LIVE_FALLBACK] "
                 f"query={query!r} "
                 f"category={item.get('category')!r} "
                 f"reason={found.get('reason')!r}",
                 flush=True,
             )
-            found = _search_price(query, city, item)
 
         print(
-            "[PRICING_AFTER_SEARCH] "
+            "[PRICING_AFTER_MARKET_CACHE] "
             f"query={query!r} "
             f"status={found.get('status')!r} "
             f"reason={found.get('reason')!r}",
@@ -395,7 +192,7 @@ def price_material_basket(
         )
 
         print(
-            f"[PRICING] AFTER _search_price status={found.get('status')!r}",
+            f"[PRICING] AFTER market_cache status={found.get('status')!r}",
             flush=True,
         )
 
@@ -407,7 +204,7 @@ def price_material_basket(
         row["source_title"] = found.get("source_title")
         row["source_url"] = found.get("source_url")
         row["market_updated_at"] = found.get("market_updated_at")
-        row["market_city"] = found.get("market_city")
+
 
         if found.get("status") == "ok":
             unit_price = int(found.get("unit_price") or 0)
