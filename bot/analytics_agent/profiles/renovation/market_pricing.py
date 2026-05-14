@@ -159,11 +159,25 @@ def price_material_basket(
     total = 0
 
     for item in basket_items or []:
+
+        print(
+            "[PRICING_ITEM] "
+            f"name={item.get('name')!r} "
+            f"query={item.get('query')!r} "
+            f"quantity={item.get('quantity')!r}",
+            flush=True,
+        )
         query = str(item.get("query") or item.get("name") or "").strip()
         quantity = float(item.get("quantity") or 0)
         required_packs = int(item.get("required_packs") or 0)
 
         if not query or quantity <= 0:
+            print(
+                "[PRICING_SKIP] "
+                f"query={query!r} "
+                f"quantity={quantity!r}",
+                flush=True,
+            )
             continue
 
         found = _search_price(query, city, item)
