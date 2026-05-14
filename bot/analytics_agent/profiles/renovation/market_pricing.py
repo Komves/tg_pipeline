@@ -50,26 +50,62 @@ def _text_has_expected_unit(text: str, item: Dict[str, Any]) -> bool:
 
 
 def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    print(
+        "[LEMANAPRO_SEARCH_START] "
+        f"query={query!r} "
+        f"city={city!r} "
+        f"item_name={item.get('name')!r} "
+        f"category={item.get('category')!r} "
+        f"expected_unit={item.get('market_unit')!r}",
+        flush=True,
+    )
+
     search_url = (
         "https://lemanapro.ru/search/"
         f"?q={requests.utils.quote(query)}"
     )
 
+    print(
+        f"[LEMANAPRO_SEARCH_URL] {search_url}",
+        flush=True,
+    )
+
     try:
+        print("[LEMANAPRO_HTTP_BEFORE]", flush=True)
+
         r = requests.get(
             search_url,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
-                )
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
             },
             timeout=15,
+        )
+
+        print(
+            "[LEMANAPRO_HTTP_AFTER] "
+            f"status={r.status_code} "
+            f"content_type={r.headers.get('content-type')!r} "
+            f"final_url={r.url!r}",
+            flush=True,
         )
 
         r.raise_for_status()
 
         html = r.text or ""
+
+        print(
+            "[LEMANAPRO_HTML] "
+            f"len={len(html)} "
+            f"has_ruble={'₽' in html} "
+            f"has_query={query.lower() in html.lower()} "
+            f"head={html[:200].replace(chr(10), ' ')!r}",
+            flush=True,
+        )
 
         try:
             debug_dir = Path(os.getenv("DATA_DIR", "/data")) / "market_debug"
@@ -92,13 +128,22 @@ def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]
         )
 
     except Exception as e:
+        print(
+            f"[LEMANAPRO_ERROR] {type(e).__name__}: {e}",
+            flush=True,
+        )
         return {
             "status": "unavailable",
             "query": query,
-            "reason": f"lemanapro request failed: {e}",
+            "reason": f"lemanapro request failed: {type(e).__name__}: {e}",
         }
 
     prices = []
+
+    print(
+        "[LEMANAPRO_PRICE_SCAN_START]",
+        flush=True,
+    )
 
     for m in re.finditer(
         r'(\d[\d\s]{1,10})\s*₽',
@@ -127,6 +172,11 @@ def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]
     )
 
     if not prices:
+        print(
+            "[LEMANAPRO_NO_PRICES] "
+            f"query={query!r}",
+            flush=True,
+        )
         return {
             "status": "unavailable",
             "query": query,
@@ -136,6 +186,14 @@ def _search_price(query: str, city: str, item: Dict[str, Any]) -> Dict[str, Any]
     prices = sorted(prices)
 
     median_price = prices[min(len(prices) // 2, len(prices) - 1)]
+
+    print(
+        "[LEMANAPRO_SEARCH_OK] "
+        f"query={query!r} "
+        f"median_price={median_price} "
+        f"prices_count={len(prices)}",
+        flush=True,
+    )
 
     return {
         "status": "ok",
@@ -180,7 +238,30 @@ def price_material_basket(
             )
             continue
 
+        print(
+            f"[PRICING] BEFORE _search_price query={query!r}",
+            flush=True,
+        )
+
+        print(
+            f"[PRICING_BEFORE_SEARCH] query={query!r}",
+            flush=True,
+        )
+
         found = _search_price(query, city, item)
+
+        print(
+            "[PRICING_AFTER_SEARCH] "
+            f"query={query!r} "
+            f"status={found.get('status')!r} "
+            f"reason={found.get('reason')!r}",
+            flush=True,
+        )
+
+        print(
+            f"[PRICING] AFTER _search_price status={found.get('status')!r}",
+            flush=True,
+        )
 
         row = dict(item)
         row["pricing_status"] = found.get("status")
