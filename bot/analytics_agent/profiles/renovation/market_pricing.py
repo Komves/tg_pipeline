@@ -34,10 +34,25 @@ TRUSTED_SOURCES = [
     ("lemanapro.ru", "Лемана ПРО"),
 ]
 
-
 def _market_cache_path() -> Path:
-    return Path(os.getenv("DATA_DIR", ".")) / "analytics_agent" / "data" / "market_cache.json"
+    candidates = [
+        Path(os.getenv("DATA_DIR", "")) / "analytics_agent" / "data" / "market_cache.json",
+        Path(__file__).resolve().parents[2] / "data" / "market_cache.json",
+        Path.cwd() / "analytics_agent" / "data" / "market_cache.json",
+    ]
 
+    for path in candidates:
+        print(
+            f"[MARKET_CACHE_CANDIDATE] path={str(path)!r} exists={path.exists()}",
+            flush=True,
+        )
+
+        if path.exists():
+            print(f"[MARKET_CACHE_PATH_FOUND] path={str(path)!r}", flush=True)
+            return path
+
+    print("[MARKET_CACHE_PATH_NOT_FOUND]", flush=True)
+    return candidates[0]
 
 def _load_market_cache() -> Dict[str, Any]:
     path = _market_cache_path()
