@@ -98,6 +98,14 @@ def _price_from_market_cache(query: str, city: str, item: Dict[str, Any]) -> Dic
     category = str(item.get("category") or "").strip()
     cached = items.get(category)
 
+    print(
+        "[MARKET_CACHE_ITEM] "
+        f"category={category!r} "
+        f"type={type(cached).__name__!r} "
+        f"value={cached!r}",
+        flush=True,
+    )
+
     if not cached:
         return {
             "status": "unavailable",
@@ -105,7 +113,16 @@ def _price_from_market_cache(query: str, city: str, item: Dict[str, Any]) -> Dic
             "reason": f"market cache miss for category={category!r}",
         }
 
-    if cached.get("status") != "ok":
+    status = str(cached.get("status") or "").strip().lower()
+
+    print(
+        "[MARKET_CACHE_STATUS] "
+        f"category={category!r} "
+        f"status={status!r}",
+        flush=True,
+    )
+
+    if status != "ok":
         return {
             "status": "unavailable",
             "query": query,
