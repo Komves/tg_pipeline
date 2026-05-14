@@ -34,6 +34,10 @@ TRUSTED_SOURCES = [
     ("lemanapro.ru", "Лемана ПРО"),
 ]
 
+print(f"[MARKET_DEBUG] __file__={__file__!r}", flush=True)
+print(f"[MARKET_DEBUG] cwd={os.getcwd()!r}", flush=True)
+print(f"[MARKET_DEBUG] DATA_DIR={os.getenv('DATA_DIR')!r}", flush=True)
+
 def _market_cache_path() -> Path:
     candidates = [
         Path(os.getenv("DATA_DIR", "")) / "analytics_agent" / "data" / "market_cache.json",
