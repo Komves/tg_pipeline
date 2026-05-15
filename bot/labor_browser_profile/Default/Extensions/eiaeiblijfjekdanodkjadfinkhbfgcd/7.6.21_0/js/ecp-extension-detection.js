@@ -1,0 +1,1 @@
+(function(){globalThis.isExtensionListenerAdded||(globalThis.addEventListener(`message`,e=>{e.source&&e.origin===globalThis.origin&&e.data?.type===`NORDPASS/IS_INSTALLED`&&e.data.source===`ECP`&&e.source.postMessage({type:`NORDPASS/IS_INSTALLED`},e.origin)}),globalThis.isExtensionListenerAdded=!0)})();

@@ -1,0 +1,25 @@
+2026/05/15-12:39:19.278 40ec Reusing MANIFEST C:\Users\Марк\tg_pipeline\bot\labor_browser_profile\Default\IndexedDB\https_profi.ru_0.indexeddb.leveldb/MANIFEST-000001
+2026/05/15-12:39:19.279 40ec Recovering log #68
+2026/05/15-12:39:19.279 40ec Reusing old log C:\Users\Марк\tg_pipeline\bot\labor_browser_profile\Default\IndexedDB\https_profi.ru_0.indexeddb.leveldb/000068.log 
+2026/05/15-12:39:19.280 40ec Delete type=2 #67
+2026/05/15-12:39:19.411 3f6c Level-0 table #73: started
+2026/05/15-12:39:19.428 3f6c Level-0 table #73: 641 bytes OK
+2026/05/15-12:39:19.434 3f6c Delete type=0 #68
+2026/05/15-12:39:19.435 40ec Manual compaction at level-0 from '\x00\x1e\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1f\x00\x00\x00' @ 0 : 0; will stop at '\x00\x1e\x00\x00\x05' @ 781 : 1
+2026/05/15-12:39:19.435 40ec Compacting 1@0 + 1@1 files
+2026/05/15-12:39:19.439 40ec Generated table #74@0: 235 keys, 4970 bytes
+2026/05/15-12:39:19.439 40ec Compacted 1@0 + 1@1 files => 4970 bytes
+2026/05/15-12:39:19.442 40ec compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/05/15-12:39:19.443 40ec Delete type=2 #73
+2026/05/15-12:39:19.443 40ec Manual compaction at level-0 from '\x00\x1e\x00\x00\x05' @ 781 : 1 .. '\x00\x1f\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/05/15-12:39:19.468 40ec Level-0 table #76: started
+2026/05/15-12:39:19.481 40ec Level-0 table #76: 644 bytes OK
+2026/05/15-12:39:19.484 40ec Delete type=2 #70
+2026/05/15-12:39:19.484 40ec Delete type=0 #72
+2026/05/15-12:39:19.484 40ec Manual compaction at level-0 from '\x00\x1f\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00 \x00\x00\x00' @ 0 : 0; will stop at '\x00\x1f\x00\x00\x05' @ 798 : 1
+2026/05/15-12:39:19.484 40ec Compacting 1@0 + 1@1 files
+2026/05/15-12:39:19.488 40ec Generated table #77@0: 239 keys, 5009 bytes
+2026/05/15-12:39:19.488 40ec Compacted 1@0 + 1@1 files => 5009 bytes
+2026/05/15-12:39:19.491 40ec compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/05/15-12:39:19.491 40ec Delete type=2 #76
+2026/05/15-12:39:19.492 40ec Manual compaction at level-0 from '\x00\x1f\x00\x00\x05' @ 798 : 1 .. '\x00 \x00\x00\x00' @ 0 : 0; will stop at (end)

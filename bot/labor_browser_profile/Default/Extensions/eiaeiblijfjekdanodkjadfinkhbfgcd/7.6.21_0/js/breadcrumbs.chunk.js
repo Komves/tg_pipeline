@@ -1,0 +1,1 @@
+import{i as e,p as t,t as n,tt as r}from"./currentScopes.chunk.js";var i=100;function a(a,o){let s=n(),c=e();if(!s)return;let{beforeBreadcrumb:l=null,maxBreadcrumbs:u=i}=s.getOptions();if(u<=0)return;let d={timestamp:t(),...a},f=l?r(()=>l(d,o)):d;f!==null&&(s.emit&&s.emit(`beforeAddBreadcrumb`,f,o),c.addBreadcrumb(f,u))}export{a as t};

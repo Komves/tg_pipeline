@@ -1,0 +1,1 @@
+import{t as e}from"./browser.chunk.js";import{t}from"./errorsSerialization.chunk.js";import{t as n}from"./getApiMethods.chunk.js";var r=(n,r={})=>e.runtime.sendMessage({...r,type:n}).catch(t),i=n({sendMessage:r,logMessage:e=>{}});export{r as n,i as t};

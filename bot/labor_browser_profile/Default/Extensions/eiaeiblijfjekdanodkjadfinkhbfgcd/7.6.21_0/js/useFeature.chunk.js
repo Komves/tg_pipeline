@@ -1,0 +1,1 @@
+import{i as e}from"./import-wrapper-prod.chunk.js";import{Hi as t}from"./classnames.chunk.js";import{a as n,n as r}from"./hooks.chunk.js";var i=t(),a=t=>{let a=(0,i.c)(2),o;return a[0]===t?o=a[1]:(o=n=>e(n,t),a[0]=t,a[1]=o),r(o,n)};export{a as t};

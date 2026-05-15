@@ -1,0 +1,213 @@
+* {
+     font-family: sans-serif;
+     font-size: 10pt;
+}
+body {
+     margin:0;
+}
+h2 {
+     color: #606060;
+}
+ul {
+     list-style: none;
+     margin: 0 auto;
+}
+a {
+     text-decoration: none;
+     transition: .5s linear;
+}
+i {
+     margin-right: 10px;
+}
+textarea {
+    border: none;
+}
+nav {
+     display: block;
+     margin: 0 auto 30px;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+/* Track */
+::-webkit-scrollbar-track {
+  background: #f1f1f1; 
+}
+ 
+/* Handle */
+::-webkit-scrollbar-thumb {
+  background: #AFC4D2; 
+}
+
+/* Handle on hover */
+::-webkit-scrollbar-thumb:hover {
+  background: #396C8E; 
+}
+.tab {
+     width: 800px;
+     height: 400px;
+}
+#main > nav ul {
+     background: #222222;
+     overflow: hidden;
+     padding: 0;
+}
+#main > nav li {
+     float: left;
+}
+#main > nav a {
+     display: block;
+     padding: 2em;
+     color: #5F5F5F;
+     border-bottom: 4px solid transparent;
+}
+#main > nav a:hover {
+     color: #91BDDA;
+}
+#main > nav a.active{
+     color: #FFFFFF;
+     border-bottom: 4px solid #91BDDA;
+}
+#main > nav a.debug:hover {
+     color: red;
+}
+ #main > nav a.debug.active{
+     color: #FFFFFF;
+     border-bottom: 4px solid red;
+}
+#main > nav a.about:hover {
+     color: #c5c9c7;
+}
+ #main > nav a.about.active{
+     color: #c5c9c7;
+     border-bottom: 4px solid #c5c9c7;
+}
+ #main > div {
+     margin-left: 20px;
+}
+ .anchor > div {
+     display: none;
+}
+ .anchor > div.active {
+     display: block;
+}
+ .custom_menu ul {
+     overflow: hidden;
+     padding: 0;
+}
+ .custom_menu li {
+     float: left;
+}
+ .custom_menu a {
+     display: block;
+     padding: 1.1em;
+     color: #AAAAAA;
+}
+ .custom_menu a:hover {
+     color: #000000;
+}
+ .custom_menu a.active{
+     color: #000000;
+     background-color: #F2F2F2;
+}
+
+ #use_default_certificate_container {
+     margin-top:5px;
+     display:inline-block;
+}
+ .check_box input {
+     width: 20px;
+     height: 20px;
+     vertical-align: middle;
+}
+ .container {
+     width: 740px;
+     height: 370px;
+     border: 1px solid #AAAAAA;
+     overflow: auto;
+}
+ .container ::selection {
+     color: white;
+     background: transparent;
+    ;
+}
+ .log {
+}
+ button {
+     padding: 6px;
+     background-color: #396C8E;
+     color: #F2F2F2;
+     border: 0;
+     box-shadow: none;
+     border-radius: 1px;
+     margin-bottom: 10px;
+}
+ button:disabled {
+     background-color: #AFC4D2;
+}
+button:hover {
+     color: white;
+}
+button:focus {
+    outline: none;
+}
+ #debug_disconnect_nmh {
+     margin-left: 505px;
+     background-color: red;
+}
+ input {
+     padding-left: 5px;
+}
+ .certificate {
+     line-height: 1.6em;
+     padding: 12px;
+     background-color: white;
+}
+ .certificate:hover {
+     background-color: #F2F2F2;
+}
+ .certificate.active {
+     background-color: #5F8FAD;
+}
+ .provider {
+     line-height: 1.6em;
+     padding: 12px;
+     background-color: white;
+}
+ .provider:hover {
+     background-color: #F2F2F2;
+}
+ .provider.active {
+     background-color: #5F8FAD;
+}
+ .token {
+     line-height: 1.6em;
+     padding: 12px;
+     background-color: white;
+}
+ .token:hover {
+     background-color: #F2F2F2;
+}
+ .token.active {
+     background-color: #5F8FAD;
+}
+ .module {
+     line-height: 1.6em;
+     padding: 12px;
+     background-color: white;
+}
+ .module:hover {
+     background-color: #F2F2F2;
+}
+ .module.active {
+     background-color: #5F8FAD;
+}
+ .crypto {
+     color: #AAAAAA;
+}
+.error {
+    color: red;
+    background: red;
+}

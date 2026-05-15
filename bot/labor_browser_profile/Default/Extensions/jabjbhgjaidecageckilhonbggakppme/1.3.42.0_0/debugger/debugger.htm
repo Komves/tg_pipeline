@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html>
+     <head>
+          <meta charset="utf-8">
+          <title>gosuslugi.plugin.debugger</title>
+          <script src="../includes/lib/jquery.min.js"></script>
+          <script src="../includes/lib/crypto-js.min.js"></script>
+          <script src="../includes/lib/base64.js"></script>
+          <script src="../includes/_core/hash_stream.js"></script>
+          <script src="../includes/bootstrap.js"></script>
+          <script src="../includes/formats.js"></script>
+          <script src="notifier.js"></script>
+          <script src="certificate.js"></script>
+          <script src="provider.js"></script>
+          <script src="token.js"></script>
+          <script src="module.js"></script>
+          <script src="debugger.js"></script>
+          <link rel="stylesheet" href="debugger.css">
+     </head>
+     <body>
+          <div id="main" class="anchor">
+               <nav>
+                    <ul>
+                         <li><a id="certificates_link" class="certificates active" href="#">СЕРТИФИКАТЫ</a></li>
+                         <li><a id="providers_link" class="providers" href="#">КРИПТОПРОВАЙДЕРЫ</a></li>
+                         <li><a id="tokens_link" class="tokens" href="#">ТОКЕНЫ</a></li>
+                         <li><a id="modules_link" class="modules" href="#">МОДУЛИ</a></li>
+                         <li><a id="debug_link" class="debug" href="#">ОТЛАДКА</a></li>
+                         <li><a id="about_link" class="about" href="#">О ПРОГРАММЕ</a></li>
+                    </ul>
+               </nav>
+               <div id="certificates" class="anchor certificates active tab">
+                    <nav class="custom_menu">
+                         <ul>
+                              <li><a id="address_book_certificates_link" class="address_book_certificates" href="#">AddressBook</a></li>
+                              <li><a id="auth_root_certificates_link" class="auth_root_certificates" href="#">AuthRoot</a></li>
+                              <li><a id="certificate_authority_certificates_link" class="certificate_authority_certificates" href="#">CertificateAuthority</a></li>
+                              <li><a id="disallowed_certificates_link" class="disallowed_certificates" href="#">Disallowed</a></li>
+                              <li><a id="my_certificates_link" class="my_certificates active" href="#">My</a></li>
+                              <li><a id="root_certificates_link" class="root_certificates" href="#">Root</a></li>
+                              <li><a id="trusted_people_certificates_link" class="trusted_people_certificates" href="#">TrustedPeople</a></li>
+                              <li><a id="trusted_publisher_certificates_link" class="trusted_publisher_certificates" href="#">TrustedPublisher</a></li>
+                              <br/>
+                              <li><a id="rutoken_certificates_link" class="rutoken_certificates" href="#">RuToken</a></li>
+                              <li><a id="jacarta_certificates_link" class="jacarta_certificates" href="#">Jacarta</a></li>
+                              <li><a id="esmart_certificates_link" class="esmart_certificates" href="#">ESmart</a></li>
+                         </ul>
+                    </nav>
+                    <div class="address_book_certificates">
+                         AddressBook:&#160;&#160;<span id="address_book_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_address_book_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="address_book_certificates_container" class="container">
+                              <!--Нет AddressBook сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_address_book_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_address_book_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <div class="auth_root_certificates">
+                         AuthRoot:&#160;&#160;<span id="auth_root_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_auth_root_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="auth_root_certificates_container" class="container">
+                              <!--Нет AuthRoot сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_auth_root_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_auth_root_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <div class="certificate_authority_certificates">
+                         CertificateAuthority:&#160;&#160;<span id="certificate_authority_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_certificate_authority_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="certificate_authority_certificates_container" class="container">
+                              <!--Нет CertificateAuthority сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_certificate_authority_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_certificate_authority_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <div class="disallowed_certificates">
+                         Disallowed:&#160;&#160;<span id="disallowed_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_disallowed_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="disallowed_certificates_container" class="container">
+                              <!--Нет Disallowed сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_disallowed_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_disallowed_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <div class="my_certificates active">
+                         My:&#160;&#160;<span id="my_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_my_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="my_certificates_container" class="container">
+                              <!--Нет my сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_my_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_my_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                         <br /><br /> 
+                         <button id="update_my_certificates">Обновить</button>
+                    </div>
+                    <div class="root_certificates">
+                         Root:&#160;&#160;<span id="root_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_root_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="root_certificates_container" class="container">
+                              <!--Нет корневых сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_root_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_root_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <div class="trusted_people_certificates">
+                         TrustedPeople:&#160;&#160;<span id="trusted_people_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_trusted_people_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="trusted_people_certificates_container" class="container">
+                              <!--Нет TrustedPeople сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_trusted_people_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_trusted_people_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <div class="trusted_publisher_certificates">
+                         TrustedPublisher:&#160;&#160;<span id="trusted_publisher_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_trusted_publisher_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="trusted_publisher_certificates_container" class="container">
+                              <!--Нет TrustedPublisher сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_trusted_publisher_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_trusted_publisher_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <div class="rutoken_certificates">
+                         RuToken:&#160;&#160;<span id="rutoken_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_rutoken_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="rutoken_certificates_container" class="container">
+                              <!--Нет RuToken сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_rutoken_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_rutoken_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <div class="jacarta_certificates">
+                         Jacarta:&#160;&#160;<span id="jacarta_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_jacarta_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="jacarta_certificates_container" class="container">
+                              <!--Нет Jacarta сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_jacarta_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_jacarta_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <div class="esmart_certificates">
+                         ESmart:&#160;&#160;<span id="esmart_certificates_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_esmart_certificate" type="text" size="94">
+                         <br /><br />
+                         <div id="esmart_certificates_container" class="container">
+                              <!--Нет ESmart сертификатов-->
+                         </div>
+                         <br />
+                         <button id="save_to_buffer_esmart_certificate_data">Скопировать в буфер обмена данные сертификата</button>
+                         <button id="save_to_buffer_esmart_certificate_base64">Скопировать в буфер обмена сертификат в base64</button>
+                    </div>
+                    <br />
+               </div>
+               <div id="providers" class="anchor providers tab">
+                    <div class="providers active">
+                         Криптопровайдеры:&#160;&#160;<span id="providers_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_provider" type="text" size="94">
+                         <br /><br />
+                         <div id="providers_container" class="container">
+                              <!--Нет криптопровайдеров-->
+                         </div>
+                         <br />
+                         <button id="update_providers">Обновить</button>
+                    </div>
+                    <br />
+               </div>
+               <div id="tokens" class="anchor tokens tab">
+                    <div class="tokens active">
+                         Токены:&#160;&#160;<span id="tokens_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_token" type="text" size="94">
+                         <br /><br />
+                         <div id="tokens_container" class="container">
+                              <!--Нет токенов-->
+                         </div>
+                         <br />
+                         <button id="update_tokens">Обновить</button>
+                    </div>
+                    <br />
+               </div>
+               <div id="modules" class="anchor modules tab">
+                    <div class="modules active">
+                         Модули:&#160;&#160;<span id="modules_count">0</span><br />
+                         <br /><br />
+                         Поиск:&#160;&#160;<input id="find_module" type="text" size="94">
+                         <br /><br />
+                         <div id="modules_container" class="container">
+                              <!--Нет модулей -->
+                         </div>
+                         <br />
+                         <button id="update_modules">Обновить</button>
+                    </div>
+                    <br />
+               </div>
+               <div id="debug" class="anchor debug tab">
+                    <nav class="custom_menu">
+                         <ul>
+                              <li><a id="debug_common_link" class="debug_common active" href="#">common</a></li>
+                              <li><a id="debug_content_link" class="debug_content" href="#">content</a></li>
+                              <li><a id="debug_raw_link" class="debug_raw" href="#">raw</a></li>
+                              <li><a id="debug_base64_link" class="debug_base64" href="#">base64</a></li>
+                              <li><a id="debug_system_link" class="debug_system" href="#">system</a></li>
+                              <li><a id="debug_crypto_link" class="debug_crypto" href="#">crypto</a></li>
+                         </ul>
+                    </nav>
+                    <div class="debug_common active">
+                         <b>Расширение:</b>
+                         <br /><br />
+                         <label class="check_box">
+                         <input id="debug_extension_checkbox" type="checkbox" disabled="disabled"><span id="debug_extension_text" style="color: red;">Расширение не установлено</span>
+                         </label>
+                         <br /><br /><br />
+                         <b>Скрипты:</b><br />
+                         <span id="system_js">system.js</span><br />
+                         <span id="crypto_js">crypto.js</span><br />
+                         <span id="formats_js">formats.js</span><br />
+                         <span id="bootstrap_js">bootstrap.js</span><br />
+                         <span id="crypto_wrapper_js">crypto_wrapper.js</span><br />
+                         <br /><br /><br />
+                    </div>
+                    <div class="debug_content">
+                         <table border="0">
+                              <tr>
+                                   <td>message.module</td>
+                                   <td><input id="message_module" type="text" value="system"></td>
+                              </tr>
+                              <tr>
+                                   <td>message.method</td>
+                                   <td><input id="message_method" type="text" value="handshake"></td>
+                              </tr>
+                              <tr>
+                                   <td>message.data</td>
+                                   <td><input id="message_data" type="text" size="75" value="data"></td>
+                              </tr>
+                         </table>
+                         <br />
+                         <button id="content_post">content.post</button>
+                         <button id="content_disconnect">content.disconnect</button>
+                         <button id="content_debug">content.debug</button>
+                         <button id="content_transferEncoding">content.transferEncoding</button>
+                         <br /><br />
+                         <button id="content_registered">content.registered</button>
+                         <button id="content_exists">content.exists</button>
+                         <button id="content_loadScripts">content.loadScripts</button>
+                         <button id="content_loadAllScripts">content.loadAllScripts</button>
+                         <button id="content_setPrefix">content.setPrefix</button>
+                         <br /><br />                        
+                         <pre id="message_result">...</pre>
+                         <br />
+                    </div>
+                    <br />
+                    <div class="debug_raw">
+                         <table border="0">
+                              <tr>
+                                   <td>message.raw</td>
+                                   <td><textarea id="message_raw" class="container" style="width: 600px; height: 200px">...</textarea></td>
+                              </tr>
+                         </table>
+                         <br />
+                         <button id="raw_default">raw.default</button>
+                         <button id="raw_post">raw.post</button>
+                         <br /><br />
+                         <pre id="raw_result">...</pre>
+                         <br />
+                    </div>
+                    <br />
+                    <div class="debug_base64">
+                         <table border="0">
+                              <tr>
+                                   <td>base64.data</td>
+                                   <td><input id="base64_data" type="text" size="75" value="unsigned file content"></td>
+                              </tr>
+                         </table>
+                         <br />
+                         <button id="base64_encode">base64.encode</button>
+                         <button id="base64_decode">base64.decode</button>
+                         <br /><br />
+                         <textarea id="base64_result" class="container" maxlength="100">...</textarea>
+                         <br />
+                    </div>
+                    <br />
+                    <div class="debug_system">
+                         <button id="system_handshake">handshake</button>
+                         <button id="system_echo">echo</button>
+                         <button id="system_cache">cache</button>
+                         <button id="system_config">config</button>
+                         <button id="system_ipConfig">ipConfig</button>
+                         <button id="system_lastError">lastError</button><br/><br/>
+                         <button id="system_protocol">protocol</button>
+                         <button id="system_close">close</button>
+                         <br /><br />
+                         <pre id="system_result">...</pre>
+                         <br />
+                    </div>
+                    <div class="debug_crypto">
+                         <button id="crypto_providers">providers</button>
+                         <button id="crypto_providersFields">providers( custom fields )</button>
+                         <br /><br />
+                         <button id="crypto_certificatesAll">certificates( all certificates from store )</button>
+                         <button id="crypto_certificatesToken">certificates( all certificates from token )</button>
+                         <button id="crypto_certificatesProvider">certificates( all certificates from provider )</button>
+                         <button id="crypto_certificatesCustom">certificates( custom certificates )</button>
+
+                         <button id="crypto_tokensAll">tokens( all tokens )</button>
+                         <button id="crypto_tokensCustom">tokens( custom tokens )</button>
+
+                         <button id="crypto_addCertificateWithoutContainer">addCertificate( without container )</button>
+                         <button id="crypto_addCertificateInContainer">addCertificate( in container )</button>
+
+                         <button id="crypto_addCertificateInToken">addCertificate( in token )</button>
+
+                         <button id="crypto_addCertificateAutoSearchContainer">addCertificate( auto search container )</button>
+                         <button id="crypto_deleteCertificate">deleteCertificate</button>
+                         <button id="crypto_deleteCertificateFromToken">deleteCertificate( from token )</button>
+                         <button id="crypto_certificateFieldsAll">certificateFields ( all fields )</button>
+                         <button id="crypto_certificateFieldsCustom">certificateFields ( custom fields )</button>
+                         <br /><br />
+
+                         <button id="crypto_certificateRequestPcCsp">certificateRequest ( pc csp )</button>
+                         <button id="crypto_certificateRequestTokenCsp">certificateRequest ( token csp )</button>
+                         <button id="crypto_certificateRequestExportable">certificateRequest ( exportable )</button>
+
+                         <button id="crypto_certificatePolicyRequest">certificateRequest( certificate policies )</button>
+                         <br /><br />
+                         <button id="crypto_attachedSignature">attachedSignature</button>
+                         <button id="crypto_visualizationAttachedSignature">attachedSignature( with visualization )</button>
+                         <button id="crypto_visualizationAttachedSignatureGroup">attachedSignature( with visualization with group)</button>
+                         <button id="crypto_providerAttachedSignature">attachedSignature( with provider )</button>
+                         <button id="crypto_tokenAttachedSignature">attachedSignature( token )</button>
+                         <br /><br />
+                         <button id="crypto_visualizationSignatureFilesSignParams">signature( with visualization with filesSignParams)</button>
+                         <button id="crypto_visualizationSignatureWithoutCertificate">signature( with visualization w/o certificate)</button>
+                         <button id="crypto_nonVisualizationSignatureWithoutCertificate">signature (w/o visualization w/o certificate)</button>
+                         <button id="crypto_nonVisualizationSignatureWithoutCertificateWithCertificateResponse">signature with certificate response(w/o visualization w/o certificate)</button>
+                         <br /><br />
+                         <button id="crypto_detachedSignature">detachedSignature</button>
+                         <button id="crypto_visualizationDetachedSignature">detachedSignature( with visualization )</button>
+                         <br /><br />
+                         <button id="crypto_providerSignatureTimestampAttached">signatureTimestampAttached( provider )</button>
+                         <button id="crypto_providerSignatureTimestampDetached">signatureTimestampDetached( provider )</button>
+                         <button id="crypto_providerXMLSignatureTimestamp">xmlSignatureTimestamp( provider )</button>
+                         <button id="crypto_tokenSignatureTimestampAttached">signatureTimestampAttached( token )</button>
+                         <button id="crypto_tokenSignatureTimestampDetached">signatureTimestampDetached( token )</button>
+                         <button id="crypto_tokenXMLSignatureTimestamp">xmlSignatureTimestamp( token )</button>
+                         <br /><br />
+                         <button id="crypto_signatureFromUrl">signatureFromUrl( from remote resource )</button>
+                         <button id="crypto_signatureJsFile">signatureJsFile</button>
+                         <button id="crypto_signatureWithSelectFile">signatureWithSelectFile( from file dialog )</button>
+                         <button id="crypto_signatureWithMix">signatureWithMix( from file dialog, remote resource )</button>
+                         <button id="crypto_cancelChunks">cancelChunks</button>
+                         <button id="crypto_setChunkSize">setChunkSize</button>
+                         <button id="crypto_chunkSize">chunkSize</button>
+                         <br /><br />
+                         <button id="crypto_streamSignature" style='background-color: green;'>streamSignature( manual prepare / send via crypto )</button>
+                         <button id="crypto_streamSignatureWithSelectFile" style='background-color: green;'>streamSignatureWithSelectFile( from file dialog / send via message )</button>
+                         <button id="crypto_streamSignatureCancelChunk" style='background-color: green;'>streamSignatureCancelChunk</button>
+                         <br /><br />
+                         <br /><br />
+                         <button id="crypto_xmlGostSignature">xmlSignature( gost signature )</button>
+                         <button id="crypto_xmlDetachedSignature">xmlSignature( detached / smev3 signature )</button>
+                         <button id="crypto_xmlWsSecuritySignature" disabled>xmlSignature( wssecurity / smev2 signature )</button>
+                         <button id="crypto_xmlEnvelopSignature" disabled>xmlSignature( envelop signature )</button>
+                         <button id="crypto_xmlPkcs7Signature" disabled>xmlSignature( pkcs7 signature )</button>
+                         <button id="crypto_xmlNormalize">normalizeXml</button>
+                         <br /><br />
+                         <button id="crypto_hashAlgoFromCertificate">hash( algo from certificate )</button>
+                         <button id="crypto_hashToken">hash( token )</button>
+                         <button id="crypto_hashMd5">hash ( md5 )</button>
+                         <button id="crypto_hashSha1">hash ( sha1 )</button>
+                         <button id="crypto_hashSha256">hash ( sha256 )</button>
+                         <button id="crypto_hashSha512">hash ( sha512 )</button>
+                         <button id="crypto_hashGostR3411_256">hash ( ГОСТ Р 34.11-2012, 256 бит "1.2.643.7.1.1.2.2" )</button>
+                         <button id="crypto_hashGostR3411_512">hash ( ГОСТ Р 34.11-2012, 512 бит "1.2.643.7.1.1.2.3" )</button>
+                         <br /><br />
+                         <pre id="crypto_result">...</pre>
+                         <br />
+                    </div>
+               </div>
+               <div id="about" class="anchor about tab">
+                    <div class="about active">
+                         <b>Версия:</b><br /><br />
+                         &#160;<span>1.3.42.0</span><br /><br />
+                         <b>Модули:</b><br />
+                         &#160;<span id="debug_modules">отсутствуют</span>
+                         <br /><br />
+                    </div>
+                    <br />
+               </div>
+          </div>
+     </body>
+</html>

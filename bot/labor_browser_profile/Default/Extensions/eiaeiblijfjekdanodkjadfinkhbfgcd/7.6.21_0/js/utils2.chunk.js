@@ -1,0 +1,1 @@
+import{c as e}from"./modalReducer-JcZ4X_wQ.chunk.js";import{in as t,si as n}from"./classnames.chunk.js";import{s as r,t as i}from"./ToastNotificationUtils.chunk.js";var a=e(),o=(e,n={})=>{r(i.ActionFeedback,{bodyText:e,icon:(0,a.jsx)(t,{}),variant:`danger`,...n})},s=(e,t={})=>{r(i.ActionFeedback,{bodyText:e,icon:(0,a.jsx)(n,{}),variant:`success`,...t})};export{s as n,o as t};

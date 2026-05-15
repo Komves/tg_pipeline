@@ -1,0 +1,1 @@
+import{u as e}from"./platformEnv.chunk.js";import{n as t,t as n}from"./history.chunk.js";var r=e?n():t(),i=(e,t)=>{let{href:n}=globalThis.location,r=n.indexOf(`?`),i=e.includes(`?`);if(r===-1)return e;let a=new URLSearchParams(n.substring(r));return t&&t.length>0&&t?.forEach(e=>a.delete(e)),`${e}${i?`&`:`?`}${a}`};export{r as n,i as t};

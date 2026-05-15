@@ -1,0 +1,1 @@
+import{s as e}from"./getApiMethods.chunk.js";import{i as t,t as n}from"./api.chunk.js";var r=(r,i)=>{n.user.getTrustedPassUrl(r).then(n.internal.openExternalUrl).catch(n=>t(e.Error,i,n))};export{r as t};

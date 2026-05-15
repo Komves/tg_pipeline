@@ -1,0 +1,1 @@
+var e=(e,t)=>e.info?.translation||e.message||t||``;export{e as t};

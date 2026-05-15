@@ -1,0 +1,134 @@
+{
+  "schema": "vesya_labor_cache_v1",
+  "updated_at": "2026-05-15T07:39:03.670186+00:00",
+  "city": "Нижневартовск",
+  "source": "Profi.ru",
+  "source_policy": "windows_seleniumbase_snapshot",
+  "items": {
+    "laminate_install": {
+      "key": "laminate_install",
+      "title": "Укладка ламината",
+      "title_ru": "Укладка ламината",
+      "unit": "м²",
+      "source": "Profi.ru",
+      "source_domain": "profi.ru",
+      "source_url": "https://profi.ru/remont/pol/ukladka-laminata/price/",
+      "status": "ok",
+      "prices": [
+        250,
+        400
+      ],
+      "min_price_rub": 250,
+      "median_price_rub": 325,
+      "max_price_rub": 400,
+      "prices_count": 2
+    },
+    "tile_install": {
+      "key": "tile_install",
+      "title": "Укладка плитки",
+      "title_ru": "Укладка плитки",
+      "unit": "м²",
+      "source": "Profi.ru",
+      "source_domain": "profi.ru",
+      "source_url": "https://profi.ru/remont/plitochniki/price/",
+      "status": "ok",
+      "prices": [
+        1700
+      ],
+      "min_price_rub": 1700,
+      "median_price_rub": 1700,
+      "max_price_rub": 1700,
+      "prices_count": 1
+    },
+    "floor_leveling": {
+      "key": "floor_leveling",
+      "title": "Выравнивание пола",
+      "title_ru": "Выравнивание пола",
+      "unit": "м²",
+      "source": "Profi.ru",
+      "source_domain": "profi.ru",
+      "source_url": "https://profi.ru/remont/styazhka-pola/price/",
+      "status": "ok",
+      "prices": [
+        800,
+        1500
+      ],
+      "min_price_rub": 800,
+      "median_price_rub": 1150,
+      "max_price_rub": 1500,
+      "prices_count": 2
+    },
+    "wall_putty": {
+      "key": "wall_putty",
+      "title": "Шпаклевка стен",
+      "title_ru": "Шпаклевка стен",
+      "unit": "м²",
+      "source": "Profi.ru",
+      "source_domain": "profi.ru",
+      "source_url": "https://profi.ru/remont/shpaklevka-sten/price/",
+      "status": "ok",
+      "prices": [
+        200,
+        400,
+        2000
+      ],
+      "min_price_rub": 200,
+      "median_price_rub": 400,
+      "max_price_rub": 2000,
+      "prices_count": 3
+    },
+    "wall_paint": {
+      "key": "wall_paint",
+      "title": "Покраска стен",
+      "title_ru": "Покраска стен",
+      "unit": "м²",
+      "source": "Profi.ru",
+      "source_domain": "profi.ru",
+      "source_url": "https://profi.ru/remont/pokraska-sten/price/",
+      "status": "ok",
+      "prices": [
+        200,
+        250,
+        1500
+      ],
+      "min_price_rub": 200,
+      "median_price_rub": 250,
+      "max_price_rub": 1500,
+      "prices_count": 3
+    },
+    "wall_primer": {
+      "key": "wall_primer",
+      "title": "Грунтовка стен",
+      "title_ru": "Грунтовка стен",
+      "unit": "м²",
+      "source": "Profi.ru",
+      "source_domain": "profi.ru",
+      "source_url": "https://profi.ru/remont/gruntovka-sten/price/",
+      "status": "ok",
+      "prices": [
+        350
+      ],
+      "min_price_rub": 350,
+      "median_price_rub": 350,
+      "max_price_rub": 350,
+      "prices_count": 1
+    },
+    "baseboard_install": {
+      "key": "baseboard_install",
+      "title": "Монтаж плинтуса",
+      "title_ru": "Монтаж плинтуса",
+      "unit": "м.п.",
+      "source": "Profi.ru",
+      "source_domain": "profi.ru",
+      "source_url": "https://profi.ru/remont/montazh-plintusa/price/",
+      "status": "ok",
+      "prices": [
+        300
+      ],
+      "min_price_rub": 300,
+      "median_price_rub": 300,
+      "max_price_rub": 300,
+      "prices_count": 1
+    }
+  }
+}

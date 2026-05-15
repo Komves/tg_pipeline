@@ -168,13 +168,21 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         total_base = base + labor["labor_base"]
         total_high = high + labor["labor_high"]
 
-        labor_base_rate = int(labor.get("labor_base", 0) / float(area)) if area else 0
+        out.extend([
+            "",
+            "Работы:",
+        ])
+
+        for labor_item in labor.get("labor_items") or []:
+            out.append(
+                f"• {labor_item['title_ru']}: "
+                f"{labor_item['quantity']} {labor_item['unit']} × "
+                f"{labor_item['unit_price_rub']:,} ₽ = "
+                f"{labor_item['total_price_rub']:,} ₽".replace(",", " ")
+            )
 
         out.extend([
             "",
-            "Оценка работ:",
-            f"• ставка класса ремонта: ~{labor_base_rate:,} ₽/м²".replace(",", " "),
-            f"• формула: {area:g} м² × {labor_base_rate:,} ₽/м²".replace(",", " "),
             f"• нижняя граница: {labor['labor_low']:,} ₽".replace(",", " "),
             f"• реалистично: {labor['labor_base']:,} ₽".replace(",", " "),
             f"• с запасом: {labor['labor_high']:,} ₽".replace(",", " "),

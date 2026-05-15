@@ -35,38 +35,31 @@ def build_renovation_xlsx(task_id: str, params: Dict[str, Any], output_dir: Path
 
     wb = Workbook()
 
-    ws = wb.active
-    ws.title = "Summary"
-
     area = float(params.get("area_m2") or 0)
-    repair_class = params.get("repair_class") or "middle"
     estimate_scope = params.get("estimate_scope") or "materials"
 
-    summary_rows = [
-        ("ID", task_id),
-        ("Площадь, м²", area),
-        ("Класс ремонта", repair_class),
-        ("Режим", estimate_scope),
-        ("Итого материалы", priced.get("total_price_rub")),
-        ("Источник материалов", "локальный снимок рынка ВсеИнструменты"),
-    ]
+    CATEGORY_TITLES = {
+        "flooring": "Напольное покрытие",
+        "bathroom_tile": "Плитка санузла",
+        "plinth": "Плинтус",
+        "primer": "Грунтовка",
+        "putty": "Шпаклёвка",
+        "paint_or_wallpaper": "Краска / обои",
+        "rough_mix": "Ровнитель / смеси",
+        "tile_adhesive": "Плиточный клей",
+        "grout": "Затирка",
+    }
 
-    for row in summary_rows:
-        ws.append(row)
-
-    ws["A1"].font = Font(bold=True)
-
-    ws2 = wb.create_sheet("Materials")
+    ws2 = wb.active
+    ws2.title = "Материалы"
     ws2.append([
         "Категория",
         "Позиция",
         "Количество",
         "Ед.",
-        "Цена за ед.",
-        "Формула",
+        "Цена",
         "Итого",
         "Источник",
-        "Комментарий",
     ])
 
     for cell in ws2[1]:
@@ -78,44 +71,58 @@ def build_renovation_xlsx(task_id: str, params: Dict[str, Any], output_dir: Path
         unit_price = item.get("unit_price_rub") if item.get("usable_for_total") else None
 
         ws2.append([
-            item.get("category"),
+            CATEGORY_TITLES.get(item.get("category"), item.get("category")),
             item.get("name"),
             qty,
             item.get("market_unit") or item.get("unit"),
             unit_price,
-            f"=C{row_idx}*E{row_idx}" if unit_price else "",
-            f"=C{row_idx}*E{row_idx}" if unit_price else "",
+            f"=C{row_idx}*E{row_idx}",
             item.get("source_title") or item.get("pricing_source"),
-            item.get("basis"),
         ])
         row_idx += 1
 
-    ws3 = wb.create_sheet("Works")
-    ws3.append(["Позиция", "Объем", "Ед.", "Ставка", "Формула", "Итого", "Комментарий"])
+    ws3 = wb.create_sheet("Работы")
+    ws3.append(["Позиция", "Объем", "Ед.", "Ставка", "Итого"])
     for cell in ws3[1]:
         cell.font = Font(bold=True)
 
     if estimate_scope == "materials_and_labor":
         labor = estimate_labor(params)
-        ws3.append([
-            "Работы укрупненно",
-            area,
-            "м²",
-            int(labor.get("labor_rate_per_m2") or 0),
-            "=B2*D2",
-            labor.get("labor_base"),
-            labor.get("labor_note") or "",
-        ])
 
-    ws4 = wb.create_sheet("Assumptions")
-    ws4.append(["Параметр", "Значение"])
-    for cell in ws4[1]:
+        labor_row_idx = 2
+
+        for labor_item in labor.get("labor_items") or []:
+            ws3.append([
+                labor_item.get("title_ru"),
+                labor_item.get("quantity"),
+                labor_item.get("unit"),
+                labor_item.get("unit_price_rub"),
+                f"=B{labor_row_idx}*D{labor_row_idx}",
+            ])
+            labor_row_idx += 1
+
+    ws_total = wb.create_sheet("Итого")
+
+    ws_total.append(["Показатель", "Сумма"])
+
+    for cell in ws_total[1]:
         cell.font = Font(bold=True)
 
-    for key, value in (params or {}).items():
-        if key in ("layout",):
-            continue
-        ws4.append([key, str(value)])
+    ws_total.append([
+        "Материалы",
+        f"=SUM(Материалы!F2:F999)",
+    ])
+
+    if estimate_scope == "materials_and_labor":
+        ws_total.append([
+            "Работы",
+            f"=SUM(Работы!E2:E999)",
+        ])
+
+        ws_total.append([
+            "Общий итог",
+            "=B2+B3",
+        ])
 
     for sheet in wb.worksheets:
         _auto_width(sheet)

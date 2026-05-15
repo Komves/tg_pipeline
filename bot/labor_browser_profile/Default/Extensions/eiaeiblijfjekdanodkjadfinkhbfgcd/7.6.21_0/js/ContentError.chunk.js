@@ -1,0 +1,1 @@
+import{U as e}from"./dist.chunk.js";var t=e=>e.replace(`Error:`,``).trim(),n=class extends Error{info;constructor(n,r){let i=n;e(i)?i=t(i):i instanceof Error&&(i.message=t(i.message)),super(i),r&&(this.info=r)}};export{n as t};
