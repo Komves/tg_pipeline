@@ -388,7 +388,22 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
 
     profile = session.get("profile")
 
-    detected = detect_profile(raw)
+    if not profile and session.get("mode") == "WAIT_PROFILE":
+        PROFILE_NUMBERS = {
+            "1": "renovation",
+            "2": "auto_parts",
+            "3": "real_estate",
+            "4": "electronics",
+        }
+
+        mapped = PROFILE_NUMBERS.get(raw.strip())
+
+        if mapped:
+            detected = mapped
+        else:
+            detected = detect_profile(raw)
+    else:
+        detected = detect_profile(raw)
 
     if detected and not profile:
         session["profile"] = detected
