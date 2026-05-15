@@ -45,11 +45,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         )
 
     base_rate = MATERIAL_RATES.get(repair_class, MATERIAL_RATES["middle"])
-    base = int(float(area) * base_rate)
-
-    low = int(base * 0.85)
-    high = int(base * 1.25)
-    reserve = int(base * 0.15)
+    normative_base = int(float(area) * base_rate)
 
     surfaces = estimate_surfaces(params)
     material_basket = build_material_basket(params, surfaces)
@@ -69,6 +65,19 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         f"[REPORT] priced_basket_items_count={len(priced_basket.get('items') or [])}",
         flush=True,
     )
+
+    total_market = priced_basket.get("total_price_rub")
+
+    if total_market:
+        base = int(total_market)
+    else:
+        base = normative_base
+
+    low = int(base * 0.85)
+    high = int(base * 1.25)
+    reserve = int(base * 0.15)
+
+
     estimate_scope = params.get("estimate_scope") or "materials"
 
     labor = None
