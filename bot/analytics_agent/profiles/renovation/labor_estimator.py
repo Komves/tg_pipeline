@@ -26,4 +26,7 @@ def estimate_labor(params: Dict) -> Dict:
         "labor_base": base,
         "labor_low": int(base * 0.85),
         "labor_high": int(base * 1.25),
+        "labor_rate_per_m2": base_rate,
+        "labor_note": "Временная укрупнённая ставка за м². Требует замены на labor_cache по рыночным ставкам работ.",
     }
+        

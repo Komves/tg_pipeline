@@ -1305,12 +1305,16 @@ def _looks_like_plain_dialog_followup(text: str) -> bool:
         flags=re.I,
     ))
 
-async def _answer_long(message: Message, text: str, *, chunk_size: int = 3900) -> None:
+async def _answer_long(message: Message, text: str, *, chunk_size: int = 3600) -> None:
     t = (text or "").strip()
     if not t:
         return
 
     while t:
+        if len(t) <= chunk_size:
+            await message.answer(t)
+            return
+
         part = t[:chunk_size]
 
         cut = max(
@@ -1320,15 +1324,23 @@ async def _answer_long(message: Message, text: str, *, chunk_size: int = 3900) -
             part.rfind("! "),
             part.rfind("? "),
             part.rfind("; "),
-            part.rfind(", "),
-            part.rfind(" "),
         )
 
-        if cut > 1000:
-            part = part[:cut + 1]
+        if cut < 1000:
+            cut = part.rfind(" ")
 
-        await message.answer(part.strip())
-        t = t[len(part):].strip()
+        if cut < 1000:
+            cut = chunk_size
+
+        part = t[:cut].rstrip()
+        rest = t[cut:].lstrip()
+
+        if rest in {"₽", "руб.", "руб"} and part:
+            part = f"{part} {rest}"
+            rest = ""
+
+        await message.answer(part)
+        t = rest
 
 def _transcribe_voice_ogg(audio_bytes: bytes) -> str:
     if not audio_bytes:

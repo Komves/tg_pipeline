@@ -16,10 +16,6 @@ def _market_cache_path() -> Path:
     ]
 
     for path in candidates:
-        print(
-            f"[MARKET_CACHE_CANDIDATE] path={str(path)!r} exists={path.exists()}",
-            flush=True,
-        )
 
         if path.exists():
             print(f"[MARKET_CACHE_PATH_FOUND] path={str(path)!r}", flush=True)
@@ -32,11 +28,7 @@ def _load_market_cache() -> Dict[str, Any]:
     path = _market_cache_path()
 
     try:
-        print(
-            f"[MARKET_CACHE_CHECK] path={str(path)!r} exists={path.exists()}",
-            flush=True,
-        )
-
+        
         if not path.exists():
             return {}
 
@@ -68,14 +60,6 @@ def _price_from_market_cache(query: str, item: Dict[str, Any]) -> Dict[str, Any]
     category = str(item.get("category") or "").strip()
     cached = items.get(category)
 
-    print(
-        "[MARKET_CACHE_ITEM] "
-        f"category={category!r} "
-        f"type={type(cached).__name__!r} "
-        f"value={cached!r}",
-        flush=True,
-    )
-
     if not cached:
         return {
             "status": "unavailable",
@@ -84,13 +68,6 @@ def _price_from_market_cache(query: str, item: Dict[str, Any]) -> Dict[str, Any]
         }
 
     status = str(cached.get("status") or "").strip().lower()
-
-    print(
-        "[MARKET_CACHE_STATUS] "
-        f"category={category!r} "
-        f"status={status!r}",
-        flush=True,
-    )
 
     if status != "ok":
         return {
@@ -127,10 +104,8 @@ def _price_from_market_cache(query: str, item: Dict[str, Any]) -> Dict[str, Any]
         "market_schema": cache.get("schema"),
     }
 
-
 def price_material_basket(
     basket_items: List[Dict[str, Any]],
-    city: str,
 ) -> List[Dict[str, Any]]:
 
     print(
@@ -162,16 +137,7 @@ def price_material_basket(
             )
             continue
 
-        print(
-            f"[PRICING] BEFORE market_cache query={query!r}",
-            flush=True,
-        )
-
-        print(
-            f"[PRICING_BEFORE_MARKET_CACHE] query={query!r}",
-            flush=True,
-        )
-
+        
         found = _price_from_market_cache(query, item)
 
         if found.get("status") != "ok":
@@ -188,11 +154,6 @@ def price_material_basket(
             f"query={query!r} "
             f"status={found.get('status')!r} "
             f"reason={found.get('reason')!r}",
-            flush=True,
-        )
-
-        print(
-            f"[PRICING] AFTER market_cache status={found.get('status')!r}",
             flush=True,
         )
 

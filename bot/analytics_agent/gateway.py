@@ -130,6 +130,20 @@ async def handle_analytics_callback(cb, answer_long) -> bool:
         await cb.answer("Выбрано.")
         return True
 
+    if kind == "export" and value == "xlsx":
+        from aiogram.types import FSInputFile
+        from analytics_agent.profiles.renovation.excel_export import build_renovation_xlsx
+
+        export_dir = DATA_DIR / "analytics_exports"
+        xlsx_path = build_renovation_xlsx(task.task_id, task.params or {}, export_dir)
+
+        await cb.message.answer_document(
+            FSInputFile(str(xlsx_path)),
+            caption="Расчёт в Excel. Можно менять количества, цены и добавлять свои позиции."
+        )
+        await cb.answer("Файл готов.")
+        return True
+
     if kind == "scope":
         if value not in ("materials", "materials_and_labor"):
             await cb.answer("Некорректный режим расчёта.")
@@ -154,6 +168,16 @@ async def handle_analytics_callback(cb, answer_long) -> bool:
             session["mode"] = "READY"
             result = build_renovation_report(task.task_id, task.params)
             await answer_long(cb.message, result)
+
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Выгрузить расчёт в Excel",
+                        callback_data="an:export:xlsx",
+                    )
+                ]
+            ])
+            await cb.message.answer("Можно выгрузить расчёт в редактируемый файл:", reply_markup=kb)
 
         await cb.answer("Выбрано.")
         return True
@@ -279,8 +303,6 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
     missing = []
     if task.params.get("area_m2") is None:
         missing.append("area_m2")
-    if not task.params.get("city"):
-        missing.append("city")
     if not task.params.get("repair_class"):
         missing.append("repair_class")
     if not task.params.get("property_type"):
@@ -424,6 +446,19 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         )
 
         await answer_long(message, result)
+
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Выгрузить расчёт в Excel",
+                    callback_data="an:export:xlsx",
+                )
+            ]
+        ])
+
+        await message.answer("Можно выгрузить расчёт в редактируемый файл:", reply_markup=kb)
         return True
 
     last_task = session.get("last_task")
