@@ -3891,6 +3891,16 @@ async def vesya_handler(message: Message) -> None:
         )
 
         if pending_action or inline_action:
+            obj_text = (message.text or message.caption or "").strip()
+
+            if obj_text:
+                user_instruction = pending_action or "Прокомментируй пересланное сообщение."
+                dd = chatgpt_dialog.comment_text_object(user_instruction, obj_text)
+
+                if dd and (dd.reply or "").strip():
+                    await _answer_long(message, dd.reply)
+                    return
+
             await _handle_text_core(message, text, event_type="text")
             return
 

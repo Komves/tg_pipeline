@@ -157,6 +157,31 @@ def collect_one(sb: SB, item: dict[str, str], sleep_seconds: float) -> dict[str,
         sb.sleep(3)
 
     html = sb.get_page_source()
+
+    debug_dir = Path("market_debug")
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
+    debug_html_path = debug_dir / f"{item['key']}.html"
+    debug_png_path = debug_dir / f"{item['key']}.png"
+
+    debug_html_path.write_text(html, encoding="utf-8")
+
+
+
+    print(
+        "[DEBUG_PAGE] "
+        f"key={item['key']} "
+        f"url={sb.get_current_url()!r} "
+        f"html_len={len(html)} "
+        f"has_ruble={'₽' in html} "
+        f"has_rub={'руб' in html.lower()} "
+        f"has_servicepipe={'servicepipe' in html.lower()} "
+        f"has_captcha={'captcha' in html.lower()} "
+        f"html={debug_html_path} "
+        f"png={debug_png_path}",
+        flush=True,
+    )
+
     prices = extract_prices_rub(html)
     price_block = normalize_prices(prices)
 
