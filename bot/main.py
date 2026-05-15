@@ -144,7 +144,7 @@ from aiogram.filters import Command
 import chatgpt_dialog
 import news_digest
 import memory as vesya_memory
-from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo, handle_analytics_callback
+from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo, handle_analytics_callback, is_analytics_active
 
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -3937,6 +3937,13 @@ async def vesya_handler(message: Message) -> None:
 
     if message.from_user and _is_blocked_user(int(message.from_user.id)):
         return
+
+    chat_id = int(message.chat.id)
+    user_id = int(message.from_user.id) if message.from_user else 0
+
+    if is_analytics_active(chat_id, user_id):
+        if await handle_analytics_message(message, text, _answer_long):
+            return
 
     # In groups: react only when bot is addressed (name/command/reply)
     if message.chat.type in ("group", "supergroup"):
