@@ -136,7 +136,25 @@ def collect_one(sb: SB, item: dict[str, str], sleep_seconds: float) -> dict[str,
     print(f"[COLLECT] {item['key']} | {item['query']} | {url}", flush=True)
 
     sb.open(url)
-    sb.sleep(sleep_seconds)
+
+    try:
+        sb.wait_for_element_present("body", timeout=15)
+    except Exception:
+        pass
+
+    found_prices = False
+
+    for _ in range(int(max(sleep_seconds, 4))):
+        html = sb.get_page_source()
+
+        if "₽" in html or "руб." in html:
+            found_prices = True
+            break
+
+        sb.sleep(1)
+
+    if not found_prices:
+        sb.sleep(3)
 
     html = sb.get_page_source()
     prices = extract_prices_rub(html)
