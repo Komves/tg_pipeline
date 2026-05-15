@@ -28,7 +28,6 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         m for m in list(params.get("missing") or [])
         if (
             (m == "area_m2" and not params.get("area_m2"))
-            or (m == "city" and not params.get("city"))
             or (m == "repair_class" and not params.get("repair_class"))
             or (m == "property_type" and not params.get("property_type"))
             or (m == "ceiling_height" and not params.get("ceiling_height"))
@@ -41,7 +40,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
             "🧠 Аналитическая задача принята: ремонт квартир\n\n"
             f"ID: {task_id}\n"
             "Но не вижу площадь квартиры.\n"
-            "Нужно минимум: город, площадь, класс ремонта."
+            "Нужно минимум: площадь и класс ремонта."
         )
 
     base_rate = MATERIAL_RATES.get(repair_class, MATERIAL_RATES["middle"])
@@ -107,7 +106,6 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         "🧠 Черновая оценка материалов по ремонту",
         "",
         f"ID: {task_id}",
-        f"Город: {city}",
         f"Тип: {type_title}",
         f"Площадь: {area:g} м²",
         f"Класс ремонта: {class_title}" + ("" if repair_class_raw else " (по умолчанию)"),
@@ -129,8 +127,8 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         "• краска/обои/расходники;",
         "• двери и базовая фурнитура — если явно не исключены.",
         "",
-        "Статус: рыночная прайс-проверка выполняется по каталогу Лемана ПРО.",
-        "Цены являются ориентировочными и зависят от региона, бренда и наличия.",
+        "Статус: материалы считаются по локальному снимку рынка ВсеИнструменты.",
+        "Цены ориентировочные: snapshot обновляется вручную через collect_market.py.",
         "",
         f"Режим расчета: {'материалы + работы' if estimate_scope == 'materials_and_labor' else 'только материалы'}",
     ]
@@ -165,9 +163,13 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
         total_base = base + labor["labor_base"]
         total_high = high + labor["labor_high"]
 
+        labor_base_rate = int(labor.get("labor_base", 0) / float(area)) if area else 0
+
         out.extend([
             "",
             "Оценка работ:",
+            f"• ставка класса ремонта: ~{labor_base_rate:,} ₽/м²".replace(",", " "),
+            f"• формула: {area:g} м² × {labor_base_rate:,} ₽/м²".replace(",", " "),
             f"• нижняя граница: {labor['labor_low']:,} ₽".replace(",", " "),
             f"• реалистично: {labor['labor_base']:,} ₽".replace(",", " "),
             f"• с запасом: {labor['labor_high']:,} ₽".replace(",", " "),
@@ -206,7 +208,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
 
     if priced_basket.get("items"):
         out.append("")
-        out.append("Прайс-проверка по каталогу Лемана ПРО:")
+        out.append("Прайс-проверка по снимку рынка ВсеИнструменты:")
         for item in priced_basket.get("items") or []:
             if not item.get("usable_for_total"):
                 continue
@@ -227,7 +229,7 @@ def build_renovation_report(task_id: str, params: Dict[str, Any]) -> str:
             out.append("Рыночные цены пока недостаточно надёжны для включения в расчёт.")
     else:
         out.append("")
-        out.append("Рыночные цены: не найдены или не подключён BRAVE_SEARCH_API_KEY.")
+        out.append("Рыночные цены: не найдены в локальном market_cache.json.")
 
     if missing:
         field_labels = {

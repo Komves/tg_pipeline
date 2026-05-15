@@ -142,14 +142,13 @@ async def handle_analytics_callback(cb, answer_long) -> bool:
         task.status = "scope_selected"
         _save_task(task)
 
-        missing_city = not task.params.get("city")
         missing_height = not task.params.get("ceiling_height")
 
-        if missing_city or missing_height:
+        if missing_height:
             await cb.message.answer(
                 "Режим расчёта выбран.\n\n"
-                "Теперь напиши город и высоту потолков.\n"
-                "Например: Нижневартовск, 2.7"
+                "Теперь напиши высоту потолков.\n"
+                "Например: 2.7"
             )
         else:
             session["mode"] = "READY"
@@ -315,7 +314,7 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
     summary.append("")
     summary.append(
         "Теперь выбери класс ремонта кнопкой.\n"
-        "Город и высоту потолков потом можно будет написать текстом."
+        "Высоту потолков потом можно будет написать текстом."
     )
 
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton

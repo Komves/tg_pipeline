@@ -9,8 +9,6 @@ def _recompute_missing(params: Dict[str, Any]) -> Dict[str, Any]:
 
     if params.get("area_m2") is None:
         missing.append("area_m2")
-    if not params.get("city"):
-        missing.append("city")
     if not params.get("repair_class"):
         missing.append("repair_class")
     if not params.get("property_type"):
