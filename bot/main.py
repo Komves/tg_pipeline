@@ -1207,6 +1207,271 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
 
     return False
 
+def _add_object_part(parts: list[str], title: str, value: str, limit: int = 8000) -> None:
+    v = (value or "").strip()
+    if not v:
+        return
+    parts.append(f"--- {title} ---\n{v[:limit]}")
+
+
+async def _build_message_object(message: Message, user_text: str) -> dict:
+    """
+    Universal MessageObject collector.
+
+    Собирает всё, что реально есть в Telegram-сообщении:
+    - текст / caption
+    - forward / reply
+    - URL + текст страницы
+    - photo
+    - image-document
+    - text/pdf document
+    """
+    obj = {
+        "user_text": (user_text or "").strip(),
+        "parts": [],
+        "photo_bytes": b"",
+        "document_text": "",
+        "document_name": "",
+        "has_object": False,
+        "source_kind": "message",
+    }
+
+    parts = obj["parts"]
+
+    current_text = (
+        getattr(message, "text", None)
+        or getattr(message, "caption", None)
+        or ""
+    ).strip()
+
+    if current_text:
+        _add_object_part(parts, "current_message_text", current_text)
+        obj["has_object"] = True
+
+    if _is_forwarded_message(message):
+        _add_object_part(parts, "forwarded_message", "Сообщение переслано.")
+        obj["has_object"] = True
+        obj["source_kind"] = "forwarded_message"
+
+    r = getattr(message, "reply_to_message", None)
+    if r:
+        reply_text = (
+            getattr(r, "text", None)
+            or getattr(r, "caption", None)
+            or ""
+        ).strip()
+
+        if reply_text:
+            _add_object_part(parts, "reply_message_text", reply_text)
+            obj["has_object"] = True
+            obj["source_kind"] = "reply_message"
+
+        if getattr(r, "photo", None):
+            try:
+                raw = await _download_tg_file_bytes(message.bot, r.photo[-1].file_id)
+                obj["photo_bytes"] = _shrink_jpeg_bytes(raw)
+                _add_object_part(parts, "reply_photo", "В reply есть изображение.")
+                obj["has_object"] = True
+                obj["source_kind"] = "reply_photo"
+            except Exception as e:
+                print(f"[message_object] reply photo failed: {type(e).__name__}: {e}", flush=True)
+
+        rdoc = getattr(r, "document", None)
+        if rdoc:
+            try:
+                rmt = (getattr(rdoc, "mime_type", "") or "").lower()
+                rfn = getattr(rdoc, "file_name", "") or "reply_document"
+
+                raw = await _download_tg_file_bytes(message.bot, rdoc.file_id)
+
+                if rmt.startswith("image/"):
+                    obj["photo_bytes"] = _shrink_jpeg_bytes(raw)
+                    _add_object_part(parts, "reply_image_document", f"В reply есть изображение-документ: {rfn}")
+                    obj["has_object"] = True
+                    obj["source_kind"] = "reply_image_document"
+                else:
+                    extracted = await asyncio.to_thread(_extract_text_document, raw, rfn, rmt)
+                    if extracted:
+                        obj["document_text"] = extracted
+                        obj["document_name"] = rfn
+                        _add_object_part(parts, f"reply_document_text:{rfn}", extracted)
+                        obj["has_object"] = True
+                        obj["source_kind"] = "reply_document"
+            except Exception as e:
+                print(f"[message_object] reply document failed: {type(e).__name__}: {e}", flush=True)
+
+    if getattr(message, "photo", None):
+        try:
+            raw = await _download_tg_file_bytes(message.bot, message.photo[-1].file_id)
+            obj["photo_bytes"] = _shrink_jpeg_bytes(raw)
+            _add_object_part(parts, "current_photo", "В текущем сообщении есть изображение.")
+            obj["has_object"] = True
+            obj["source_kind"] = "photo"
+        except Exception as e:
+            print(f"[message_object] current photo failed: {type(e).__name__}: {e}", flush=True)
+
+    doc = getattr(message, "document", None)
+    if doc:
+        try:
+            mt = (getattr(doc, "mime_type", "") or "").lower()
+            fn = getattr(doc, "file_name", "") or "document"
+
+            raw = await _download_tg_file_bytes(message.bot, doc.file_id)
+
+            if mt.startswith("image/"):
+                obj["photo_bytes"] = _shrink_jpeg_bytes(raw)
+                _add_object_part(parts, "current_image_document", f"В текущем сообщении есть изображение-документ: {fn}")
+                obj["has_object"] = True
+                obj["source_kind"] = "image_document"
+            else:
+                extracted = await asyncio.to_thread(_extract_text_document, raw, fn, mt)
+                if extracted:
+                    obj["document_text"] = extracted
+                    obj["document_name"] = fn
+                    _add_object_part(parts, f"current_document_text:{fn}", extracted)
+                    obj["has_object"] = True
+                    obj["source_kind"] = "document"
+        except Exception as e:
+            print(f"[message_object] current document failed: {type(e).__name__}: {e}", flush=True)
+
+    combined_text = "\n".join(parts)
+    urls = []
+    for m in _URL_RE.finditer(combined_text):
+        u = (m.group(0) or "").rstrip(").,!?;:")
+        if u and u not in urls:
+            urls.append(u)
+
+    for url in urls[:3]:
+        _add_object_part(parts, "url", url)
+        obj["has_object"] = True
+        try:
+            page_text = await asyncio.to_thread(_fetch_url_text, url)
+            if page_text:
+                _add_object_part(parts, f"url_page_text:{url}", page_text, limit=8000)
+        except Exception as e:
+            print(f"[message_object] url fetch failed: {type(e).__name__}: {e}", flush=True)
+
+    return obj
+
+
+def _message_object_text(obj: dict) -> str:
+    parts = obj.get("parts") or []
+    if not isinstance(parts, list):
+        return ""
+    return "\n\n".join(str(x) for x in parts if str(x).strip()).strip()
+
+
+def _should_use_universal_layer(message: Message, user_text: str, obj: dict) -> bool:
+    if not obj.get("has_object"):
+        return False
+
+    # В группе не отвечаем на всё подряд. Но если обращаются к Весе — анализируем весь объект.
+    if message.chat.type in ("group", "supergroup"):
+        return bool(user_text and chatgpt_dialog.persona.is_addressed(user_text))
+
+    return True
+
+
+async def _try_universal_message_layer(
+    message: Message,
+    user_text: str,
+    *,
+    event_type: str = "message",
+) -> bool:
+    """
+    Single entry point for understanding any Telegram message object.
+
+    Не решает через keywords.
+    Сначала собирает MessageObject, потом semantic_context_route решает смысл.
+    """
+    chat_id = int(message.chat.id)
+    user_id = int(message.from_user.id) if message.from_user else 0
+
+    obj = await _build_message_object(message, user_text)
+    object_text = _message_object_text(obj)
+
+    if not _should_use_universal_layer(message, user_text, obj):
+        return False
+
+    topic = _get_topic(chat_id, user_id)
+
+    semantic_ctx = chatgpt_dialog.semantic_context_route(
+        user_text,
+        object_text=object_text,
+        topic=topic,
+    )
+
+    print(
+        "[message_object_route]",
+        {
+            "event_type": event_type,
+            "source_kind": obj.get("source_kind"),
+            "route": semantic_ctx.get("route"),
+            "has_photo": bool(obj.get("photo_bytes")),
+            "has_document": bool(obj.get("document_text")),
+            "object_chars": len(object_text),
+        },
+        flush=True,
+    )
+
+    route = str(semantic_ctx.get("route") or "chat").strip().lower()
+
+    if route == "topic_followup" and topic:
+        dd = chatgpt_dialog.continue_topic_discussion(user_text, topic)
+        if dd and (dd.reply or "").strip():
+            await _answer_long(message, dd.reply)
+            return True
+
+    if route != "object_analysis":
+        return False
+
+    instruction = (
+        semantic_ctx.get("instruction")
+        or user_text
+        or "Пойми и объясни это сообщение."
+    )
+
+    if obj.get("photo_bytes"):
+        vision_prompt = (
+            f"{instruction}\n\n"
+            f"Контекст сообщения:\n{object_text[:5000]}"
+        )
+        dd = chatgpt_dialog.describe_or_compare_photo(
+            vision_prompt,
+            obj["photo_bytes"],
+        )
+
+    elif obj.get("document_text"):
+        dd = chatgpt_dialog.analyze_document_text(
+            instruction,
+            obj.get("document_name") or "document",
+            obj.get("document_text") or "",
+        )
+
+    else:
+        dd = chatgpt_dialog.comment_text_object(
+            instruction,
+            object_text,
+        )
+
+    if dd and (dd.reply or "").strip():
+        await _answer_long(message, dd.reply)
+
+        _remember_topic(
+            chat_id,
+            user_id,
+            {
+                "type": "message_object",
+                "source_kind": obj.get("source_kind") or "message",
+                "user_prompt": user_text,
+                "summary": dd.reply[:1200],
+            },
+        )
+
+        return True
+
+    return False
+
 def _topic_key(chat_id: int, user_id: int) -> str:
     return f"{int(chat_id)}:{int(user_id)}"
 
@@ -3173,6 +3438,9 @@ async def on_photo(message: Message) -> None:
         )
         caption = (message.caption or "").strip()
 
+        if await _try_universal_message_layer(message, caption, event_type="photo"):
+            return
+
         # Пересланные фото/новости в группе сами по себе не комментируем.
         # Иначе Веся отвечает дважды: на forward-картинку и на реплику пользователя.
         if (
@@ -3183,18 +3451,15 @@ async def on_photo(message: Message) -> None:
             return
 
         if caption:
-            if (
-                any(x in caption.lower() for x in (
-                    "прочитай",
-                    "текст",
-                    "документ",
-                    "скрин",
-                    "ocr",
-                    "что написано",
-                    "разбери документ",
-                ))
-                or _looks_like_text_heavy_image(img_bytes)
-            ):
+            if any(x in caption.lower() for x in (
+                "прочитай",
+                "текст",
+                "документ",
+                "скрин",
+                "ocr",
+                "что написано",
+                "разбери документ",
+            )):
                 extracted = await asyncio.to_thread(_ocr_image_bytes, img_bytes, filename="photo.jpg")
                 dd = chatgpt_dialog.analyze_document_text(caption, "photo.jpg", extracted)
             else:
@@ -3281,6 +3546,9 @@ async def on_document(message: Message) -> None:
     mt = (getattr(doc, "mime_type", "") or "").lower()
     fn = getattr(doc, "file_name", "") or "document"
     caption = (message.caption or "").strip()
+
+    if await _try_universal_message_layer(message, caption, event_type="document"):
+        return
 
     # =========================
     # IMAGE DOCUMENTS
@@ -3724,63 +3992,8 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
             await _run_research_count_for_message(message, original_query)
             return
 
-    url = _extract_first_url(dialog_text)
-
-    if not url:
-        topic = _get_topic(chat_id, user_id)
-        if (
-            topic
-            and topic.get("type") == "url_content"
-            and _looks_like_url_followup(dialog_text)
-        ):
-            url = str(topic.get("url") or "").strip()
-
-    if url:
-        await _run_url_read_for_message(message, url, dialog_text)
+    if await _try_universal_message_layer(message, dialog_text, event_type=event_type):
         return
-    
-    # forwarded message understanding
-    if _is_forwarded_message(message):
-        forwarded_text = (
-            message.text
-            or message.caption
-            or ""
-        ).strip()
-
-        if forwarded_text:
-            enriched_text = forwarded_text
-
-            try:
-                url = _extract_first_url(forwarded_text)
-
-                if url:
-                    page_text = await asyncio.to_thread(
-                        _fetch_url_text,
-                        url,
-                    )
-
-                    if page_text:
-                        enriched_text = (
-                            f"{forwarded_text}\n\n"
-                            f"Содержимое страницы:\n"
-                            f"{page_text[:8000]}"
-                        )
-
-            except Exception as e:
-                print(
-                    f"[forward_url] failed: "
-                    f"{type(e).__name__}: {e}",
-                    flush=True,
-                )
-
-            dd = chatgpt_dialog.comment_text_object(
-                "Опиши подробно содержание этого сообщения и ссылки.",
-                enriched_text,
-            )
-
-            if dd and (dd.reply or "").strip():
-                await _answer_long(message, dd.reply)
-                return
 
     decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
 
