@@ -1262,35 +1262,13 @@ def _get_topic(chat_id: int, user_id: int) -> dict | None:
 
     return topic
 
-
 def _looks_like_topic_followup(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-
-    return any(x in t for x in (
-        "а что за музыка",
-        "что за музыка",
-        "что за трек",
-        "что за песня",
-        "кто поет",
-        "кто поёт",
-        "а подробнее",
-        "почему",
-        "а почему",
-        "что там",
-        "что она",
-        "что он",
-        "что они",
-        "это правда",
-        "а это",
-        "и что",
-        "ну и",
-        "в смысле",
-        "объясни",
-        "поясни",
-        "разбери",
-    ))
+    """
+    Deprecated.
+    Topic continuation is decided by chatgpt_dialog.semantic_context_route().
+    Kept only to avoid breaking old references.
+    """
+    return False
 
 # =========================
 # NEWS RUNNER (calls Telethon inside news_digest)
@@ -1538,16 +1516,6 @@ async def _run_url_read_for_message(message: Message, url: str, user_request: st
     user_id = int(message.from_user.id) if message.from_user else 0
 
     page_text = await asyncio.to_thread(_fetch_url_text, url)
-
-    _remember_topic(
-        chat_id,
-        user_id,
-        {
-            "type": "url_content",
-            "url": url,
-            "summary": page_text[:1200] if page_text else "",
-        },
-    )
 
     if not page_text:
         await message.answer(
@@ -4628,11 +4596,17 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
     plain_dialog_followup = _looks_like_plain_dialog_followup(text)
 
     topic = _get_topic(chat_id, user_id)
-    if topic and (not plain_dialog_followup) and _looks_like_topic_followup(text):
-        dd = chatgpt_dialog.continue_topic_discussion(text, topic)
-        if dd and (dd.reply or "").strip():
-            await _answer_long(message, dd.reply)
-            return
+    if topic and (not plain_dialog_followup):
+        semantic_ctx = chatgpt_dialog.semantic_context_route(
+            text,
+            topic=topic,
+        )
+
+        if semantic_ctx.get("route") == "topic_followup":
+            dd = chatgpt_dialog.continue_topic_discussion(text, topic)
+            if dd and (dd.reply or "").strip():
+                await _answer_long(message, dd.reply)
+                return
 
     if is_reply_to_bot_content:
         await _handle_text_core(message, f"Веся, {text}", event_type="text")

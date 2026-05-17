@@ -1726,7 +1726,87 @@ def comment_text_object(user_text: str, object_text: str) -> Optional[DialogDeci
     except Exception as e:
         _dbg(f"comment_text_object EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="прочитать-то прочитала, а ответить нормально не вышло.")
-    
+
+
+def semantic_context_route(
+    user_text: str,
+    *,
+    object_text: str = "",
+    topic: dict | None = None,
+) -> dict:
+    """
+    Universal semantic router for deciding whether current message is:
+    - ordinary chat;
+    - analysis of current object;
+    - continuation of previous topic.
+
+    This must not answer the user.
+    """
+    current = (user_text or "").strip()
+    obj = (object_text or "").strip()
+    topic_data = topic if isinstance(topic, dict) else {}
+
+    if not current and not obj:
+        return {"route": "chat", "instruction": ""}
+
+    if not _has_key():
+        return {"route": "object_analysis" if obj else "chat", "instruction": current}
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты semantic-router для Telegram-бота Веси.\n"
+                        "Ты НЕ отвечаешь пользователю.\n"
+                        "Ты только выбираешь маршрут обработки сообщения.\n\n"
+                        "Есть три маршрута:\n"
+                        "1. chat — самостоятельный обычный запрос или разговор.\n"
+                        "2. object_analysis — пользователь показывает объект: фото, текст, ссылку, объявление, пересланное сообщение, документ — и ожидает понимание/оценку/объяснение этого объекта.\n"
+                        "3. topic_followup — пользователь явно продолжает предыдущую тему, и текущая фраза без прошлой темы неполная.\n\n"
+                        "Правила:\n"
+                        "- Не используй ключевые слова как главный критерий.\n"
+                        "- Решай по смыслу всего входа.\n"
+                        "- topic_followup выбирай только если текущий запрос семантически зависит от previous_topic.\n"
+                        "- Если текущий запрос самодостаточный — выбирай chat, даже если есть previous_topic.\n"
+                        "- Если есть current_object и пользователь просит понять/описать/оценить/объяснить показанный объект — выбирай object_analysis.\n"
+                        "- Не зашивай частные сценарии вроде Avito, вес, рост, музыка.\n\n"
+                        "Верни только JSON:\n"
+                        "{\"route\":\"chat|object_analysis|topic_followup\",\"instruction\":\"краткая инструкция для исполнителя\"}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"current_message:\n{current[:3000]}\n\n"
+                        f"current_object:\n{obj[:5000]}\n\n"
+                        f"previous_topic JSON:\n{json.dumps(topic_data, ensure_ascii=False)[:5000]}"
+                    ),
+                },
+            ],
+        )
+
+        data = _parse_json_object(_extract_text(resp)) or {}
+        route = str(data.get("route") or "chat").strip().lower()
+        if route not in {"chat", "object_analysis", "topic_followup"}:
+            route = "chat"
+
+        instruction = str(data.get("instruction") or "").strip()
+
+        return {
+            "route": route,
+            "instruction": instruction,
+        }
+
+    except Exception as e:
+        _dbg(f"semantic_context_route EXC: {type(e).__name__}: {e}")
+        return {"route": "object_analysis" if obj else "chat", "instruction": current}
+
+
 def analyze_document_text(user_text: str, filename: str, doc_text: str) -> DialogDecision:
     """
     Analyze extracted document text.
