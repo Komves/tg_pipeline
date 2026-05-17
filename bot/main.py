@@ -4107,8 +4107,32 @@ async def vesya_handler(message: Message) -> None:
             obj_text = (message.text or message.caption or "").strip()
 
             if obj_text:
-                user_instruction = pending_action or "Прокомментируй пересланное сообщение."
-                dd = chatgpt_dialog.comment_text_object(user_instruction, obj_text)
+                enriched_text = obj_text
+
+                try:
+                    url = _extract_first_url(obj_text)
+
+                    if url:
+                        page_text = await asyncio.to_thread(_fetch_url_text, url)
+
+                        if page_text:
+                            enriched_text = (
+                                f"{obj_text}\n\n"
+                                f"Содержимое страницы по ссылке:\n"
+                                f"{page_text[:8000]}"
+                            )
+                        else:
+                            enriched_text = (
+                                f"{obj_text}\n\n"
+                                f"Ссылка найдена, но страницу прочитать не удалось: {url}"
+                            )
+
+                except Exception as e:
+                    print(f"[forward_url] failed: {type(e).__name__}: {e}", flush=True)
+
+                user_instruction = pending_action or text or "Опиши суть пересланного сообщения с учётом ссылки."
+
+                dd = chatgpt_dialog.comment_text_object(user_instruction, enriched_text)
 
                 if dd and (dd.reply or "").strip():
                     await _answer_long(message, dd.reply)
