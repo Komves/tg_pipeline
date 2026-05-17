@@ -1416,7 +1416,7 @@ async def _try_universal_message_layer(
 
     route = str(semantic_ctx.get("route") or "chat").strip().lower()
 
-    if route == "topic_followup" and topic:
+    if route == "topic_followup" and topic and not object_text:
         dd = chatgpt_dialog.continue_topic_discussion(user_text, topic)
         if dd and (dd.reply or "").strip():
             await _answer_long(message, dd.reply)
