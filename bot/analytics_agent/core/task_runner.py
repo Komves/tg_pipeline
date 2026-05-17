@@ -25,7 +25,7 @@ def run_task(task: ResearchTask) -> str:
         task.status = "parsed"
         return build_renovation_report(task.task_id, task.params)
 
-        if task.profile == "auto_parts":
+    if task.profile == "auto_parts":
         from analytics_agent.profiles.auto_parts.report import build_auto_parts_report
 
         task.status = "researched"
