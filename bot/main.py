@@ -1452,6 +1452,126 @@ def _extract_web_search_query(text: str) -> str:
     return q
 
 
+_URL_RE = re.compile(r"https?://[^\s<>\"']+", flags=re.I)
+
+
+def _extract_first_url(text: str) -> str:
+    m = _URL_RE.search(text or "")
+    if not m:
+        return ""
+    return m.group(0).rstrip(").,!?;:")
+
+
+def _looks_like_url_followup(text: str) -> bool:
+    t = _strip_vesya_prefix(text).strip().lower()
+    t = t.strip(" ?!.,:;")
+    return t in {
+        "что это",
+        "что это такое",
+        "прочитай",
+        "прочитай объявление",
+        "перескажи",
+        "перескажи что видишь",
+        "прокомментируй",
+        "расскажи суть",
+        "суть",
+    }
+
+
+def _fetch_url_text(url: str) -> str:
+    try:
+        import requests
+
+        r = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0 Safari/537.36"
+                )
+            },
+            timeout=20,
+        )
+
+        if not r.ok:
+            return ""
+
+        text = r.text or ""
+        text = re.sub(r"(?is)<script.*?</script>", " ", text)
+        text = re.sub(r"(?is)<style.*?</style>", " ", text)
+        text = re.sub(r"(?is)<noscript.*?</noscript>", " ", text)
+        text = re.sub(r"(?is)<[^>]+>", " ", text)
+        text = html.unescape(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:12000]
+
+    except Exception:
+        return ""
+
+
+async def _run_url_read_for_message(message: Message, url: str, user_request: str) -> None:
+    chat_id = int(message.chat.id)
+    user_id = int(message.from_user.id) if message.from_user else 0
+
+    page_text = await asyncio.to_thread(_fetch_url_text, url)
+
+    _remember_topic(
+        chat_id,
+        user_id,
+        {
+            "type": "url_content",
+            "url": url,
+            "summary": page_text[:1200] if page_text else "",
+        },
+    )
+
+    if not page_text:
+        await message.answer(
+            "Я вижу ссылку, но страницу прочитать не смогла. "
+            "Без текста страницы пересказывать не буду — иначе опять начнётся гадание."
+        )
+        return
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI()
+        resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты — Веся. Пользователь дал ссылку и просит понять/прочитать страницу.\n"
+                        "Отвечай только по переданному тексту страницы.\n"
+                        "Если в тексте нет данных объявления — прямо скажи, что страница не дала содержимого.\n"
+                        "Не используй память, историю, догадки и внешние факты.\n"
+                        "Формат: что это / суть объявления / важные детали.\n"
+                        "Кратко, без воды."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Запрос пользователя: {user_request}\n\n"
+                        f"URL: {url}\n\n"
+                        f"Текст страницы:\n{page_text}"
+                    ),
+                },
+            ],
+        )
+
+        answer = (getattr(resp, "output_text", "") or "").strip()
+        if not answer:
+            answer = "Страницу прочитала, но внятной сути из текста не получилось вытащить."
+
+        await _answer_long(message, answer)
+
+    except Exception as e:
+        print(f"[url_read] failed: {type(e).__name__}: {e}", flush=True)
+        await message.answer(f"Ссылку прочитать не вышло: {type(e).__name__}: {e}")
+
 async def _run_web_search_for_message(message: Message, query: str) -> None:
     query = (query or "").strip()
     query = re.sub(r"\s+", " ", query).strip()
@@ -3615,6 +3735,21 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
             )
             await _run_research_count_for_message(message, original_query)
             return
+
+    url = _extract_first_url(dialog_text)
+
+    if not url:
+        topic = _get_topic(chat_id, user_id)
+        if (
+            topic
+            and topic.get("type") == "url_content"
+            and _looks_like_url_followup(dialog_text)
+        ):
+            url = str(topic.get("url") or "").strip()
+
+    if url:
+        await _run_url_read_for_message(message, url, dialog_text)
+        return
 
     decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
 
