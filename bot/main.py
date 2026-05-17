@@ -30,8 +30,11 @@ GMAIL_POLL_INTERVAL_SEC = int(os.getenv("GMAIL_POLL_INTERVAL_SEC", "900"))
 GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]# last image per (chat_id, user_id) to support "опиши фото" without reply
 LAST_USER_IMAGE_ID = {}
 
-PENDING_FORWARD_ACTION = {}  # (chat_id, user_id) -> {"action": str, "ts": float}
+PENDING_FORWARD_ACTION = {}  # legacy; kept for compatibility
 PENDING_FORWARD_ACTION_TTL_SEC = 120
+
+PENDING_MESSAGE_OBJECT_REQUEST = {}  # (chat_id, user_id) -> {"instruction": str, "ts": float}
+PENDING_MESSAGE_OBJECT_TTL_SEC = 120
 
 # =========================
 # IMAGE REACTION LIMITER (moderate)
@@ -1207,6 +1210,30 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
 
     return False
 
+def _pending_object_key(chat_id: int, user_id: int) -> tuple[int, int]:
+    return (int(chat_id), int(user_id))
+
+
+def _set_pending_message_object_request(chat_id: int, user_id: int, instruction: str) -> None:
+    PENDING_MESSAGE_OBJECT_REQUEST[_pending_object_key(chat_id, user_id)] = {
+        "instruction": (instruction or "").strip(),
+        "ts": time.time(),
+    }
+
+
+def _pop_pending_message_object_request(chat_id: int, user_id: int) -> dict | None:
+    key = _pending_object_key(chat_id, user_id)
+    pending = PENDING_MESSAGE_OBJECT_REQUEST.pop(key, None)
+
+    if not isinstance(pending, dict):
+        return None
+
+    ts = float(pending.get("ts") or 0)
+    if not ts or (time.time() - ts) > PENDING_MESSAGE_OBJECT_TTL_SEC:
+        return None
+
+    return pending
+
 def _add_object_part(parts: list[str], title: str, value: str, limit: int = 8000) -> None:
     v = (value or "").strip()
     if not v:
@@ -1226,6 +1253,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
     - image-document
     - text/pdf document
     """
+    
     obj = {
         "user_text": (user_text or "").strip(),
         "parts": [],
@@ -1233,6 +1261,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
         "document_text": "",
         "document_name": "",
         "has_object": False,
+        "has_external_object": False,
         "source_kind": "message",
     }
 
@@ -1251,8 +1280,8 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
     if _is_forwarded_message(message):
         _add_object_part(parts, "forwarded_message", "Сообщение переслано.")
         obj["has_object"] = True
+        obj["has_external_object"] = True
         obj["source_kind"] = "forwarded_message"
-
     r = getattr(message, "reply_to_message", None)
     if r:
         reply_text = (
@@ -1264,6 +1293,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
         if reply_text:
             _add_object_part(parts, "reply_message_text", reply_text)
             obj["has_object"] = True
+            obj["has_external_object"] = True
             obj["source_kind"] = "reply_message"
 
         if getattr(r, "photo", None):
@@ -1272,6 +1302,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
                 obj["photo_bytes"] = _shrink_jpeg_bytes(raw)
                 _add_object_part(parts, "reply_photo", "В reply есть изображение.")
                 obj["has_object"] = True
+                obj["has_external_object"] = True
                 obj["source_kind"] = "reply_photo"
             except Exception as e:
                 print(f"[message_object] reply photo failed: {type(e).__name__}: {e}", flush=True)
@@ -1288,6 +1319,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
                     obj["photo_bytes"] = _shrink_jpeg_bytes(raw)
                     _add_object_part(parts, "reply_image_document", f"В reply есть изображение-документ: {rfn}")
                     obj["has_object"] = True
+                    obj["has_external_object"] = True
                     obj["source_kind"] = "reply_image_document"
                 else:
                     extracted = await asyncio.to_thread(_extract_text_document, raw, rfn, rmt)
@@ -1296,6 +1328,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
                         obj["document_name"] = rfn
                         _add_object_part(parts, f"reply_document_text:{rfn}", extracted)
                         obj["has_object"] = True
+                        obj["has_external_object"] = True
                         obj["source_kind"] = "reply_document"
             except Exception as e:
                 print(f"[message_object] reply document failed: {type(e).__name__}: {e}", flush=True)
@@ -1306,6 +1339,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
             obj["photo_bytes"] = _shrink_jpeg_bytes(raw)
             _add_object_part(parts, "current_photo", "В текущем сообщении есть изображение.")
             obj["has_object"] = True
+            obj["has_external_object"] = True
             obj["source_kind"] = "photo"
         except Exception as e:
             print(f"[message_object] current photo failed: {type(e).__name__}: {e}", flush=True)
@@ -1322,6 +1356,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
                 obj["photo_bytes"] = _shrink_jpeg_bytes(raw)
                 _add_object_part(parts, "current_image_document", f"В текущем сообщении есть изображение-документ: {fn}")
                 obj["has_object"] = True
+                obj["has_external_object"] = True
                 obj["source_kind"] = "image_document"
             else:
                 extracted = await asyncio.to_thread(_extract_text_document, raw, fn, mt)
@@ -1330,6 +1365,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
                     obj["document_name"] = fn
                     _add_object_part(parts, f"current_document_text:{fn}", extracted)
                     obj["has_object"] = True
+                    obj["has_external_object"] = True
                     obj["source_kind"] = "document"
         except Exception as e:
             print(f"[message_object] current document failed: {type(e).__name__}: {e}", flush=True)
@@ -1344,6 +1380,7 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
     for url in urls[:3]:
         _add_object_part(parts, "url", url)
         obj["has_object"] = True
+        obj["has_external_object"] = True
         try:
             page_text = await asyncio.to_thread(_fetch_url_text, url)
             if page_text:
@@ -1362,15 +1399,15 @@ def _message_object_text(obj: dict) -> str:
 
 
 def _should_use_universal_layer(message: Message, user_text: str, obj: dict) -> bool:
-    if not obj.get("has_object"):
+    if not obj.get("has_external_object"):
         return False
 
-    # В группе не отвечаем на всё подряд. Но если обращаются к Весе — анализируем весь объект.
+    # В группе не отвечаем на всё подряд.
+    # Но если текущий объект связан с pending-запросом, user_text уже содержит исходное обращение к Весе.
     if message.chat.type in ("group", "supergroup"):
         return bool(user_text and chatgpt_dialog.persona.is_addressed(user_text))
 
     return True
-
 
 async def _try_universal_message_layer(
     message: Message,
@@ -1388,6 +1425,17 @@ async def _try_universal_message_layer(
     user_id = int(message.from_user.id) if message.from_user else 0
 
     obj = await _build_message_object(message, user_text)
+
+    pending_object = None
+    if obj.get("has_external_object"):
+        pending_object = _pop_pending_message_object_request(chat_id, user_id)
+        if pending_object:
+            user_text = (
+                str(pending_object.get("instruction") or "").strip()
+                or user_text
+            )
+            obj["user_text"] = user_text
+
     object_text = _message_object_text(obj)
 
     if not _should_use_universal_layer(message, user_text, obj):
@@ -4265,14 +4313,37 @@ async def vesya_handler(message: Message) -> None:
         "что означает",
     }
 
-    if (not _is_forwarded_message(message)) and clean_action in pending_action_words:
-        PENDING_FORWARD_ACTION[(int(message.chat.id), int(message.from_user.id))] = {
-            "action": clean_action,
-            "ts": time.time(),
-        }
-        return
+    if (
+        not _is_forwarded_message(message)
+        and not message.reply_to_message
+        and message.chat.type in ("private", "group", "supergroup")
+    ):
+        chat_id = int(message.chat.id)
+        user_id = int(message.from_user.id) if message.from_user else 0
+
+        if message.chat.type == "private" or chatgpt_dialog.persona.is_addressed(text):
+            pending_probe = chatgpt_dialog.semantic_needs_next_object(
+                text,
+                topic=_get_topic(chat_id, user_id),
+            )
+
+            if pending_probe.get("wait_for_object"):
+                instruction = (
+                    str(pending_probe.get("instruction") or "").strip()
+                    or text
+                )
+                _set_pending_message_object_request(chat_id, user_id, instruction)
+                print(
+                    "[pending_message_object]",
+                    {"instruction": instruction[:300]},
+                    flush=True,
+                )
+                return
 
     if _is_forwarded_message(message):
+        if await _try_universal_message_layer(message, text, event_type="forwarded"):
+            return
+
         pending_key = (int(message.chat.id), int(message.from_user.id))
         pending = PENDING_FORWARD_ACTION.get(pending_key)
 

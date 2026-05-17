@@ -1813,6 +1813,70 @@ def semantic_context_route(
         _dbg(f"semantic_context_route EXC: {type(e).__name__}: {e}")
         return {"route": "object_analysis" if obj else "chat", "instruction": current}
 
+def semantic_needs_next_object(
+    user_text: str,
+    *,
+    topic: dict | None = None,
+) -> dict:
+    """
+    Decide whether the current text is not a complete user request,
+    but an instruction to analyze the next shown Telegram object.
+
+    This does not answer the user.
+    """
+    current = (user_text or "").strip()
+    topic_data = topic if isinstance(topic, dict) else {}
+
+    if not current:
+        return {"wait_for_object": False, "instruction": ""}
+
+    if not _has_key():
+        return {"wait_for_object": False, "instruction": current}
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты semantic-router для Telegram-бота Веси.\n"
+                        "Ты НЕ отвечаешь пользователю.\n"
+                        "Твоя задача — понять, является ли текущее сообщение инструкцией "
+                        "к следующему объекту, который пользователь собирается прислать или переслать.\n\n"
+                        "Верни wait_for_object=true, если пользователь явно просит понять/описать/оценить/объяснить "
+                        "какой-то объект, но в текущем сообщении самого объекта нет.\n\n"
+                        "Объектом может быть: следующее фото, пересланное сообщение, ссылка, объявление, документ, скрин, текст, видео.\n\n"
+                        "Верни wait_for_object=false, если это самостоятельный обычный вопрос, обычный разговор "
+                        "или продолжение previous_topic без ожидания нового объекта.\n\n"
+                        "Не используй ключевые слова как главный критерий. Решай по смыслу.\n"
+                        "Если пользователь обращается к словам вроде 'это', 'тут', 'здесь', 'сообщение', "
+                        "но объекта в текущем сообщении нет — обычно он ожидает следующий объект.\n\n"
+                        "Верни только JSON:\n"
+                        "{\"wait_for_object\":true|false,\"instruction\":\"краткая инструкция для анализа будущего объекта\"}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"current_message:\n{current[:3000]}\n\n"
+                        f"previous_topic JSON:\n{json.dumps(topic_data, ensure_ascii=False)[:5000]}"
+                    ),
+                },
+            ],
+        )
+
+        data = _parse_json_object(_extract_text(resp)) or {}
+        return {
+            "wait_for_object": bool(data.get("wait_for_object", False)),
+            "instruction": str(data.get("instruction") or current).strip(),
+        }
+
+    except Exception as e:
+        _dbg(f"semantic_needs_next_object EXC: {type(e).__name__}: {e}")
+        return {"wait_for_object": False, "instruction": current}
 
 def analyze_document_text(user_text: str, filename: str, doc_text: str) -> DialogDecision:
     """
