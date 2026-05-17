@@ -1171,8 +1171,31 @@ async def _try_reply_context_comment(message: Message, user_text: str) -> bool:
                 return True
 
         obj_text = (r.text or r.caption or "").strip()
+
         if obj_text:
-            dd = chatgpt_dialog.comment_text_object(user_text, obj_text)
+            enriched_text = obj_text
+
+            try:
+                url = _extract_first_url(obj_text)
+
+                if url:
+                    page_text = await asyncio.to_thread(_fetch_url_text, url)
+
+                    if page_text:
+                        enriched_text = (
+                            f"{obj_text}\n\n"
+                            f"Содержимое страницы:\n"
+                            f"{page_text[:8000]}"
+                        )
+
+            except Exception as e:
+                print(f"[context_url] failed: {type(e).__name__}: {e}", flush=True)
+
+            dd = chatgpt_dialog.comment_text_object(
+                user_text,
+                enriched_text,
+            )
+
             if dd and (dd.reply or "").strip():
                 await _answer_long(message, dd.reply)
                 return True
