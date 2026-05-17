@@ -3773,6 +3773,49 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
     if url:
         await _run_url_read_for_message(message, url, dialog_text)
         return
+    
+    # forwarded message understanding
+    if _is_forwarded_message(message):
+        forwarded_text = (
+            message.text
+            or message.caption
+            or ""
+        ).strip()
+
+        if forwarded_text:
+            enriched_text = forwarded_text
+
+            try:
+                url = _extract_first_url(forwarded_text)
+
+                if url:
+                    page_text = await asyncio.to_thread(
+                        _fetch_url_text,
+                        url,
+                    )
+
+                    if page_text:
+                        enriched_text = (
+                            f"{forwarded_text}\n\n"
+                            f"Содержимое страницы:\n"
+                            f"{page_text[:8000]}"
+                        )
+
+            except Exception as e:
+                print(
+                    f"[forward_url] failed: "
+                    f"{type(e).__name__}: {e}",
+                    flush=True,
+                )
+
+            dd = chatgpt_dialog.comment_text_object(
+                "Опиши подробно содержание этого сообщения и ссылки.",
+                enriched_text,
+            )
+
+            if dd and (dd.reply or "").strip():
+                await _answer_long(message, dd.reply)
+                return
 
     decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
 
