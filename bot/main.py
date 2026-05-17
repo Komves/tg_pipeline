@@ -3182,10 +3182,7 @@ async def on_photo(message: Message) -> None:
         ):
             return
 
-        if caption and (
-            chatgpt_dialog.persona.is_addressed(caption)
-            or (message.chat.type == "private" and _wants_context_comment(caption))
-        ):
+        if caption:
             if (
                 any(x in caption.lower() for x in (
                     "прочитай",
