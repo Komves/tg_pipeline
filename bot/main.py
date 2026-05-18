@@ -4438,8 +4438,28 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
     user_id = int(message.from_user.id) if message.from_user else 0
 
     if is_analytics_active(chat_id, user_id):
+
+        # analytics session must suppress
+        # all pending object analyzers
+        try:
+            PENDING_MESSAGE_OBJECT_REQUEST.pop(
+                (chat_id, user_id),
+                None,
+            )
+        except Exception:
+            pass
+
+        try:
+            PENDING_FORWARD_ACTION.pop(
+                (chat_id, user_id),
+                None,
+            )
+        except Exception:
+            pass
+
         if await handle_analytics_message(message, text, _answer_long):
             return
+
 
     # In groups: react only when bot is addressed (name/command/reply)
     if message.chat.type in ("group", "supergroup"):
