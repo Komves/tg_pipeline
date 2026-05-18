@@ -424,8 +424,9 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
 
             await message.answer(
                 f"Профиль выбран: {PROFILES[detected]['title']}.\n\n"
-                "Напиши VIN автомобиля. Сначала предварительно определю авто, "
-                "потом спрошу, какую деталь ищем."
+                "Напиши VIN автомобиля.\n"
+                "Потом уточню марку, модель, год, двигатель, привод/кузов "
+                "и какой товар или деталь анализируем."
             )
             return True
 
@@ -450,8 +451,6 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             )
             return True
 
-        from analytics_agent.profiles.auto_parts.report import build_vehicle_summary
-
         task = ResearchTask.create(
             profile="auto_parts",
             user_text=vin,
@@ -459,21 +458,176 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         )
         task.status = "vin_received"
         session["last_task"] = task
+        session["mode"] = "WAIT_MAKE"
         _save_task(task)
 
-        vehicle_summary = build_vehicle_summary(vin)
-
-        task.params["vehicle_summary"] = vehicle_summary
-        task.status = "vehicle_identified"
-        session["mode"] = "WAIT_PART"
-        _save_task(task)
-
-        await answer_long(
-            message,
-            "Авто определено / предварительно определено:\n\n"
-            f"{vehicle_summary}\n\n"
-            "Теперь напиши, какую деталь ищем."
+        await message.answer(
+            "VIN приняла.\n\n"
+            "Теперь напиши марку автомобиля.\n"
+            "Например: Nissan"
         )
+        return True
+
+    if (
+        session.get("profile") == "auto_parts"
+        and session.get("mode") == "WAIT_MAKE"
+        and isinstance(existing, ResearchTask)
+    ):
+        make = raw.strip()
+
+        if not make:
+            await message.answer("Напиши марку автомобиля.")
+            return True
+
+        existing.params["make"] = make
+        existing.status = "make_received"
+        session["mode"] = "WAIT_MODEL"
+        _save_task(existing)
+
+        await message.answer(
+            "Марку приняла.\n\n"
+            "Теперь напиши модель.\n"
+            "Например: X-Trail"
+        )
+        return True
+
+    if (
+        session.get("profile") == "auto_parts"
+        and session.get("mode") == "WAIT_MODEL"
+        and isinstance(existing, ResearchTask)
+    ):
+        model = raw.strip()
+
+        if not model:
+            await message.answer("Напиши модель автомобиля.")
+            return True
+
+        existing.params["model"] = model
+        existing.status = "model_received"
+        session["mode"] = "WAIT_YEAR"
+        _save_task(existing)
+
+        await message.answer(
+            "Модель приняла.\n\n"
+            "Теперь напиши год выпуска.\n"
+            "Например: 2020"
+        )
+        return True
+
+    if (
+        session.get("profile") == "auto_parts"
+        and session.get("mode") == "WAIT_YEAR"
+        and isinstance(existing, ResearchTask)
+    ):
+        year_text = raw.strip()
+        m = re.search(r"\b(19\d{2}|20\d{2})\b", year_text)
+
+        if not m:
+            await message.answer(
+                "Напиши год выпуска числом.\n"
+                "Например: 2020"
+            )
+            return True
+
+        existing.params["year"] = m.group(1)
+        existing.status = "year_received"
+        session["mode"] = "WAIT_ENGINE"
+        _save_task(existing)
+
+        await message.answer(
+            "Год приняла.\n\n"
+            "Теперь напиши двигатель.\n"
+            "Например: 2.0 бензин"
+        )
+        return True
+
+    if (
+        session.get("profile") == "auto_parts"
+        and session.get("mode") == "WAIT_ENGINE"
+        and isinstance(existing, ResearchTask)
+    ):
+        engine = raw.strip()
+
+        if not engine:
+            await message.answer("Напиши двигатель. Например: 2.0 бензин.")
+            return True
+
+        existing.params["engine"] = engine
+        existing.status = "engine_received"
+        session["mode"] = "WAIT_DRIVE_BODY"
+        _save_task(existing)
+
+        await message.answer(
+            "Двигатель приняла.\n\n"
+            "Теперь напиши привод и кузов/поколение, если знаешь.\n"
+            "Например: полный привод, T32"
+        )
+        return True
+
+    if (
+        session.get("profile") == "auto_parts"
+        and session.get("mode") == "WAIT_DRIVE_BODY"
+        and isinstance(existing, ResearchTask)
+    ):
+        drive_body = raw.strip()
+
+        if not drive_body:
+            await message.answer(
+                "Напиши привод и кузов/поколение.\n"
+                "Если не знаешь — напиши: не знаю."
+            )
+            return True
+
+        existing.params["drive_body"] = drive_body
+        existing.status = "vehicle_context_received"
+        session["mode"] = "WAIT_PRODUCT"
+        _save_task(existing)
+
+        vehicle_line = " ".join(
+            str(existing.params.get(x) or "").strip()
+            for x in ("make", "model", "year", "engine", "drive_body")
+            if str(existing.params.get(x) or "").strip()
+        )
+
+        await message.answer(
+            "Контекст авто собрала:\n"
+            f"{vehicle_line}\n\n"
+            "Теперь напиши, что анализируем.\n"
+            "Например: задние колодки, летняя резина, литые диски, масло, аккумулятор."
+        )
+        return True
+
+    if (
+        session.get("profile") == "auto_parts"
+        and session.get("mode") == "WAIT_PRODUCT"
+        and isinstance(existing, ResearchTask)
+    ):
+        product = raw.strip()
+
+        if not product:
+            await message.answer("Напиши товар или деталь, которую анализируем.")
+            return True
+
+        from analytics_agent.profiles.auto_parts.report import build_auto_parts_report
+
+        existing.params["product"] = product
+        existing.params["part"] = product
+        existing.status = "researching"
+        session["mode"] = "RESEARCH"
+        _save_task(existing)
+
+        result = build_auto_parts_report(
+            existing.task_id,
+            str((existing.params or {}).get("vin") or ""),
+            product,
+            existing.params,
+        )
+
+        existing.status = "done"
+        session["mode"] = "READY"
+        _save_task(existing)
+
+        await answer_long(message, result)
         return True
 
     if (

@@ -58,29 +58,50 @@ def _build_vehicle_queries(vin: str) -> List[str]:
     ]
 
 
-def _build_part_queries(vin: str, part: str, vehicle_summary: str = "") -> List[str]:
-    vin = _compact(vin).upper()
-    part = _compact(part)
-    vehicle = _compact(vehicle_summary)
+def _vehicle_context_from_params(vin: str, params: Dict[str, Any] | None = None) -> str:
+    params = params or {}
 
-    base = f"{vin} {part}"
+    parts = [
+        str(params.get("make") or "").strip(),
+        str(params.get("model") or "").strip(),
+        str(params.get("year") or "").strip(),
+        str(params.get("engine") or "").strip(),
+        str(params.get("drive_body") or "").strip(),
+    ]
+
+    vehicle = _compact(" ".join(x for x in parts if x))
+
+    if vin:
+        vehicle = _compact(f"{vehicle} VIN {vin}")
+
+    return vehicle
+
+
+def _build_part_queries(
+    vin: str,
+    product: str,
+    vehicle_summary: str = "",
+    params: Dict[str, Any] | None = None,
+) -> List[str]:
+    vin = _compact(vin).upper()
+    product = _compact(product)
+    vehicle = _vehicle_context_from_params(vin, params)
+
+    if not vehicle:
+        vehicle = _compact(vehicle_summary)
+
+    base = _compact(f"{vehicle} {product}")
 
     queries = [
-        f"{base} артикул OEM применимость",
+        f"{base} варианты артикулы аналоги",
+        f"{base} отзывы владельцев",
+        f"{base} форум отзывы проблемы",
+        f"{base} drive2 отзывы",
         f"{base} цена купить",
-        f"{base} аналоги отзывы",
-        f"{base} форум владельцев",
         f"{base} подделка риск",
     ]
 
-    if vehicle:
-        queries.extend([
-            f"{vehicle} {part} артикул OEM",
-            f"{vehicle} {part} аналоги отзывы",
-            f"{vehicle} {part} цена",
-        ])
-
-    return queries
+    return [q for q in queries if _compact(q)]
 
 
 def build_vehicle_summary(vin: str) -> str:
@@ -177,12 +198,14 @@ def build_auto_parts_report(
     part = _compact(part)
     params = params or {}
     vehicle_summary = _compact(str(params.get("vehicle_summary") or ""))
-    query = _compact(f"{vin} {part}")
+    product = _compact(str(params.get("product") or part))
+    vehicle_context = _vehicle_context_from_params(vin, params)
+    query = _compact(f"{vehicle_context} {product}")
     if not vin or not part:
         return (
-            "🔧 Подбор автозапчастей\n\n"
+            "🔧 Анализ автотовара\n\n"
             f"ID: {task_id}\n"
-            "Не вижу VIN или название детали. Сценарий должен идти так: VIN → деталь."
+            "Не вижу VIN или название товара/детали. Сценарий должен идти так: VIN → авто → товар."
         )
 
     if not BRAVE_SEARCH_API_KEY:
@@ -195,7 +218,7 @@ def build_auto_parts_report(
 
     all_results = []
 
-    for q in _build_part_queries(vin, part, vehicle_summary):
+    for q in _build_part_queries(vin, product, vehicle_summary, params):
         try:
             for item in _search_web(q):
                 item["search_query"] = q
@@ -229,24 +252,27 @@ def build_auto_parts_report(
             {
                 "role": "system",
                 "content": (
-                    "Ты автоэксперт-подборщик запчастей.\n"
-                    "Твоя задача — не угадать деталь, а дать осторожный агрегированный анализ.\n\n"
+                    "Ты автоаналитик качества автотоваров и автодеталей.\n"
+                    "Ты НЕ заменяешь каталог применимости Exist/Emex/TecDoc.\n"
+                    "Твоя задача — найти кандидатов по авто и товару, затем дать анализ качества по отзывам.\n\n"
                     "Правила:\n"
-                    "1. Не утверждай применимость детали как факт, если нет явного подтверждения.\n"
-                    "2. Цены давай диапазоном, а не одной точной ценой.\n"
-                    "3. Отзывы агрегируй: положительные сигналы, жалобы, риск подделок.\n"
-                    "4. Разделяй: OEM, аналоги, б/у, сомнительные варианты.\n"
-                    "5. Обязательно напиши, что перед заказом нужно подтвердить применимость по VIN у продавца.\n"
-                    "6. Если данных мало — прямо скажи, что вывод предварительный.\n\n"
+                    "1. Не утверждай, что товар точно подходит к авто, если нет явного подтверждения.\n"
+                    "2. Не выдумывай бренды, артикулы, цены и отзывы. Используй только поисковые результаты.\n"
+                    "3. Если источник нерелевантен другой марке/модели/товару — отбрось его и не цитируй как полезный.\n"
+                    "4. Главный фокус — качество: реальные плюсы, минусы, частые жалобы, ресурс, надежность, риск подделок.\n"
+                    "5. Критерии качества выбирай по типу товара. Для резины, дисков, масла, аккумулятора, колодок критерии разные.\n"
+                    "6. Цены давай только если они есть в найденных результатах, иначе пиши, что надежного диапазона нет.\n"
+                    "7. Итог должен помогать выбрать, что проверять и какие варианты выглядят лучше/хуже.\n\n"
                     "Формат ответа:\n"
-                    "🔧 Подбор запчасти\n"
-                    "Авто/запрос\n"
-                    "Что удалось понять\n"
-                    "Кандидаты\n"
-                    "Диапазон цен\n"
-                    "Анализ отзывов\n"
-                    "Риски\n"
-                    "Рекомендация\n"
+                    "🔧 Анализ автотовара\n"
+                    "Авто и запрос\n"
+                    "Как понята машина\n"
+                    "Найденные кандидаты\n"
+                    "Что говорят отзывы\n"
+                    "Сильные стороны\n"
+                    "Слабые места и жалобы\n"
+                    "Риски покупки\n"
+                    "Мой вывод\n"
                     "Что проверить перед заказом"
                 ),
             },
@@ -255,8 +281,9 @@ def build_auto_parts_report(
                 "content": (
                     f"ID задачи: {task_id}\n"
                     f"VIN:\n{vin}\n\n"
+                    f"Контекст авто от пользователя:\n{vehicle_context}\n\n"
                     f"Предварительное определение авто:\n{vehicle_summary}\n\n"
-                    f"Искомая деталь:\n{part}\n\n"
+                    f"Товар/деталь для анализа:\n{product}\n\n"
                     f"Поисковые результаты JSON:\n"
                     f"{json.dumps(unique_results, ensure_ascii=False)[:50000]}"
                 ),
@@ -268,7 +295,7 @@ def build_auto_parts_report(
 
     if not result:
         result = (
-            "🔧 Подбор запчасти\n\n"
+            "🔧 Анализ автотовара\n\n"
             "Не удалось собрать нормальный анализ. Поисковые результаты пустые или модель не вернула ответ."
         )
 
