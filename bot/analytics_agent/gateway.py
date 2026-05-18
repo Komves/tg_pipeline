@@ -443,6 +443,99 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
 
     if session.get("profile") == "auto_parts" and session.get("mode") == "WAIT_VIN":
         vin = raw.strip().upper().replace(" ", "")
+        full_text = raw.strip()
+
+        vin_match = re.search(
+            r"\b([A-HJ-NPR-Z0-9]{17})\b",
+            full_text,
+            flags=re.I,
+        )
+
+        year_match = re.search(
+            r"\b(19\d{2}|20\d{2})\b",
+            full_text,
+        )
+
+        looks_full_context = (
+            vin_match
+            and year_match
+            and (
+                "," in full_text
+                or "\n" in full_text
+            )
+        )
+
+        if looks_full_context:
+            lines = [
+                x.strip(" ,")
+                for x in re.split(r"[\n,]+", full_text)
+                if x.strip(" ,")
+            ]
+
+            vin = vin_match.group(1).upper()
+
+            make = ""
+            model = ""
+            year = year_match.group(1)
+            engine = ""
+            drive_body = ""
+            product = ""
+
+            non_vin = [x for x in lines if vin not in x.upper()]
+
+            if len(non_vin) >= 1:
+                make = non_vin[0]
+
+            if len(non_vin) >= 2:
+                model = non_vin[1]
+
+            if len(non_vin) >= 3:
+                engine = non_vin[3 - 1]
+
+            if len(non_vin) >= 4:
+                drive_body = non_vin[4 - 1]
+
+            if len(non_vin) >= 5:
+                product = non_vin[5 - 1]
+
+            task = ResearchTask.create(
+                profile="auto_parts",
+                user_text=full_text,
+                params={
+                    "vin": vin,
+                    "make": make,
+                    "model": model,
+                    "year": year,
+                    "engine": engine,
+                    "drive_body": drive_body,
+                    "product": product,
+                    "part": product,
+                },
+            )
+
+            session["last_task"] = task
+            session["mode"] = "RESEARCH"
+
+            _save_task(task)
+
+            from analytics_agent.profiles.auto_parts.report import (
+                build_auto_parts_report,
+            )
+
+            result = build_auto_parts_report(
+                task.task_id,
+                vin,
+                product,
+                task.params,
+            )
+
+            task.status = "done"
+            session["mode"] = "READY"
+
+            _save_task(task)
+
+            await answer_long(message, result)
+            return True
 
         if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin):
             await message.answer(
