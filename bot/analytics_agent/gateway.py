@@ -418,6 +418,17 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             )
             return True
 
+        if detected == "auto_parts":
+            session["mode"] = "WAIT_VIN"
+            session["last_task"] = None
+
+            await message.answer(
+                f"Профиль выбран: {PROFILES[detected]['title']}.\n\n"
+                "Напиши VIN автомобиля. Сначала предварительно определю авто, "
+                "потом спрошу, какую деталь ищем."
+            )
+            return True
+
         await message.answer(
             f"Профиль выбран: {PROFILES[detected]['title']}."
         )
@@ -428,6 +439,75 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         return True
 
     existing = session.get("last_task")
+
+    if session.get("profile") == "auto_parts" and session.get("mode") == "WAIT_VIN":
+        vin = raw.strip().upper().replace(" ", "")
+
+        if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin):
+            await message.answer(
+                "VIN должен быть 17 символов без I, O, Q.\n"
+                "Напиши VIN ещё раз."
+            )
+            return True
+
+        from analytics_agent.profiles.auto_parts.report import build_vehicle_summary
+
+        task = ResearchTask.create(
+            profile="auto_parts",
+            user_text=vin,
+            params={"vin": vin},
+        )
+        task.status = "vin_received"
+        session["last_task"] = task
+        _save_task(task)
+
+        vehicle_summary = build_vehicle_summary(vin)
+
+        task.params["vehicle_summary"] = vehicle_summary
+        task.status = "vehicle_identified"
+        session["mode"] = "WAIT_PART"
+        _save_task(task)
+
+        await answer_long(
+            message,
+            "Авто определено / предварительно определено:\n\n"
+            f"{vehicle_summary}\n\n"
+            "Теперь напиши, какую деталь ищем."
+        )
+        return True
+
+    if (
+        session.get("profile") == "auto_parts"
+        and session.get("mode") == "WAIT_PART"
+        and isinstance(existing, ResearchTask)
+    ):
+        vin = str((existing.params or {}).get("vin") or "").strip().upper()
+        part = raw.strip()
+
+        if not part:
+            await message.answer("Напиши название детали, которую ищем.")
+            return True
+
+        from analytics_agent.profiles.auto_parts.report import build_auto_parts_report
+
+        existing.params["part"] = part
+        existing.status = "researching"
+        session["mode"] = "RESEARCH"
+        _save_task(existing)
+
+        result = build_auto_parts_report(
+            existing.task_id,
+            vin,
+            part,
+            existing.params,
+        )
+
+        existing.status = "done"
+        session["mode"] = "READY"
+        _save_task(existing)
+
+        await answer_long(message, result)
+        return True
 
     if (
         session.get("profile") in ("renovation", "commercial_renovation")

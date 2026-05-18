@@ -48,26 +48,141 @@ def _search_web(query: str, count: int = 8) -> List[Dict[str, str]]:
     return rows
 
 
-def _build_queries(user_text: str) -> List[str]:
-    src = _compact(user_text)
+def _build_vehicle_queries(vin: str) -> List[str]:
+    vin = _compact(vin).upper()
 
     return [
-        f"{src} артикул OEM применимость",
-        f"{src} цена купить",
-        f"{src} отзывы форум",
-        f"{src} плохой хороший аналог отзывы",
-        f"{src} подделка риск",
+        f"{vin} VIN автомобиль",
+        f"{vin} комплектация двигатель",
+        f"{vin} модель год выпуска",
     ]
 
 
-def build_auto_parts_report(task_id: str, user_text: str, params: Dict[str, Any] | None = None) -> str:
-    query = _compact(user_text)
+def _build_part_queries(vin: str, part: str, vehicle_summary: str = "") -> List[str]:
+    vin = _compact(vin).upper()
+    part = _compact(part)
+    vehicle = _compact(vehicle_summary)
 
-    if not query:
+    base = f"{vin} {part}"
+
+    queries = [
+        f"{base} артикул OEM применимость",
+        f"{base} цена купить",
+        f"{base} аналоги отзывы",
+        f"{base} форум владельцев",
+        f"{base} подделка риск",
+    ]
+
+    if vehicle:
+        queries.extend([
+            f"{vehicle} {part} артикул OEM",
+            f"{vehicle} {part} аналоги отзывы",
+            f"{vehicle} {part} цена",
+        ])
+
+    return queries
+
+
+def build_vehicle_summary(vin: str) -> str:
+    vin = _compact(vin).upper()
+
+    if not vin:
+        return "VIN не указан."
+
+    if not BRAVE_SEARCH_API_KEY:
+        return (
+            f"VIN: {vin}\n"
+            "Поиск не подключён: нет BRAVE_SEARCH_API_KEY.\n"
+            "Авто нельзя определить без web-search слоя."
+        )
+
+    all_results = []
+
+    for q in _build_vehicle_queries(vin):
+        try:
+            for item in _search_web(q):
+                item["search_query"] = q
+                all_results.append(item)
+        except Exception as e:
+            all_results.append({
+                "search_query": q,
+                "title": "SEARCH_ERROR",
+                "url": "",
+                "description": f"{type(e).__name__}: {e}",
+            })
+
+    unique_results = []
+    seen = set()
+
+    for item in all_results:
+        url = item.get("url") or ""
+        key = url or (item.get("title") or "") + (item.get("description") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique_results.append(item)
+
+    unique_results = unique_results[:15]
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты автоэксперт. По VIN и поисковым результатам кратко определяешь автомобиль.\n"
+                        "Не выдумывай. Если данных мало — пиши, что определение предварительное.\n"
+                        "Формат:\n"
+                        "VIN\n"
+                        "Предварительно определённый автомобиль\n"
+                        "Что известно\n"
+                        "Что не подтверждено"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"VIN: {vin}\n\n"
+                        f"Поисковые результаты JSON:\n"
+                        f"{json.dumps(unique_results, ensure_ascii=False)[:30000]}"
+                    ),
+                },
+            ],
+        )
+
+        result = (getattr(resp, "output_text", "") or "").strip()
+    except Exception as e:
+        result = ""
+
+    if not result:
+        result = (
+            f"VIN: {vin}\n"
+            "Авто предварительно определить не удалось. "
+            "Можно продолжить подбор, но применимость детали обязательно подтвердить по VIN у продавца."
+        )
+
+    return result
+
+
+def build_auto_parts_report(
+    task_id: str,
+    vin: str,
+    part: str,
+    params: Dict[str, Any] | None = None,
+) -> str:
+    vin = _compact(vin).upper()
+    part = _compact(part)
+    params = params or {}
+    vehicle_summary = _compact(str(params.get("vehicle_summary") or ""))
+    query = _compact(f"{vin} {part}")
+    if not vin or not part:
         return (
             "🔧 Подбор автозапчастей\n\n"
             f"ID: {task_id}\n"
-            "Не вижу запроса. Напиши VIN/авто и какую деталь ищем."
+            "Не вижу VIN или название детали. Сценарий должен идти так: VIN → деталь."
         )
 
     if not BRAVE_SEARCH_API_KEY:
@@ -80,7 +195,7 @@ def build_auto_parts_report(task_id: str, user_text: str, params: Dict[str, Any]
 
     all_results = []
 
-    for q in _build_queries(query):
+    for q in _build_part_queries(vin, part, vehicle_summary):
         try:
             for item in _search_web(q):
                 item["search_query"] = q
@@ -139,7 +254,9 @@ def build_auto_parts_report(task_id: str, user_text: str, params: Dict[str, Any]
                 "role": "user",
                 "content": (
                     f"ID задачи: {task_id}\n"
-                    f"Запрос пользователя:\n{query}\n\n"
+                    f"VIN:\n{vin}\n\n"
+                    f"Предварительное определение авто:\n{vehicle_summary}\n\n"
+                    f"Искомая деталь:\n{part}\n\n"
                     f"Поисковые результаты JSON:\n"
                     f"{json.dumps(unique_results, ensure_ascii=False)[:50000]}"
                 ),

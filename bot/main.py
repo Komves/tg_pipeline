@@ -1443,10 +1443,18 @@ async def _try_universal_message_layer(
 
     topic = _get_topic(chat_id, user_id)
 
+    # NEW external object MUST override old topic context.
+    # Otherwise LLM starts blending previous discussion
+    # with newly attached/replied/forwarded object.
+    route_topic = topic
+
+    if obj.get("has_external_object"):
+        route_topic = None
+
     semantic_ctx = chatgpt_dialog.semantic_context_route(
         user_text,
         object_text=object_text,
-        topic=topic,
+        topic=route_topic,
     )
 
     print(
@@ -4718,14 +4726,56 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
             if not full_text:
                 full_text = detail.get("snippet", "")
 
+            def _translate_full_email_to_ru(s: str) -> str:
+                src = (s or "").strip()
+                if not src:
+                    return ""
+
+                key = (os.getenv("OPENAI_API_KEY") or "").strip()
+                if not key:
+                    return src
+
+                try:
+                    from openai import OpenAI
+
+                    client = OpenAI(api_key=key)
+                    r = client.responses.create(
+                        model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+                        input=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Переведи письмо на русский полностью и аккуратно.\n"
+                                    "Не пересказывай кратко.\n"
+                                    "Не сокращай.\n"
+                                    "Сохрани смысл всех абзацев, чисел, дат, ссылок и условий.\n"
+                                    "Рекламные подписи тоже переведи, если они есть в тексте.\n"
+                                    "Верни только перевод."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": src[:20000],
+                            },
+                        ],
+                    )
+
+                    return (getattr(r, "output_text", "") or "").strip() or src
+
+                except Exception as e:
+                    print(f"[gmail_translate] failed: {type(e).__name__}: {e}", flush=True)
+                    return src
+
+            translated_text = _translate_full_email_to_ru(full_text)
+
             out = (
                 f"📩 {item.get('subject')}\n"
                 f"От: {item.get('from')}\n"
                 f"Дата: {item.get('date')}\n\n"
-                f"{full_text}"
+                f"{translated_text}"
             )
 
-            await message.answer(out[:3900])
+            await _answer_long(message, out)
 
         except Exception as e:
             print(f"[gmail_open] failed: {type(e).__name__}: {e}", flush=True)

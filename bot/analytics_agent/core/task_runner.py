@@ -31,7 +31,8 @@ def run_task(task: ResearchTask) -> str:
         task.status = "researched"
         return build_auto_parts_report(
             task.task_id,
-            task.user_text,
+            str((task.params or {}).get("vin") or task.user_text or ""),
+            str((task.params or {}).get("part") or ""),
             task.params,
         )
 
