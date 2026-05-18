@@ -755,6 +755,40 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
 
         await answer_long(message, result)
         return True
+    
+    if (
+        session.get("profile") == "auto_parts"
+        and session.get("mode") == "READY"
+        and isinstance(existing, ResearchTask)
+    ):
+        from analytics_agent.profiles.auto_parts.report import build_auto_parts_report
+
+        followup = raw.strip()
+
+        if not followup:
+            await message.answer("Напиши, что уточнить по этим вариантам.")
+            return True
+
+        vin = str((existing.params or {}).get("vin") or "").strip().upper()
+        product = str((existing.params or {}).get("product") or existing.params.get("part") or "").strip()
+
+        existing.params["followup"] = followup
+        existing.status = "followup_researching"
+        _save_task(existing)
+
+        result = build_auto_parts_report(
+            existing.task_id,
+            vin,
+            product,
+            existing.params,
+        )
+
+        existing.status = "done"
+        session["mode"] = "READY"
+        _save_task(existing)
+
+        await answer_long(message, result)
+        return True
 
     if (
         session.get("profile") in ("renovation", "commercial_renovation")
