@@ -1113,6 +1113,11 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     user_text = (user_text or "").strip()
     intent = "chat"
     reply = ""
+
+    continuity = semantic_dialog_continuity(chat_id, user_id, user_text)
+    if not continuity.get("continue_dialog", True):
+        end(chat_id, user_id)
+
     add_user(chat_id, user_id, user_text)
     touch(chat_id, user_id)
 
@@ -1726,6 +1731,82 @@ def comment_text_object(user_text: str, object_text: str) -> Optional[DialogDeci
         _dbg(f"comment_text_object EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="прочитать-то прочитала, а ответить нормально не вышло.")
 
+def semantic_dialog_continuity(
+    chat_id: int,
+    user_id: int,
+    user_text: str,
+) -> dict:
+    """
+    Decide whether current plain text should continue existing live dialog history
+    or start a new semantic topic.
+
+    This does not answer the user.
+    """
+    current = (user_text or "").strip()
+
+    if not current:
+        return {"continue_dialog": True, "reason": "empty"}
+
+    s = _sessions.get((chat_id, user_id))
+    if not s:
+        return {"continue_dialog": False, "reason": "no_active_session"}
+
+    history = [
+        x for x in list(s.history)
+        if isinstance(x, dict)
+        and x.get("role") in {"user", "assistant"}
+        and (x.get("content") or "").strip()
+    ][-6:]
+
+    if not history:
+        return {"continue_dialog": False, "reason": "empty_history"}
+
+    if not _has_key():
+        return {"continue_dialog": True, "reason": "no_llm_fallback"}
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты semantic-continuity-router для Telegram-бота Веси.\n"
+                        "Ты НЕ отвечаешь пользователю.\n"
+                        "Твоя задача — решить, нужно ли использовать старую историю диалога "
+                        "для текущего сообщения.\n\n"
+                        "Верни continue_dialog=true, если текущее сообщение явно продолжает предыдущий разговор: "
+                        "уточняет, спорит, просит пояснить, ссылается на последний ответ или без истории неполное.\n\n"
+                        "Верни continue_dialog=false, если текущее сообщение является новой самостоятельной темой, "
+                        "новым объектом обсуждения, новой просьбой, новой ссылкой, новым объявлением, новым письмом "
+                        "или вопросом, который можно понять без старой истории.\n\n"
+                        "Не используй ключевые слова как главный критерий. Решай по смыслу.\n"
+                        "Если сомневаешься — false, чтобы не тащить старую тему.\n\n"
+                        "Верни только JSON:\n"
+                        "{\"continue_dialog\":true|false,\"reason\":\"короткая причина\"}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"current_message:\n{current[:3000]}\n\n"
+                        f"recent_history JSON:\n{json.dumps(history, ensure_ascii=False)[:6000]}"
+                    ),
+                },
+            ],
+        )
+
+        data = _parse_json_object(_extract_text(resp)) or {}
+        return {
+            "continue_dialog": bool(data.get("continue_dialog", False)),
+            "reason": str(data.get("reason") or "").strip(),
+        }
+
+    except Exception as e:
+        _dbg(f"semantic_dialog_continuity EXC: {type(e).__name__}: {e}")
+        return {"continue_dialog": True, "reason": "router_error_fallback"}
 
 def semantic_context_route(
     user_text: str,
