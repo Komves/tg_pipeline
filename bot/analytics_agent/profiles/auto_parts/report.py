@@ -338,35 +338,7 @@ def build_vehicle_summary(vin: str) -> str:
             "Авто нельзя определить без web-search слоя."
         )
 
-    product_details = params.get("product_details") or {}
 
-    research_plan = plan_auto_product_research(
-        vehicle_context,
-        product,
-        product_details,
-    )
-
-    search_queries = research_plan.get("search_queries") or []
-
-    if not search_queries:
-        search_queries = _build_part_queries(vin, product, vehicle_summary, params)
-
-    all_results = []
-
-    for q in search_queries:
-        try:
-            for item in _search_web(q):
-                item["search_query"] = q
-                item["research_strategy"] = research_plan.get("strategy") or ""
-                all_results.append(item)
-        except Exception as e:
-            all_results.append({
-                "search_query": q,
-                "research_strategy": research_plan.get("strategy") or "",
-                "title": "SEARCH_ERROR",
-                "url": "",
-                "description": f"{type(e).__name__}: {e}",
-            })
 
     unique_results = []
     seen = set()
@@ -452,16 +424,31 @@ def build_auto_parts_report(
             "Для MVP нужен web-search слой, иначе Веся будет гадать."
         )
 
+    product_details = params.get("product_details") or {}
+
+    research_plan = plan_auto_product_research(
+        vehicle_context,
+        product,
+        product_details,
+    )
+
+    search_queries = research_plan.get("search_queries") or []
+
+    if not search_queries:
+        search_queries = _build_part_queries(vin, product, vehicle_summary, params)
+
     all_results = []
 
-    for q in _build_part_queries(vin, product, vehicle_summary, params):
+    for q in search_queries:
         try:
             for item in _search_web(q):
                 item["search_query"] = q
+                item["research_strategy"] = research_plan.get("strategy") or ""
                 all_results.append(item)
         except Exception as e:
             all_results.append({
                 "search_query": q,
+                "research_strategy": research_plan.get("strategy") or "",
                 "title": "SEARCH_ERROR",
                 "url": "",
                 "description": f"{type(e).__name__}: {e}",
