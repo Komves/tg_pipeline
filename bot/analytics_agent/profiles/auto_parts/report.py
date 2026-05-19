@@ -425,10 +425,15 @@ def build_auto_parts_report(
         )
 
     product_details = params.get("product_details") or {}
+    followup = _compact(str(params.get("followup") or ""))
+
+    research_product = product
+    if followup:
+        research_product = _compact(f"{product} уточнение: {followup}")
 
     research_plan = plan_auto_product_research(
         vehicle_context,
-        product,
+        research_product,
         product_details,
     )
 
@@ -518,15 +523,9 @@ def build_auto_parts_report(
                     "Проверить перед заказом:\n"
                     "- только 2-3 реально важных пункта\n\n"
 
-                    "Максимум 1200-1500 символов."
-                    "Как понята машина\n"
-                    "Найденные кандидаты\n"
-                    "Что говорят отзывы\n"
-                    "Сильные стороны\n"
-                    "Слабые места и жалобы\n"
-                    "Риски покупки\n"
-                    "Мой вывод\n"
-                    "Что проверить перед заказом"
+                    "Максимум 1200-1500 символов.\n"
+                    "Если есть уточнение пользователя — отвечай именно на него, "
+                    "не начинай полный отчёт заново и не повторяй блок 'как понята машина'."
                 ),
             },
             {
@@ -537,6 +536,7 @@ def build_auto_parts_report(
                     f"Контекст авто от пользователя:\n{vehicle_context}\n\n"
                     f"Предварительное определение авто:\n{vehicle_summary}\n\n"
                     f"Товар/деталь для анализа:\n{product}\n\n"
+                    f"Уточнение пользователя:\n{followup or 'нет'}\n\n"
                     f"Уточнения по товару JSON:\n"
                     f"{json.dumps(product_details, ensure_ascii=False)[:4000]}\n\n"
                     f"План исследования JSON:\n"
