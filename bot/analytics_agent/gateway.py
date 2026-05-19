@@ -424,9 +424,8 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
 
             await message.answer(
                 f"Профиль выбран: {PROFILES[detected]['title']}.\n\n"
-                "Напиши VIN автомобиля.\n"
-                "Потом уточню марку, модель, год, двигатель, привод/кузов "
-                "и какой товар или деталь анализируем."
+                "Шаг 1. Напиши VIN автомобиля отдельным сообщением.\n"
+                "Например: Z8NTANT32ES114310"
             )
             return True
 
