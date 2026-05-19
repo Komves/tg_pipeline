@@ -103,6 +103,108 @@ def _build_part_queries(
 
     return [q for q in queries if _compact(q)]
 
+def clarify_auto_product_requirements(
+    vehicle_context: str,
+    product: str,
+    known_details: Dict[str, Any] | None = None,
+    user_answer: str = "",
+) -> Dict[str, Any]:
+    known_details = known_details or {}
+
+    if not product:
+        return {
+            "ready": False,
+            "category": "",
+            "field": "product",
+            "next_question": "Напиши, какой товар или деталь анализируем.",
+            "known_details": known_details,
+            "normalized_product": "",
+        }
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return {
+            "ready": True,
+            "category": "unknown",
+            "field": "",
+            "next_question": "",
+            "known_details": known_details,
+            "normalized_product": product,
+        }
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты router уточнений для автоаналитика качества автотоваров.\n"
+                        "Ты НЕ подбираешь товар и НЕ пишешь отчет.\n"
+                        "Твоя задача — понять, хватает ли данных для нормального поиска отзывов и качества.\n\n"
+                        "Правила:\n"
+                        "1. Если данных не хватает, задай ровно ОДИН следующий самый важный вопрос.\n"
+                        "2. Не спрашивай анкетой несколько параметров сразу.\n"
+                        "3. Вопрос должен быть короткий и практичный.\n"
+                        "4. Для резины обычно сначала нужен размер.\n"
+                        "5. Для дисков обычно сначала нужен размер/разболтовка.\n"
+                        "6. Для масла обычно сначала нужна вязкость или допуск.\n"
+                        "7. Для аккумулятора обычно сначала нужна емкость/пусковой ток или габарит.\n"
+                        "8. Для колодок/фильтров/простых деталей часто можно начинать research по авто + товару.\n"
+                        "9. Если пользователь уже дал достаточно, ready=true.\n\n"
+                        "Верни только JSON:\n"
+                        "{"
+                        "\"ready\":true|false,"
+                        "\"category\":\"...\","
+                        "\"field\":\"...\","
+                        "\"next_question\":\"...\","
+                        "\"known_details\":{},"
+                        "\"normalized_product\":\"...\""
+                        "}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"vehicle_context:\n{vehicle_context[:3000]}\n\n"
+                        f"product:\n{product[:1000]}\n\n"
+                        f"known_details JSON:\n{json.dumps(known_details, ensure_ascii=False)[:4000]}\n\n"
+                        f"user_answer:\n{user_answer[:2000]}"
+                    ),
+                },
+            ],
+        )
+
+        txt = (getattr(resp, "output_text", "") or "").strip()
+        m = re.search(r"\{.*\}", txt, flags=re.S)
+        data = json.loads(m.group(0) if m else txt)
+
+        if not isinstance(data, dict):
+            raise ValueError("clarifier returned non-dict")
+
+        known = data.get("known_details")
+        if not isinstance(known, dict):
+            known = known_details
+
+        return {
+            "ready": bool(data.get("ready")),
+            "category": _compact(str(data.get("category") or "")),
+            "field": _compact(str(data.get("field") or "")),
+            "next_question": _compact(str(data.get("next_question") or "")),
+            "known_details": known,
+            "normalized_product": _compact(str(data.get("normalized_product") or product)),
+        }
+
+    except Exception:
+        return {
+            "ready": True,
+            "category": "unknown",
+            "field": "",
+            "next_question": "",
+            "known_details": known_details,
+            "normalized_product": product,
+        }
 
 def build_vehicle_summary(vin: str) -> str:
     vin = _compact(vin).upper()

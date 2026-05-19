@@ -701,10 +701,44 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             await message.answer("Напиши товар или деталь, которую анализируем.")
             return True
 
-        from analytics_agent.profiles.auto_parts.report import build_auto_parts_report
+        from analytics_agent.profiles.auto_parts.report import (
+            build_auto_parts_report,
+            clarify_auto_product_requirements,
+        )
 
         existing.params["product"] = product
         existing.params["part"] = product
+
+        vehicle_line = " ".join(
+            str(existing.params.get(x) or "").strip()
+            for x in ("make", "model", "year", "engine", "drive_body")
+            if str(existing.params.get(x) or "").strip()
+        )
+
+        clar = clarify_auto_product_requirements(
+            vehicle_line,
+            product,
+            existing.params.get("product_details") or {},
+            "",
+        )
+
+        existing.params["product_category"] = clar.get("category") or ""
+        existing.params["last_detail_field"] = clar.get("field") or ""
+        existing.params["product_details"] = clar.get("known_details") or {}
+        existing.params["product"] = clar.get("normalized_product") or product
+        existing.params["part"] = existing.params["product"]
+
+        if not clar.get("ready"):
+            existing.status = "waiting_product_detail"
+            session["mode"] = "WAIT_PRODUCT_DETAIL"
+            _save_task(existing)
+
+            await message.answer(
+                clar.get("next_question")
+                or "Уточни один важный параметр товара."
+            )
+            return True
+
         existing.status = "researching"
         session["mode"] = "RESEARCH"
         _save_task(existing)
@@ -712,7 +746,81 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         result = build_auto_parts_report(
             existing.task_id,
             str((existing.params or {}).get("vin") or ""),
+            existing.params["product"],
+            existing.params,
+        )
+
+        existing.status = "done"
+        session["mode"] = "READY"
+        _save_task(existing)
+
+        await answer_long(message, result)
+        return True 
+
+    if (
+        session.get("profile") == "auto_parts"
+        and session.get("mode") == "WAIT_PRODUCT_DETAIL"
+        and isinstance(existing, ResearchTask)
+    ):
+        from analytics_agent.profiles.auto_parts.report import (
+            build_auto_parts_report,
+            clarify_auto_product_requirements,
+        )
+
+        answer = raw.strip()
+
+        if not answer:
+            await message.answer("Ответь на уточняющий вопрос одним сообщением.")
+            return True
+
+        vehicle_line = " ".join(
+            str(existing.params.get(x) or "").strip()
+            for x in ("make", "model", "year", "engine", "drive_body")
+            if str(existing.params.get(x) or "").strip()
+        )
+
+        product = str((existing.params or {}).get("product") or "").strip()
+
+        details = existing.params.get("product_details") or {}
+        detail_key = str((existing.params or {}).get("last_detail_field") or "").strip()
+
+        if detail_key:
+            details[detail_key] = answer
+        else:
+            details[f"detail_{len(details) + 1}"] = answer
+
+        clar = clarify_auto_product_requirements(
+            vehicle_line,
             product,
+            details,
+            answer,
+        )
+
+        existing.params["product_category"] = clar.get("category") or existing.params.get("product_category") or ""
+        existing.params["product_details"] = clar.get("known_details") or details
+        existing.params["last_detail_field"] = clar.get("field") or ""
+        existing.params["product"] = clar.get("normalized_product") or product
+        existing.params["part"] = existing.params["product"]
+
+        if not clar.get("ready"):
+            existing.status = "waiting_product_detail"
+            session["mode"] = "WAIT_PRODUCT_DETAIL"
+            _save_task(existing)
+
+            await message.answer(
+                clar.get("next_question")
+                or "Уточни ещё один важный параметр товара."
+            )
+            return True
+
+        existing.status = "researching"
+        session["mode"] = "RESEARCH"
+        _save_task(existing)
+
+        result = build_auto_parts_report(
+            existing.task_id,
+            str((existing.params or {}).get("vin") or ""),
+            existing.params["product"],
             existing.params,
         )
 
