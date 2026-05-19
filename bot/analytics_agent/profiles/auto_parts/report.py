@@ -206,6 +206,125 @@ def clarify_auto_product_requirements(
             "normalized_product": product,
         }
 
+def plan_auto_product_research(
+    vehicle_context: str,
+    product: str,
+    product_details: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    product_details = product_details or {}
+
+    if not product:
+        return {
+            "strategy": "spec_required_first",
+            "reason": "product is empty",
+            "search_queries": [],
+            "candidate_focus": "",
+        }
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return {
+            "strategy": "simple_part_review",
+            "reason": "no llm key",
+            "search_queries": [
+                f"{vehicle_context} {product} отзывы",
+                f"{vehicle_context} {product} аналоги",
+            ],
+            "candidate_focus": product,
+        }
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты planning-router для автоаналитика качества автотоваров.\n"
+                        "Ты НЕ пишешь финальный отчет.\n"
+                        "Ты выбираешь стратегию web-research.\n\n"
+                        "Стратегии:\n"
+                        "1. simple_part_review — товар можно анализировать сразу по авто + товару. "
+                        "Например: колодки, фильтр, свечи, амортизаторы.\n"
+                        "2. model_discovery_then_reviews — сначала нужны конкретные модели/бренды товара, "
+                        "потом отзывы по каждой модели. Например: шины, масла, аккумуляторы, диски, дворники.\n"
+                        "3. spec_required_first — не хватает обязательного параметра для поиска. "
+                        "Например: резина без размера, диски без параметров, масло без вязкости/допуска.\n"
+                        "4. oem_required — без OEM/старого артикула/VIN-каталога высок риск мусора. "
+                        "Например: датчики, электронные блоки, кузовные элементы.\n\n"
+                        "Верни только JSON:\n"
+                        "{"
+                        "\"strategy\":\"simple_part_review|model_discovery_then_reviews|spec_required_first|oem_required\","
+                        "\"reason\":\"...\","
+                        "\"search_queries\":[\"...\"],"
+                        "\"candidate_focus\":\"...\""
+                        "}\n\n"
+                        "Правила:\n"
+                        "- Для шин с указанным размером выбирай model_discovery_then_reviews.\n"
+                        "- Для моторного масла с известной вязкостью/допуском выбирай model_discovery_then_reviews.\n"
+                        "- Для аккумуляторов с известными параметрами выбирай model_discovery_then_reviews.\n"
+                        "- Для дисков с известным размером/PCD/ET выбирай model_discovery_then_reviews.\n"
+                        "- Не строй запросы только по VIN.\n"
+                        "- Запросы должны искать конкретные модели товаров и отзывы."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"vehicle_context:\n{vehicle_context[:3000]}\n\n"
+                        f"product:\n{product[:1000]}\n\n"
+                        f"product_details JSON:\n"
+                        f"{json.dumps(product_details, ensure_ascii=False)[:4000]}"
+                    ),
+                },
+            ],
+        )
+
+        txt = (getattr(resp, "output_text", "") or "").strip()
+        m = re.search(r"\{.*\}", txt, flags=re.S)
+        data = json.loads(m.group(0) if m else txt)
+
+        if not isinstance(data, dict):
+            raise ValueError("research planner returned non-dict")
+
+        strategy = str(data.get("strategy") or "simple_part_review").strip()
+        if strategy not in {
+            "simple_part_review",
+            "model_discovery_then_reviews",
+            "spec_required_first",
+            "oem_required",
+        }:
+            strategy = "simple_part_review"
+
+        queries = data.get("search_queries") or []
+        if not isinstance(queries, list):
+            queries = []
+
+        queries = [
+            _compact(str(q))
+            for q in queries
+            if _compact(str(q))
+        ][:8]
+
+        return {
+            "strategy": strategy,
+            "reason": _compact(str(data.get("reason") or "")),
+            "search_queries": queries,
+            "candidate_focus": _compact(str(data.get("candidate_focus") or product)),
+        }
+
+    except Exception:
+        return {
+            "strategy": "simple_part_review",
+            "reason": "planner_error",
+            "search_queries": [
+                f"{vehicle_context} {product} отзывы",
+                f"{vehicle_context} {product} аналоги отзывы",
+            ],
+            "candidate_focus": product,
+        }
+
 def build_vehicle_summary(vin: str) -> str:
     vin = _compact(vin).upper()
 
@@ -219,16 +338,31 @@ def build_vehicle_summary(vin: str) -> str:
             "Авто нельзя определить без web-search слоя."
         )
 
+    product_details = params.get("product_details") or {}
+
+    research_plan = plan_auto_product_research(
+        vehicle_context,
+        product,
+        product_details,
+    )
+
+    search_queries = research_plan.get("search_queries") or []
+
+    if not search_queries:
+        search_queries = _build_part_queries(vin, product, vehicle_summary, params)
+
     all_results = []
 
-    for q in _build_vehicle_queries(vin):
+    for q in search_queries:
         try:
             for item in _search_web(q):
                 item["search_query"] = q
+                item["research_strategy"] = research_plan.get("strategy") or ""
                 all_results.append(item)
         except Exception as e:
             all_results.append({
                 "search_query": q,
+                "research_strategy": research_plan.get("strategy") or "",
                 "title": "SEARCH_ERROR",
                 "url": "",
                 "description": f"{type(e).__name__}: {e}",
@@ -364,7 +498,11 @@ def build_auto_parts_report(
                     "4. Главный фокус — качество: реальные плюсы, минусы, частые жалобы, ресурс, надежность, риск подделок.\n"
                     "5. Критерии качества выбирай по типу товара. Для резины, дисков, масла, аккумулятора, колодок критерии разные.\n"
                     "6. Цены давай только если они есть в найденных результатах, иначе пиши, что надежного диапазона нет.\n"
-                    "7. Итог должен помогать выбрать, что проверять и какие варианты выглядят лучше/хуже.\n\n"
+                    "7. Итог должен помогать выбрать, что проверять и какие варианты выглядят лучше/хуже.\n"
+                    "8. Если strategy=model_discovery_then_reviews, сначала выдели конкретные модели/бренды товара из выдачи, "
+                    "а потом анализируй отзывы именно по ним.\n"
+                    "9. Не анализируй отзывы о машине вместо отзывов о товаре.\n"
+                    "10. Если конкретные модели товара не найдены — прямо скажи это коротко, без воды.\n\n"
                     "Формат ответа должен быть КОРОТКИМ.\n"
                     "Без воды, повторов и длинных объяснений.\n"
                     "Не пиши общие фразы.\n"
@@ -412,6 +550,10 @@ def build_auto_parts_report(
                     f"Контекст авто от пользователя:\n{vehicle_context}\n\n"
                     f"Предварительное определение авто:\n{vehicle_summary}\n\n"
                     f"Товар/деталь для анализа:\n{product}\n\n"
+                    f"Уточнения по товару JSON:\n"
+                    f"{json.dumps(product_details, ensure_ascii=False)[:4000]}\n\n"
+                    f"План исследования JSON:\n"
+                    f"{json.dumps(research_plan, ensure_ascii=False)[:4000]}\n\n"
                     f"Поисковые результаты JSON:\n"
                     f"{json.dumps(unique_results, ensure_ascii=False)[:50000]}"
                 ),
