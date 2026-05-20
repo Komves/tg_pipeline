@@ -1119,7 +1119,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         end(chat_id, user_id)
 
     add_user(chat_id, user_id, user_text)
-    touch(chat_id, user_id)
+    touch(chat_id, user_id) 
 
     same_language_reply = _try_same_language_reply(chat_id, user_id, user_text)
     if same_language_reply:
@@ -2279,6 +2279,169 @@ def describe_video_frames(
     except Exception as e:
         _dbg(f"video discuss EXC: {type(e).__name__}: {e}")
         return DialogDecision(intent="chat", reply="видео разобрать не вышло.")
+    
+def detect_beauty_intent(text: str) -> bool:
+    user_text = (text or "").strip()
+
+    if not user_text or not _has_key():
+        return False
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты intent-router Веси.\n"
+                        "Определи, просит ли пользователь прислать красивый/эстетичный/эротичный ролик из подготовленного пула.\n"
+                        "Это НЕ просьба оценить видео и НЕ обычный разговор.\n\n"
+                        "Примеры true:\n"
+                        "- Веся сделай красиво\n"
+                        "- дай красоты\n"
+                        "- пришли красивый ролик\n"
+                        "- хочу эстетики\n"
+                        "- что-нибудь красивое\n\n"
+                        "Верни только JSON: {\"beauty_request\": true|false}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": user_text,
+                },
+            ],
+        )
+
+        raw = (getattr(resp, "output_text", "") or "").strip()
+        m = re.search(r"\{.*\}", raw, flags=re.S)
+        data = json.loads(m.group(0) if m else raw)
+
+        return bool(data.get("beauty_request"))
+
+    except Exception as e:
+        _dbg(f"beauty intent EXC: {type(e).__name__}: {e}")
+        return False
+
+
+def classify_beauty_video(
+    text: str,
+    frame_bytes_list: List[bytes],
+    audio_bytes: bytes | None = None,
+) -> Dict[str, Any]:
+    frames = [b for b in (frame_bytes_list or []) if b]
+    audio = audio_bytes or b""
+
+    transcript = transcribe_audio_bytes(audio)
+    music_track = recognize_music_audd(audio)
+
+    result: Dict[str, Any] = {
+        "accept": False,
+        "reason": "",
+        "beauty_score": 0.0,
+        "erotic_score": 0.0,
+        "has_music": bool(music_track),
+        "has_speech": bool(transcript),
+        "is_ad": False,
+        "music_track": music_track,
+        "transcript": transcript,
+    }
+
+    if not frames:
+        result["reason"] = "no_frames"
+        return result
+
+    if not _has_key():
+        result["reason"] = "openai_key_missing"
+        return result
+
+    try:
+        client = OpenAI()
+
+        content = [{
+            "type": "input_text",
+            "text": (
+                "Ты классификатор роликов для приватного beauty-пула Веси.\n"
+                "Нужно выбрать только красивые короткие ролики для взрослого пользователя.\n\n"
+                "Критерии ACCEPT:\n"
+                "- визуально красиво/эстетично;\n"
+                "- допустим легкий эротический акцент взрослых людей;\n"
+                "- ролик выглядит как клип/вайб, а не как реклама;\n"
+                "- музыка есть или вероятна.\n\n"
+                "Критерии REJECT:\n"
+                "- речь, диалог, голосовая реклама, призыв подписаться, порно-канал, промо;\n"
+                "- явная порнография;\n"
+                "- несовершеннолетние или сомнение в возрасте;\n"
+                "- насилие, принуждение, унижение;\n"
+                "- мусорный/неэстетичный ролик.\n\n"
+                f"Транскрибация речи:\n{transcript or '[речи не распознано]'}\n\n"
+                f"Распознанная музыка:\n{music_track or '[трек не распознан]'}\n\n"
+                f"Контекст:\n{text or ''}\n\n"
+                "Верни только JSON:\n"
+                "{"
+                "\"accept\":true|false,"
+                "\"reason\":\"...\","
+                "\"beauty_score\":0.0,"
+                "\"erotic_score\":0.0,"
+                "\"has_music\":true|false,"
+                "\"has_speech\":true|false,"
+                "\"is_ad\":true|false"
+                "}"
+            ),
+        }]
+
+        for b in frames[:5]:
+            b64 = base64.b64encode(b).decode("utf-8")
+            content.append({
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{b64}",
+            })
+
+        resp = client.responses.create(
+            model=VISION_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Отвечай только валидным JSON. "
+                        "Не добавляй пояснений вне JSON."
+                    ),
+                },
+                {"role": "user", "content": content},
+            ],
+        )
+
+        raw = (getattr(resp, "output_text", "") or "").strip()
+        m = re.search(r"\{.*\}", raw, flags=re.S)
+        data = json.loads(m.group(0) if m else raw)
+
+        if not isinstance(data, dict):
+            result["reason"] = "bad_json"
+            return result
+
+        result.update({
+            "accept": bool(data.get("accept")),
+            "reason": str(data.get("reason") or ""),
+            "beauty_score": float(data.get("beauty_score") or 0.0),
+            "erotic_score": float(data.get("erotic_score") or 0.0),
+            "has_music": bool(data.get("has_music") or music_track),
+            "has_speech": bool(data.get("has_speech") or transcript),
+            "is_ad": bool(data.get("is_ad")),
+        })
+
+        if result["has_speech"] or result["is_ad"]:
+            result["accept"] = False
+
+        if not result["has_music"]:
+            result["accept"] = False
+
+        return result
+
+    except Exception as e:
+        _dbg(f"beauty classify EXC: {type(e).__name__}: {e}")
+        result["reason"] = f"{type(e).__name__}: {e}"
+        return result
 
 # =============================================================================
 # MEME: batch ranker (Variant A)

@@ -478,6 +478,19 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             "",
         )
 
+        if clar.get("is_supported_product") is False:
+            session["mode"] = "WAIT_ELECTRONICS_PRODUCT"
+            session["last_task"] = None
+
+            await message.answer(
+                clar.get("next_question")
+                or (
+                    "Товар не распознан как электроника или бытовая техника.\n"
+                    "Напиши конкретный товар: ноутбук, телевизор, смартфон, пылесос, роутер, монитор."
+                )
+            )
+            return True
+
         task.params["category"] = clar.get("category") or ""
         task.params["last_detail_field"] = clar.get("field") or ""
         task.params["product_details"] = clar.get("known_details") or {}
@@ -544,6 +557,16 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             details,
             answer,
         )
+
+        if clar.get("is_supported_product") is False:
+            await message.answer(
+                clar.get("next_question")
+                or (
+                    "Товар не распознан как электроника или бытовая техника.\n"
+                    "Напиши конкретный товар заново."
+                )
+            )
+            return True
 
         existing.params["category"] = clar.get("category") or existing.params.get("category") or ""
         existing.params["product_details"] = clar.get("known_details") or details

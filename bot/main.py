@@ -4284,6 +4284,38 @@ async def vesya_handler(message: Message) -> None:
 
     clean_action = _strip_vesya_prefix(text).strip().lower().strip(" ?!.,:;")
 
+    beauty_text = _strip_vesya_prefix(text).strip()
+
+    if chatgpt_dialog.detect_beauty_intent(beauty_text):
+        try:
+            from beauty_pool import pick_unseen_beauty_clip, mark_beauty_clip_sent
+
+            item = pick_unseen_beauty_clip(user_id)
+
+            if not item:
+                await message.answer("Пула красоты пока нет или всё уже показывала.")
+                return
+
+            clip_id = str(item.get("id") or "").strip()
+            video_path = Path(str(item.get("path") or item.get("abs_path") or ""))
+
+            if not clip_id or not video_path.exists():
+                await message.answer("В пуле есть запись, но сам ролик не найден.")
+                return
+
+            await message.answer_video(
+                FSInputFile(str(video_path)),
+                caption="Сделала красиво."
+            )
+
+            mark_beauty_clip_sent(user_id, clip_id)
+            return
+
+        except Exception as e:
+            print(f"[beauty] send failed: {type(e).__name__}: {e}", flush=True)
+            await message.answer("Красиво не вышло. Что характерно.")
+            return
+
     pending_action_words = {
         "ответь",
         "ответь на вопрос",
