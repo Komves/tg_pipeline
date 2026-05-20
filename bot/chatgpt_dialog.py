@@ -2414,8 +2414,25 @@ def classify_beauty_video(
 
         raw = _extract_text(resp).strip()
 
-        if not raw:
-            _dbg("beauty classify empty output_text")
+        if not raw.strip():
+            try:
+                import json
+
+                dump = {
+                    "type": str(type(resp)),
+                    "dir": [x for x in dir(resp) if not x.startswith("_")][:100],
+                    "output_text": getattr(resp, "output_text", None),
+                    "output": str(getattr(resp, "output", None))[:4000],
+                }
+
+                _dbg(
+                    "beauty classify empty response dump: "
+                    + json.dumps(dump, ensure_ascii=False)
+                )
+
+            except Exception as e:
+                _dbg(f"beauty classify dump failed: {type(e).__name__}: {e}")
+
             result["reason"] = "empty_llm_output"
             return result
 
