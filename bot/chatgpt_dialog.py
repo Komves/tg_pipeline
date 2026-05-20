@@ -2450,21 +2450,14 @@ def classify_beauty_video(
         raw = _extract_text(resp).strip()
 
         if not raw.strip():
-            try:
-                dump = {
-            "type": str(type(resp)),
-            "dir": [x for x in dir(resp) if not x.startswith("_")][:100],
-            "output_text": getattr(resp, "output_text", None),
-            "output": str(getattr(resp, "output", None))[:4000],
-        }
-                _dbg(
-                    "beauty classify empty response dump: "
-                    + json.dumps(dump, ensure_ascii=False)
-                )
+            output_text = str(getattr(resp, "output", "") or "")
 
-            except Exception as e:
-                _dbg(f"beauty classify dump failed: {type(e).__name__}: {e}")
+            if "ResponseOutputRefusal" in output_text or "type='refusal'" in output_text:
+                _dbg("beauty classify refusal")
+                result["reason"] = "openai_refusal"
+                return result
 
+            _dbg("beauty classify empty output")
             result["reason"] = "empty_llm_output"
             return result
 
