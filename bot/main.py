@@ -4303,13 +4303,53 @@ async def vesya_handler(message: Message) -> None:
                 await message.answer("В пуле есть запись, но сам ролик не найден.")
                 return
 
-            await message.answer_video(
-                FSInputFile(str(video_path)),
-                caption="Сделала красиво."
-            )
+            beauty_captions = [
+                "Держи. Красоту заказывали — без лишней бухгалтерии.",
+                "Вот. Почти искусство, если не придираться.",
+                "Сделала красиво. Не благодари слишком громко.",
+                "Лови. Эстетика подъехала.",
+                "Вот тебе немного визуального порядка в этом цирке.",
+                "Красота по заявке. Редкий случай, когда получилось.",
+            ]
 
-            mark_beauty_clip_sent(user_id, clip_id)
-            return
+            caption = random.choice(beauty_captions)
+
+            tmp_path = f"/tmp/vesya_beauty_{uuid.uuid4().hex}.mp4"
+            shutil.copyfile(str(video_path), tmp_path)
+
+            sent_ok = False
+            last_send_error = None
+
+            try:
+                for attempt in range(3):
+                    try:
+                        await message.answer_video(
+                            FSInputFile(tmp_path),
+                            caption=caption,
+                            request_timeout=int(os.getenv("V_VIDEO_SEND_TIMEOUT", "45")),
+                        )
+                        sent_ok = True
+                        break
+                    except Exception as e:
+                        last_send_error = e
+                        print(
+                            f"[beauty] send attempt {attempt + 1}/3 failed: "
+                            f"{type(e).__name__}: {e}",
+                            flush=True,
+                        )
+                        await asyncio.sleep(2 + attempt * 2)
+
+                if not sent_ok:
+                    raise last_send_error or RuntimeError("beauty video send failed")
+
+                mark_beauty_clip_sent(user_id, clip_id)
+                return
+
+            finally:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         except Exception as e:
             print(f"[beauty] send failed: {type(e).__name__}: {e}", flush=True)
