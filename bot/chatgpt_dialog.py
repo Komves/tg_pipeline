@@ -2362,62 +2362,55 @@ def classify_beauty_video(
         content = [{
             "type": "input_text",
             "text": (
-                "Ты safety/suitability-классификатор коротких видео для приватного aesthetic-пула.\n"
-                "Твоя задача — решить, подходит ли ролик как красивый/стильный/музыкальный клип.\n"
-                "Не описывай сексуальные детали. Не оценивай сексуальность. Не делай эротический анализ.\n\n"
-                "ACCEPT только если:\n"
-                "- видео выглядит как эстетичный клип, танец, fashion/lifestyle, красивый визуальный вайб;\n"
-                "- взрослые люди, без сомнения в возрасте;\n"
-                "- нет явной наготы, порнографии или сексуального действия;\n"
-                "- нет рекламы, призывов подписаться, промо порно-каналов;\n"
+                "Ты visual suitability classifier для приватного aesthetic-пула коротких видео.\n"
+                "Твоя задача — классифицировать визуальный жанр ролика, а не описывать его.\n"
+                "Не описывай сексуальные детали. Не оценивай сексуальность. Не используй эротические формулировки.\n"
+                "Нужно отделить ordinary_music_clip от glamour/fashion/dance/body-focused aesthetic.\n\n"
+                "Положительные visual_type:\n"
+                "- glamour\n"
+                "- fashion\n"
+                "- dance_or_posing\n"
+                "- beach_aesthetic\n"
+                "- body_focused_aesthetic\n\n"
+                "Отрицательные visual_type:\n"
+                "- ordinary_music_clip\n"
+                "- meme\n"
+                "- ad_or_promo\n"
+                "- talking_video\n"
+                "- explicit_or_unsafe\n"
+                "- unclear_age\n"
+                "- low_quality\n"
+                "- unknown\n\n"
+                "ACCEPT если:\n"
+                "- visual_type один из положительных;\n"
+                "- adult_aesthetic=true;\n"
+                "- люди выглядят взрослыми;\n"
+                "- нет явной небезопасной сцены;\n"
+                "- нет рекламы, промо, призыва подписаться;\n"
                 "- нет речи/диалога/голосовой рекламы;\n"
                 "- есть музыка или клиповый музыкальный контекст.\n\n"
                 "REJECT если:\n"
-                "- явная сексуальность, порно, нагота или сексуальное действие;\n"
-                "- несовершеннолетние или сомнение в возрасте;\n"
-                "- речь, диалог, голосовая реклама, промо, призыв подписаться;\n"
-                "- ролик выглядит как реклама канала;\n"
-                "- неэстетичный/мусорный/непонятный ролик.\n\n"
+                "- это обычный музыкальный клип без нужного визуального жанра;\n"
+                "- мем, реклама, разговорное видео, промо канала;\n"
+                "- возраст неясен;\n"
+                "- есть небезопасная сцена;\n"
+                "- ролик неэстетичный, мусорный или непонятный.\n\n"
                 f"Транскрибация речи:\n{transcript or '[речи не распознано]'}\n\n"
                 f"Распознанная музыка:\n{music_track or '[трек не распознан]'}\n\n"
                 f"Контекст:\n{text or ''}\n\n"
                 "Верни только JSON:\n"
                 "{"
                 "\"accept\":true|false,"
+                "\"visual_type\":\"glamour|fashion|dance_or_posing|beach_aesthetic|body_focused_aesthetic|ordinary_music_clip|meme|ad_or_promo|talking_video|explicit_or_unsafe|unclear_age|low_quality|unknown\","
+                "\"adult_aesthetic\":true|false,"
                 "\"reason\":\"...\","
                 "\"beauty_score\":0.0,"
-                "\"erotic_score\":0.0,"
-                "\"has_music\":true|false,"
-                "\"has_speech\":true|false,"
-                "\"is_ad\":true|false"
-"}"
-                "Критерии ACCEPT:\n"
-                "- визуально красиво/эстетично;\n"
-                "- допустим легкий эротический акцент взрослых людей;\n"
-                "- ролик выглядит как клип/вайб, а не как реклама;\n"
-                "- музыка есть или вероятна.\n\n"
-                "Критерии REJECT:\n"
-                "- речь, диалог, голосовая реклама, призыв подписаться, порно-канал, промо;\n"
-                "- явная порнография;\n"
-                "- несовершеннолетние или сомнение в возрасте;\n"
-                "- насилие, принуждение, унижение;\n"
-                "- мусорный/неэстетичный ролик.\n\n"
-                f"Транскрибация речи:\n{transcript or '[речи не распознано]'}\n\n"
-                f"Распознанная музыка:\n{music_track or '[трек не распознан]'}\n\n"
-                f"Контекст:\n{text or ''}\n\n"
-                "Верни только JSON:\n"
-                "{"
-                "\"accept\":true|false,"
-                "\"reason\":\"...\","
-                "\"beauty_score\":0.0,"
-                "\"erotic_score\":0.0,"
                 "\"has_music\":true|false,"
                 "\"has_speech\":true|false,"
                 "\"is_ad\":true|false"
                 "}"
             ),
         }]
-
         for b in frames[:5]:
             b64 = base64.b64encode(b).decode("utf-8")
             content.append({
@@ -2492,10 +2485,26 @@ def classify_beauty_video(
             "reason": str(data.get("reason") or ""),
             "beauty_score": float(data.get("beauty_score") or 0.0),
             "erotic_score": 0.0,
+            "visual_type": str(data.get("visual_type") or "").strip(),
+            "adult_aesthetic": bool(data.get("adult_aesthetic")),
             "has_music": bool(data.get("has_music") or music_track),
             "has_speech": bool(data.get("has_speech") or transcript),
             "is_ad": bool(data.get("is_ad")),
         })
+
+        allowed_visual_types = {
+            "glamour",
+            "fashion",
+            "dance_or_posing",
+            "beach_aesthetic",
+            "body_focused_aesthetic",
+        }
+
+        if result["visual_type"] not in allowed_visual_types:
+            result["accept"] = False
+
+        if not result["adult_aesthetic"]:
+            result["accept"] = False
 
         if result["has_speech"] or result["is_ad"]:
             result["accept"] = False
