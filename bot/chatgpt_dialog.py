@@ -2446,9 +2446,18 @@ def classify_beauty_video(
         try:
             data = json.loads(m.group(0))
         except Exception as e:
-            _dbg(f"beauty classify bad json: {type(e).__name__}: {raw[:500]}")
+            import traceback
+
+            _dbg(
+                "beauty classify bad json traceback:\n"
+                + traceback.format_exc()
+            )
+
+            _dbg(f"beauty classify raw:\n{raw[:2000]}")
+
             result["reason"] = f"bad_json: {type(e).__name__}"
             return result
+            
 
         if not isinstance(data, dict):
             result["reason"] = "bad_json_not_dict"
