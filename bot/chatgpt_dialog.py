@@ -2416,15 +2416,12 @@ def classify_beauty_video(
 
         if not raw.strip():
             try:
-                import json
-
                 dump = {
-                    "type": str(type(resp)),
-                    "dir": [x for x in dir(resp) if not x.startswith("_")][:100],
-                    "output_text": getattr(resp, "output_text", None),
-                    "output": str(getattr(resp, "output", None))[:4000],
-                }
-
+            "type": str(type(resp)),
+            "dir": [x for x in dir(resp) if not x.startswith("_")][:100],
+            "output_text": getattr(resp, "output_text", None),
+            "output": str(getattr(resp, "output", None))[:4000],
+        }
                 _dbg(
                     "beauty classify empty response dump: "
                     + json.dumps(dump, ensure_ascii=False)
