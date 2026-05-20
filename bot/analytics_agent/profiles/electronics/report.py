@@ -37,6 +37,21 @@ def _safe_json(text: str) -> Dict[str, Any]:
     except Exception:
         return {}
 
+def _detect_followup_mode(followup: str) -> str:
+    t = _compact(followup).lower()
+
+    if not t:
+        return "normal"
+
+    if re.search(
+        r"(еще варианты|ещё варианты|другие варианты|альтернативы|что еще|что ещё)",
+        t,
+        flags=re.I,
+    ):
+        return "more_variants"
+
+    return "normal"
+
 
 def _search_web(query: str, count: int = 8) -> List[Dict[str, str]]:
     if not BRAVE_SEARCH_API_KEY:
@@ -116,10 +131,14 @@ def clarify_electronics_requirements(
                 {
                     "role": "system",
                     "content": (
-                        "Ты уточняющий роутер для аналитика качества электроники по отзывам.\n"
+                        "Ты уточняющий роутер для аналитика качества электроники и бытовой техники по отзывам.\n"
                         "Ты НЕ пишешь финальный отчет.\n"
+                        "Ты НЕ ищешь товар в интернете.\n"
+                        "Ты сначала определяешь, является ли product реальным товаром электроники или бытовой техники.\n"
+                        "Если product выглядит как шутка, бессмыслица, несуществующий товар, услуга, эмоция или непонятная фраза — is_supported_product=false.\n"
+                        "Если product распознан как реальный товар электроники или бытовой техники — is_supported_product=true.\n"
                         "Ты задаешь только ОДИН самый важный следующий вопрос.\n\n"
-                        "Категории: ноутбук, смартфон, телевизор, наушники, роутер, монитор, планшет, другое.\n\n"
+                        "Поддерживаемая область: электроника, бытовая техника, компьютерная техника, гаджеты, аудио/видео, сетевое оборудование, техника для дома.\n\n"
                         "Правила:\n"
                         "1. Не задавай анкету.\n"
                         "2. Каждый раз спрашивай только один самый важный параметр.\n"
@@ -129,12 +148,15 @@ def clarify_electronics_requirements(
                         "6. Для наушников — формат: TWS, полноразмерные, проводные.\n"
                         "7. Для роутера — площадь и стены.\n"
                         "8. Для монитора — диагональ/разрешение/игры или работа.\n"
-                        "9. Если уже есть назначение и бюджет/размер, можно считать готовым.\n\n"
+                        "9. Для бытовой техники — сначала выясни сценарий использования или ключевое требование.\n"
+                        "10. Если уже есть назначение и бюджет/размер/ключевое требование, можно считать готовым.\n\n"
                         "Верни только JSON:\n"
                         "{"
+                        "\"is_supported_product\":true|false,"
+                        "\"unsupported_reason\":\"...\","
                         "\"ready\":true|false,"
                         "\"category\":\"...\","
-                        "\"field\":\"purpose|budget|size|format|priority|area|resolution|other|\","
+                        "\"field\":\"product|purpose|budget|size|format|priority|area|resolution|other|\","
                         "\"next_question\":\"...\","
                         "\"known_details\":{...},"
                         "\"normalized_product\":\"...\""
@@ -155,8 +177,24 @@ def clarify_electronics_requirements(
         data = _safe_json(resp.output_text)
 
         if isinstance(data, dict) and "ready" in data:
+            if data.get("is_supported_product") is False:
+                return {
+                    "ready": False,
+                    "category": "",
+                    "field": "product",
+                    "next_question": (
+                        "Товар не распознан как электроника или бытовая техника.\n"
+                        "Напиши конкретный товар: например ноутбук, телевизор, смартфон, пылесос, роутер, монитор."
+                    ),
+                    "known_details": {},
+                    "normalized_product": "",
+                    "is_supported_product": False,
+                    "unsupported_reason": data.get("unsupported_reason") or "",
+                }
+
             data["known_details"] = data.get("known_details") or known_details
             data["normalized_product"] = data.get("normalized_product") or product
+            data["is_supported_product"] = True
             return data
 
     except Exception:
@@ -205,20 +243,32 @@ def plan_electronics_research(
         if _compact(str(v))
     )
 
-    if followup:
+    followup_mode = _detect_followup_mode(followup)
+
+    if followup and followup_mode != "more_variants":
         detail_text = _compact(f"{detail_text} уточнение: {followup}")
 
     if not (os.getenv("OPENAI_API_KEY") or "").strip():
-        return {
-            "strategy": "reviews_quality",
-            "reason": "no llm key",
-            "search_queries": [
-                f"{product} {detail_text} лучшие модели отзывы недостатки",
-                f"{product} {detail_text} форум отзывы проблемы",
-                f"{product} {detail_text} рейтинг надежности отзывы",
-            ],
-            "candidate_focus": product,
-        }
+        negative_filter = ""
+
+    detail_lc = detail_text.lower()
+
+    if (
+        "сух" in detail_lc
+        or "провод" in detail_lc
+    ):
+        negative_filter = "-моющий -паровой -steam -wet"
+
+    return {
+        "strategy": "reviews_quality",
+        "reason": "fallback",
+        "search_queries": [
+            f"{product} {detail_text} лучшие модели отзывы недостатки {negative_filter}",
+            f"{product} {detail_text} проблемы отзывы форум {negative_filter}",
+            f"{product} {detail_text} рейтинг надежности {negative_filter}",
+        ],
+        "candidate_focus": product,
+    }
 
     try:
         client = OpenAI()
@@ -316,6 +366,17 @@ def build_electronics_report(
 
     search_queries = research_plan.get("search_queries") or []
 
+    followup_mode = _detect_followup_mode(followup)
+
+    if followup_mode == "more_variants":
+        extra_queries = [
+            f"{product} альтернативы лучшие модели отзывы",
+            f"{product} топ моделей отзывы владельцев",
+            f"{product} надежные модели форум",
+        ]
+
+        search_queries.extend(extra_queries)
+
     all_results = []
 
     for q in search_queries:
@@ -364,6 +425,17 @@ def build_electronics_report(
 
     client = OpenAI()
 
+    source_lines = []
+
+    for item in unique_results[:5]:
+        title = _compact(item.get("title") or "")
+        url = _compact(item.get("url") or "")
+
+        if title and url:
+            source_lines.append(f"- {title}: {url}")
+
+    sources_text = "\n".join(source_lines)
+
     resp = client.responses.create(
         model=MODEL,
         input=[
@@ -396,7 +468,9 @@ def build_electronics_report(
                     "- лучший баланс\n"
                     "- чего избегать\n\n"
                     "Проверить перед покупкой:\n"
-                    "- 2–3 пункта"
+                    "- 2–3 пункта\n\n"
+                    "Источники:\n"
+                    "- 2–5 коротких ссылок"
                 ),
             },
             {
@@ -407,7 +481,8 @@ def build_electronics_report(
                     f"product_details:\n{json.dumps(product_details, ensure_ascii=False)}\n\n"
                     f"followup:\n{followup}\n\n"
                     f"research_plan:\n{json.dumps(research_plan, ensure_ascii=False)}\n\n"
-                    f"search_results:\n{json.dumps(unique_results, ensure_ascii=False)[:12000]}"
+                    f"search_results:\n{json.dumps(unique_results, ensure_ascii=False)[:12000]}\n\n"
+                    f"sources:\n{sources_text}"
                 ),
             },
         ],
