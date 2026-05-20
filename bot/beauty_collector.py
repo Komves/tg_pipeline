@@ -415,6 +415,17 @@ async def collect_beauty_hours(hours: int = 24) -> Dict[str, int]:
 
                     accept = bool(verdict.get("accept"))
 
+                    log(
+                        "VERDICT "
+                        f"msg_id={msg_id} "
+                        f"accept={accept} "
+                        f"beauty_score={verdict.get('beauty_score')} "
+                        f"has_music={verdict.get('has_music')} "
+                        f"has_speech={verdict.get('has_speech')} "
+                        f"is_ad={verdict.get('is_ad')} "
+                        f"reason={verdict.get('reason')}"
+)
+
                     if accept:
                         item = {
                             "id": clip_id,
