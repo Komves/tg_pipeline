@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-BEAUTY_SOURCES_FILE = REPO_ROOT / "tg_pipeline" / "beauty_sources.txt"
+BEAUTY_SOURCES_FILE = REPO_ROOT / "beauty_sources.txt"
 BEAUTY_RAW_DIR = DATA_DIR / "beauty_raw"
 BEAUTY_RAW_DIR.mkdir(parents=True, exist_ok=True)
 
