@@ -2413,11 +2413,28 @@ def classify_beauty_video(
         )
 
         raw = (getattr(resp, "output_text", "") or "").strip()
+
+        if not raw:
+            _dbg("beauty classify empty output_text")
+            result["reason"] = "empty_llm_output"
+            return result
+
         m = re.search(r"\{.*\}", raw, flags=re.S)
-        data = json.loads(m.group(0) if m else raw)
+
+        if not m:
+            _dbg(f"beauty classify non-json output: {raw[:500]}")
+            result["reason"] = "non_json_llm_output"
+            return result
+
+        try:
+            data = json.loads(m.group(0))
+        except Exception as e:
+            _dbg(f"beauty classify bad json: {type(e).__name__}: {raw[:500]}")
+            result["reason"] = f"bad_json: {type(e).__name__}"
+            return result
 
         if not isinstance(data, dict):
-            result["reason"] = "bad_json"
+            result["reason"] = "bad_json_not_dict"
             return result
 
         result.update({
