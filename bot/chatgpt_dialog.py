@@ -2314,7 +2314,7 @@ def detect_beauty_intent(text: str) -> bool:
             ],
         )
 
-        raw = (getattr(resp, "output_text", "") or "").strip()
+        raw = _extract_text(resp).strip()
         m = re.search(r"\{.*\}", raw, flags=re.S)
         data = json.loads(m.group(0) if m else raw)
 
@@ -2412,7 +2412,7 @@ def classify_beauty_video(
             ],
         )
 
-        raw = (getattr(resp, "output_text", "") or "").strip()
+        raw = _extract_text(resp).strip()
 
         if not raw:
             _dbg("beauty classify empty output_text")
