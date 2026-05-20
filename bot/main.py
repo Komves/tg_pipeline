@@ -5268,6 +5268,19 @@ async def ingest24_loop(bot: Bot) -> None:
 
             print("[ingest24] auto-send disabled; ingest only", flush=True)
 
+            try:
+                from beauty_collector import collect_beauty_hours
+
+                beauty_hours = int(os.getenv("BEAUTY_COLLECT_HOURS", "24"))
+
+                async with TG_LOCK:
+                    await collect_beauty_hours(beauty_hours)
+
+                print(f"[beauty24] collect done hours={beauty_hours}", flush=True)
+
+            except Exception as e:
+                print(f"[beauty24] collect error: {type(e).__name__}: {e}", flush=True)
+
             # при необходимости можно оставить обновление пулов
             try:
                 _refresh_video_pool(MAIN_GROUP_ID)
