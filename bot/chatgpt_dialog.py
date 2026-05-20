@@ -2506,7 +2506,19 @@ def classify_beauty_video(
         if not result["adult_aesthetic"]:
             result["accept"] = False
 
-        if result["has_speech"] or result["is_ad"]:
+        reject_reason_lc = str(result.get("reason") or "").lower()
+
+        speech_is_blocking = (
+            result["visual_type"] in {"talking_video", "ad_or_promo"}
+            or "promo" in reject_reason_lc
+            or "реклам" in reject_reason_lc
+            or "промо" in reject_reason_lc
+            or "talking" in reject_reason_lc
+            or "dialog" in reject_reason_lc
+            or "speech-heavy" in reject_reason_lc
+        )
+
+        if result["is_ad"] or speech_is_blocking:
             result["accept"] = False
 
         if not result["has_music"]:
