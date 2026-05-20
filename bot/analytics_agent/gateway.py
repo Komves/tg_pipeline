@@ -429,6 +429,17 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             )
             return True
 
+        if detected == "electronics":
+            session["mode"] = "WAIT_ELECTRONICS_PRODUCT"
+            session["last_task"] = None
+
+            await message.answer(
+                f"Профиль выбран: {PROFILES[detected]['title']}.\n\n"
+                "Напиши, какую электронику анализируем.\n"
+                "Например: ноутбук, телевизор, смартфон, наушники, роутер, монитор."
+            )
+            return True
+
         await message.answer(
             f"Профиль выбран: {PROFILES[detected]['title']}."
         )
@@ -439,6 +450,163 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         return True
 
     existing = session.get("last_task")
+
+    if session.get("profile") == "electronics" and session.get("mode") == "WAIT_ELECTRONICS_PRODUCT":
+        product = raw.strip()
+
+        if not product:
+            await message.answer("Напиши категорию электроники: ноутбук, телевизор, смартфон, наушники, роутер, монитор.")
+            return True
+
+        from analytics_agent.profiles.electronics.report import (
+            build_electronics_report,
+            clarify_electronics_requirements,
+        )
+
+        task = ResearchTask.create(
+            profile="electronics",
+            user_text=product,
+            params={
+                "product": product,
+                "product_details": {},
+            },
+        )
+
+        clar = clarify_electronics_requirements(
+            product,
+            task.params.get("product_details") or {},
+            "",
+        )
+
+        task.params["category"] = clar.get("category") or ""
+        task.params["last_detail_field"] = clar.get("field") or ""
+        task.params["product_details"] = clar.get("known_details") or {}
+        task.params["product"] = clar.get("normalized_product") or product
+
+        session["last_task"] = task
+
+        if not clar.get("ready"):
+            task.status = "waiting_electronics_detail"
+            session["mode"] = "WAIT_ELECTRONICS_DETAIL"
+            _save_task(task)
+
+            await message.answer(
+                clar.get("next_question")
+                or "Уточни один самый важный параметр."
+            )
+            return True
+
+        task.status = "researching"
+        session["mode"] = "RESEARCH"
+        _save_task(task)
+
+        result = build_electronics_report(
+            task.task_id,
+            task.params["product"],
+            task.params,
+        )
+
+        task.status = "done"
+        session["mode"] = "READY"
+        _save_task(task)
+
+        await answer_long(message, result)
+        return True
+
+    if (
+        session.get("profile") == "electronics"
+        and session.get("mode") == "WAIT_ELECTRONICS_DETAIL"
+        and isinstance(existing, ResearchTask)
+    ):
+        from analytics_agent.profiles.electronics.report import (
+            build_electronics_report,
+            clarify_electronics_requirements,
+        )
+
+        answer = raw.strip()
+
+        if not answer:
+            await message.answer("Ответь на уточняющий вопрос одним сообщением.")
+            return True
+
+        details = existing.params.get("product_details") or {}
+        detail_key = str((existing.params or {}).get("last_detail_field") or "").strip()
+
+        if detail_key:
+            details[detail_key] = answer
+        else:
+            details[f"detail_{len(details) + 1}"] = answer
+
+        product = str((existing.params or {}).get("product") or "").strip()
+
+        clar = clarify_electronics_requirements(
+            product,
+            details,
+            answer,
+        )
+
+        existing.params["category"] = clar.get("category") or existing.params.get("category") or ""
+        existing.params["product_details"] = clar.get("known_details") or details
+        existing.params["last_detail_field"] = clar.get("field") or ""
+        existing.params["product"] = clar.get("normalized_product") or product
+
+        if not clar.get("ready"):
+            existing.status = "waiting_electronics_detail"
+            session["mode"] = "WAIT_ELECTRONICS_DETAIL"
+            _save_task(existing)
+
+            await message.answer(
+                clar.get("next_question")
+                or "Уточни ещё один важный параметр."
+            )
+            return True
+
+        existing.status = "researching"
+        session["mode"] = "RESEARCH"
+        _save_task(existing)
+
+        result = build_electronics_report(
+            existing.task_id,
+            existing.params["product"],
+            existing.params,
+        )
+
+        existing.status = "done"
+        session["mode"] = "READY"
+        _save_task(existing)
+
+        await answer_long(message, result)
+        return True
+
+    if (
+        session.get("profile") == "electronics"
+        and session.get("mode") == "READY"
+        and isinstance(existing, ResearchTask)
+    ):
+        from analytics_agent.profiles.electronics.report import build_electronics_report
+
+        followup = raw.strip()
+
+        if not followup:
+            await message.answer("Напиши, что уточнить по этим вариантам.")
+            return True
+
+        existing.params["followup"] = followup
+        existing.status = "followup_researching"
+        _save_task(existing)
+
+        result = build_electronics_report(
+            existing.task_id,
+            str((existing.params or {}).get("product") or ""),
+            existing.params,
+        )
+
+        existing.status = "done"
+        session["mode"] = "READY"
+        _save_task(existing)
+
+        await answer_long(message, result)
+        return True
 
     if session.get("profile") == "auto_parts" and session.get("mode") == "WAIT_VIN":
         vin = raw.strip().upper().replace(" ", "")
