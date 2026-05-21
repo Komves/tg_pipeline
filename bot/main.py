@@ -643,6 +643,12 @@ MAIN_GROUP_ID = -1002356524398
 # one-shot relay mode: (chat_id, user_id) -> True
 RELAY_NEXT_MESSAGE: dict[tuple[int, int], bool] = {}
 
+# =========================
+# BEAUTY DIALOG STATE
+# =========================
+BEAUTY_DIALOG_STATE = {}  # (chat_id, user_id) -> ts
+BEAUTY_DIALOG_TTL_SEC = 300
+
 
 def _is_admin_user(message: Message) -> bool:
     uid = int(message.from_user.id) if message.from_user else 0
@@ -666,6 +672,51 @@ def _relay_arm(message: Message) -> None:
 
 def _relay_disarm(message: Message) -> None:
     RELAY_NEXT_MESSAGE.pop(_relay_key(message), None)
+
+
+def _beauty_key(chat_id: int, user_id: int) -> tuple[int, int]:
+    return (int(chat_id), int(user_id))
+
+
+def _beauty_activate(chat_id: int, user_id: int) -> None:
+    BEAUTY_DIALOG_STATE[_beauty_key(chat_id, user_id)] = time.time()
+
+
+def _beauty_is_active(chat_id: int, user_id: int) -> bool:
+    ts = BEAUTY_DIALOG_STATE.get(_beauty_key(chat_id, user_id))
+
+    if not ts:
+        return False
+
+    if (time.time() - ts) > BEAUTY_DIALOG_TTL_SEC:
+        BEAUTY_DIALOG_STATE.pop(_beauty_key(chat_id, user_id), None)
+        return False
+
+    return True
+
+
+def _beauty_followup(text: str) -> bool:
+    t = (text or "").strip().lower()
+
+    triggers = [
+        "еще",
+        "ещё",
+        "другое",
+        "другой",
+        "давай еще",
+        "давай ещё",
+        "следующее",
+        "продолжай",
+        "не, другое",
+        "другое давай",
+        "что-нибудь другое",
+        "еще красоты",
+        "ещё красоты",
+        "ну еще",
+        "ну ещё",
+    ]
+
+    return any(x in t for x in triggers)
 
 
 def _relay_command_text(text: str) -> bool:
@@ -4286,7 +4337,16 @@ async def vesya_handler(message: Message) -> None:
 
     beauty_text = _strip_vesya_prefix(text).strip()
 
-    if chatgpt_dialog.detect_beauty_intent(beauty_text):
+    if (
+        chatgpt_dialog.detect_beauty_intent(beauty_text)
+        or (
+            _beauty_is_active(chat_id, user_id)
+            and (
+                _beauty_followup(beauty_text)
+                or chatgpt_dialog.classify_beauty_followup(beauty_text)
+            )
+        )
+    ):
         try:
             from beauty_pool import pick_unseen_beauty_clip, mark_beauty_clip_sent
 
@@ -4313,6 +4373,8 @@ async def vesya_handler(message: Message) -> None:
             ]
 
             caption = random.choice(beauty_captions)
+
+            _beauty_activate(chat_id, user_id)
 
             tmp_path = f"/tmp/vesya_beauty_{uuid.uuid4().hex}.mp4"
             shutil.copyfile(str(video_path), tmp_path)

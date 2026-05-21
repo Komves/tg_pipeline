@@ -884,6 +884,93 @@ def _extract_text(resp: Any) -> str:
     except Exception:
         return ""
 
+def classify_beauty_followup(user_text: str) -> bool:
+    """
+    Semantic detector:
+    decides whether user continues beauty/video session
+    or switched to another topic.
+    """
+
+    t = (user_text or "").strip()
+
+    if not t:
+        return False
+
+    tl = t.lower()
+
+    # ultra-cheap fast positives
+    cheap = [
+        "еще",
+        "ещё",
+        "другое",
+        "следующее",
+        "продолжай",
+        "красоты",
+        "красиво",
+    ]
+
+    if any(x in tl for x in cheap):
+        return True
+
+    if not _has_key():
+        return False
+
+    try:
+        client = OpenAI()
+
+        resp = client.responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты classifier.\n"
+                        "Определи: пользователь продолжает запрос beauty/video-контента "
+                        "или переключился на новую тему.\n\n"
+
+                        "Верни только JSON:\n"
+                        "{\"followup\": true}\n"
+                        "или\n"
+                        "{\"followup\": false}\n\n"
+
+                        "followup=true примеры:\n"
+                        "- а еще\n"
+                        "- другое давай\n"
+                        "- теперь поживее\n"
+                        "- слишком пошло\n"
+                        "- давай мягче\n"
+                        "- что-нибудь эстетичное\n"
+                        "- не, другое\n"
+                        "- еще красоты\n\n"
+
+                        "followup=false примеры:\n"
+                        "- сколько стоит золото\n"
+                        "- новости\n"
+                        "- что думаешь про банк\n"
+                        "- покажи курс доллара\n"
+                        "- как работает VPN\n"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": t,
+                },
+            ],
+        )
+
+        raw = _extract_text(resp)
+
+        m = re.search(r"\{.*\}", raw, re.S)
+        if not m:
+            return False
+
+        data = json.loads(m.group(0))
+
+        return bool(data.get("followup"))
+
+    except Exception as e:
+        _dbg(f"beauty followup EXC: {type(e).__name__}: {e}")
+        return False
 
 def _sanitize_reply(text: str) -> str:
     t = (text or "").strip()
