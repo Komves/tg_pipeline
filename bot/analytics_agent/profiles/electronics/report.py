@@ -378,6 +378,12 @@ def build_electronics_report(
 
     search_queries = research_plan.get("search_queries") or []
 
+    search_queries.extend([
+        f"{product} {json.dumps(product_details, ensure_ascii=False)} цена",
+        f"{product} {json.dumps(product_details, ensure_ascii=False)} купить цена",
+        f"{product} {json.dumps(product_details, ensure_ascii=False)} рейтинг цена",
+    ])
+
     followup_mode = _detect_followup_mode(followup)
 
     if _is_price_followup(followup):
@@ -476,7 +482,14 @@ def build_electronics_report(
                     "2.3. Разрешено использовать бренды и линейки моделей, даже если выдача неполная.\n"
                     "2.4. Фразу 'конкретных моделей в выдаче недостаточно' используй только если в search_results вообще нет моделей/брендов.\n"
                     "3. Не пиши обзор-статью.\n"
-                    "4. Если пользователь просит порядок цен — давай диапазоны, не точные цены.\n"
+                    "4. В КАЖДОМ отчёте обязательно добавляй блок примерных ценовых диапазонов.\n"
+                    "4.1. Не нужны точные цены. Нужен порядок рынка по поисковой выдаче.\n"
+                    "4.2. Формат:\n"
+                    "Цены ориентировочно:\n"
+                    "- бюджет: <диапазон>\n"
+                    "- средний: <диапазон>\n"
+                    "- премиум: <диапазон>\n"
+                    "4.3. Если данных по ценам мало — всё равно дай осторожный диапазон и напиши 'по выдаче'.\n"
                     "4.1. Если follow-up про цены или strategy=budget_comparison:\n"
                     "- НЕ пиши обычный обзор заново;\n"
                     "- НЕ повторяй весь блок отзывов;\n"
