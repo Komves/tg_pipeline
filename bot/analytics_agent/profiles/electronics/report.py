@@ -248,8 +248,7 @@ def plan_electronics_research(
     if followup and followup_mode != "more_variants":
         detail_text = _compact(f"{detail_text} уточнение: {followup}")
 
-    if not (os.getenv("OPENAI_API_KEY") or "").strip():
-        negative_filter = ""
+    negative_filter = ""
 
     detail_lc = detail_text.lower()
 

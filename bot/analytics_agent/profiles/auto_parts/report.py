@@ -76,6 +76,32 @@ def _vehicle_context_from_params(vin: str, params: Dict[str, Any] | None = None)
 
     return vehicle
 
+def _is_price_followup(text: str) -> bool:
+    t = _compact(text).lower()
+
+    if not t:
+        return False
+
+    markers = [
+        "цена",
+        "цены",
+        "сколько стоит",
+        "диапазон",
+        "бюджет",
+        "дешев",
+        "дорог",
+        "премиум",
+        "россий",
+        "китай",
+        "корея",
+        "япони",
+        "герман",
+        "аналог",
+        "по цене",
+        "стоимост",
+    ]
+
+    return any(x in t for x in markers)
 
 def _build_part_queries(
     vin: str,
@@ -452,11 +478,14 @@ def build_auto_parts_report(
     if followup:
         research_product = _compact(f"{product} уточнение: {followup}")
 
-    research_plan = plan_auto_product_research(
+        research_plan = plan_auto_product_research(
         vehicle_context,
         research_product,
         product_details,
     )
+
+    if _is_price_followup(followup):
+        research_plan["strategy"] = "price_comparison"
 
     search_queries = research_plan.get("search_queries") or []
 
@@ -550,7 +579,22 @@ def build_auto_parts_report(
                     "Максимум 1200-1500 символов.\n"
                     "Если есть уточнение пользователя — отвечай именно на него, "
                     "не начинай полный отчёт заново и не повторяй блок 'как понята машина'. "
-                    "Если уточнение про цены — не подбирай новые модели, а дай короткую таблицу/список диапазонов."
+                    "Если уточнение про цены:\n"
+                    "- не подбирай заново модели;\n"
+                    "- дай диапазоны рынка;\n"
+                    "- разделяй бюджет / средний / премиум;\n"
+                    "- если уместно: Россия / Китай / Корея / Япония / Европа;\n"
+                    "- НЕ пиши точные цены;\n"
+                    "- диапазоны должны быть реалистичными по поисковой выдаче;\n"
+                    "- формат короткий и практичный.\n\n"
+
+                    "Пример:\n"
+                    "Бюджет:\n"
+                    "- 6-9 тыс\n\n"
+                    "Средний:\n"
+                    "- 10-16 тыс\n\n"
+                    "Премиум:\n"
+                    "- 18-30 тыс\n"
                 ),
             },
             {
