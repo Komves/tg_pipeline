@@ -415,6 +415,42 @@ async def collect_beauty_hours(hours: int = 24) -> Dict[str, int]:
 
                     accept = bool(verdict.get("accept"))
 
+                    reason_lc = str(verdict.get("reason") or "").lower()
+                    beauty_score = float(verdict.get("beauty_score") or 0.0)
+
+                    soft_reject_markers = (
+                        "meme",
+                        "comedy",
+                        "comic",
+                        "humor",
+                        "ad",
+                        "advert",
+                        "promo",
+                        "реклам",
+                        "промо",
+                        "unclear age",
+                        "unclear_age",
+                        "minor",
+                        "unsafe",
+                        "explicit",
+                        "animal",
+                        "low quality",
+                    )
+
+                    if (
+                        not accept
+                        and beauty_score >= float(os.getenv("BEAUTY_SOFT_ACCEPT_SCORE", "0.7"))
+                        and bool(verdict.get("has_music"))
+                        and not bool(verdict.get("is_ad"))
+                        and not any(marker in reason_lc for marker in soft_reject_markers)
+                    ):
+                        accept = True
+                        verdict["accept"] = True
+                        verdict["reason"] = (
+                            str(verdict.get("reason") or "").strip()
+                            + " | soft_accept_by_collector"
+                        ).strip()
+
                     log(
                         "VERDICT "
                         f"msg_id={msg_id} "
