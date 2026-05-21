@@ -37,6 +37,19 @@ def _safe_json(text: str) -> Dict[str, Any]:
     except Exception:
         return {}
 
+def _is_price_followup(text: str) -> bool:
+    t = _compact(text).lower()
+
+    if not t:
+        return False
+
+    return bool(re.search(
+        r"(цена|цены|по ценам|сколько стоит|стоимость|диапазон|бюджет|дешев|дорог|премиум|до \d+|тыс|руб)",
+        t,
+        flags=re.I,
+    ))
+
+
 def _detect_followup_mode(followup: str) -> str:
     t = _compact(followup).lower()
 
@@ -367,6 +380,14 @@ def build_electronics_report(
 
     followup_mode = _detect_followup_mode(followup)
 
+    if _is_price_followup(followup):
+        research_plan["strategy"] = "budget_comparison"
+        search_queries.extend([
+            f"{product} {json.dumps(product_details, ensure_ascii=False)} цена",
+            f"{product} {json.dumps(product_details, ensure_ascii=False)} купить цена",
+            f"{product} {json.dumps(product_details, ensure_ascii=False)} рейтинг цена",
+        ])
+
     if followup_mode == "more_variants":
         extra_queries = [
             f"{product} альтернативы лучшие модели отзывы",
@@ -454,6 +475,16 @@ def build_electronics_report(
                     "'конкретных моделей в выдаче недостаточно', и НЕ заменяй их общими категориями.\n"
                     "3. Не пиши обзор-статью.\n"
                     "4. Если пользователь просит порядок цен — давай диапазоны, не точные цены.\n"
+                    "4.1. Если follow-up про цены или strategy=budget_comparison:\n"
+                    "- НЕ пиши обычный обзор заново;\n"
+                    "- НЕ повторяй весь блок отзывов;\n"
+                    "- ОБЯЗАТЕЛЬНО дай числовые диапазоны цен;\n"
+                    "- формат должен быть короткий:\n"
+                    "Бюджет: <диапазон>\n"
+                    "Средний: <диапазон>\n"
+                    "Премиум: <диапазон>\n"
+                    "- если по выдаче нет точных цен, дай осторожный ориентир и прямо напиши, что это порядок по выдаче;\n"
+                    "- не пиши фразу 'цены разные' вместо диапазонов.\n"
                     "5. Если follow-up задан, отвечай именно на уточнение, не начинай отчет заново.\n"
                     "6. Главный фокус — качество: надежность, частые жалобы, перегрев, батарея, экран, звук, брак, сервис, софт.\n"
                     "7. Если данных мало — прямо скажи, что выдача слабая.\n\n"
@@ -485,6 +516,7 @@ def build_electronics_report(
                     f"product_details:\n{json.dumps(product_details, ensure_ascii=False)}\n\n"
                     f"followup:\n{followup}\n\n"
                     f"research_plan:\n{json.dumps(research_plan, ensure_ascii=False)}\n\n"
+                    f"current_strategy:\n{research_plan.get('strategy')}\n\n"
                     f"search_results:\n{json.dumps(unique_results, ensure_ascii=False)[:12000]}\n\n"
                     f"sources:\n{sources_text}"
                 ),
