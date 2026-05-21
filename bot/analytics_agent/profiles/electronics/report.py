@@ -306,7 +306,9 @@ def plan_electronics_research(
                         "Правила:\n"
                         "- Запросы должны искать конкретные модели и отзывы.\n"
                         "- Не делай общий поиск 'купить электронику'.\n"
-                        "- Добавляй слова: отзывы, недостатки, проблемы, форум, рейтинг, лучшие модели.\n"
+                        "- Добавляй слова: отзывы, недостатки, проблемы, форум, рейтинг, лучшие модели, топ.\n"
+                        "- Для бытовой техники и электроники старайся искать именно страницы с рейтингами моделей.\n"
+                        "- Формируй запросы так, чтобы в выдаче были конкретные модели, а не только категории.\n"
                         "- Если пользователь просит цену, диапазон, бюджет, дешевле/дороже — выбирай budget_comparison."
                     ),
                 },
@@ -333,12 +335,15 @@ def plan_electronics_research(
         "strategy": "reviews_quality",
         "reason": "fallback",
         "search_queries": [
-            f"{product} {detail_text} лучшие модели отзывы недостатки {negative_filter}",
+            f"{product} {detail_text} топ моделей рейтинг отзывы {negative_filter}",
+            f"{product} {detail_text} лучшие модели 2025 отзывы {negative_filter}",
+            f"{product} {detail_text} лучшие мощные модели {negative_filter}",
             f"{product} {detail_text} проблемы отзывы форум {negative_filter}",
             f"{product} {detail_text} рейтинг надежности {negative_filter}",
         ],
         "candidate_focus": product,
     }
+
 def build_electronics_report(
     task_id: str,
     product: str,
