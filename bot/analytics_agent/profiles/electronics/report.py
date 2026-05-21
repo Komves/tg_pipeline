@@ -262,25 +262,22 @@ def plan_electronics_research(
         detail_text = _compact(f"{detail_text} уточнение: {followup}")
 
     negative_filter = ""
-
     detail_lc = detail_text.lower()
 
-    if (
-        "сух" in detail_lc
-        or "провод" in detail_lc
-    ):
+    if "сух" in detail_lc or "провод" in detail_lc:
         negative_filter = "-моющий -паровой -steam -wet"
 
-    return {
-        "strategy": "reviews_quality",
-        "reason": "fallback",
-        "search_queries": [
-            f"{product} {detail_text} лучшие модели отзывы недостатки {negative_filter}",
-            f"{product} {detail_text} проблемы отзывы форум {negative_filter}",
-            f"{product} {detail_text} рейтинг надежности {negative_filter}",
-        ],
-        "candidate_focus": product,
-    }
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return {
+            "strategy": "reviews_quality",
+            "reason": "fallback_no_openai_key",
+            "search_queries": [
+                f"{product} {detail_text} лучшие модели отзывы недостатки {negative_filter}",
+                f"{product} {detail_text} проблемы отзывы форум {negative_filter}",
+                f"{product} {detail_text} рейтинг надежности {negative_filter}",
+            ],
+            "candidate_focus": product,
+        }
 
     try:
         client = OpenAI()
@@ -310,7 +307,7 @@ def plan_electronics_research(
                         "- Запросы должны искать конкретные модели и отзывы.\n"
                         "- Не делай общий поиск 'купить электронику'.\n"
                         "- Добавляй слова: отзывы, недостатки, проблемы, форум, рейтинг, лучшие модели.\n"
-                        "- Если пользователь просит дешевле/до суммы/российские — строй запросы под уточнение."
+                        "- Если пользователь просит цену, диапазон, бюджет, дешевле/дороже — выбирай budget_comparison."
                     ),
                 },
                 {
@@ -336,14 +333,12 @@ def plan_electronics_research(
         "strategy": "reviews_quality",
         "reason": "fallback",
         "search_queries": [
-            f"{product} {detail_text} лучшие модели отзывы недостатки",
-            f"{product} {detail_text} проблемы отзывы форум",
-            f"{product} {detail_text} рейтинг надежности",
+            f"{product} {detail_text} лучшие модели отзывы недостатки {negative_filter}",
+            f"{product} {detail_text} проблемы отзывы форум {negative_filter}",
+            f"{product} {detail_text} рейтинг надежности {negative_filter}",
         ],
         "candidate_focus": product,
     }
-
-
 def build_electronics_report(
     task_id: str,
     product: str,
