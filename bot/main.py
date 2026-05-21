@@ -4464,10 +4464,17 @@ async def vesya_handler(message: Message) -> None:
         user_id = int(message.from_user.id) if message.from_user else 0
 
         if message.chat.type == "private" or chatgpt_dialog.persona.is_addressed(text):
-            pending_probe = chatgpt_dialog.semantic_needs_next_object(
-                text,
-                topic=_get_topic(chat_id, user_id),
-            )
+
+            try:
+                if is_analytics_active(chat_id, user_id):
+                    pending_probe = {"wait_for_object": False}
+                else:
+                    pending_probe = chatgpt_dialog.semantic_needs_next_object(
+                        text,
+                        topic=_get_topic(chat_id, user_id),
+                    )
+            except Exception:
+                pending_probe = {"wait_for_object": False}
 
             if pending_probe.get("wait_for_object"):
                 instruction = (
