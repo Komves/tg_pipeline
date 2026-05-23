@@ -3877,16 +3877,17 @@ def _extract_manual_youtube_query(text: str) -> str | None:
 
     tl = t.lower()
 
-    # deterministic trigger only
+    # thematic YouTube request:
+    # "дай ролик про вечер и море", "клип под дождь", "видео про дорогу"
     if not re.search(
-        r"\b(клип|клипы|видео|видос|видосы|ютуб|youtube)\b",
+        r"\b(клип|клипы|видео|видос|видосы|ролик|ролики|ютуб|youtube)\b",
         tl,
         flags=re.I,
     ):
         return None
 
     if not re.search(
-        r"\b(найди|поищи|подбери|кинь|покажи)\b",
+        r"\b(найди|поищи|подбери|кинь|скинь|дай|пришли|покажи)\b",
         tl,
         flags=re.I,
     ):
