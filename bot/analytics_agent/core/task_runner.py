@@ -55,4 +55,21 @@ def run_task(task: ResearchTask) -> str:
         task.status = "analyzed"
         return build_real_estate_report(data, analysis, market)
 
+    if task.profile == "general_object":
+        from analytics_agent.profiles.general_object.parser import parse_general_object_input, merge_current_object
+        from analytics_agent.profiles.general_object.report import build_general_object_report
+
+        parsed = parse_general_object_input(task.user_text)
+        current_object = merge_current_object((task.params or {}).get("current_object") or {}, parsed)
+
+        task.params = task.params or {}
+        task.params["current_object"] = current_object
+        task.status = "analyzed"
+
+        return build_general_object_report(
+            task.task_id,
+            current_object,
+            str((task.params or {}).get("followup") or ""),
+        )
+
     return build_mock_report(task)

@@ -16,6 +16,21 @@ PROFILES = {
         "title": "Электроника",
         "aliases": ["электроника", "телефон", "ноутбук", "маркетплейс"],
     },
+    "general_object": {
+        "title": "Анализ объекта",
+        "aliases": [
+            "анализ объекта",
+            "объект",
+            "предмет",
+            "товар",
+            "вещь",
+            "одежда",
+            "мотор",
+            "инструмент",
+            "снасть",
+            "зацени",
+        ],
+    },
 }
 
 def detect_profile(text: str) -> str | None:
@@ -34,6 +49,9 @@ def detect_profile(text: str) -> str | None:
     if t in ("4", "4.", "электроника"):
         return "electronics"
 
+    if t in ("5", "5.", "анализ объекта", "объект", "предмет", "товар"):
+        return "general_object"
+
     for key, cfg in PROFILES.items():
         if key in t:
             return key
@@ -51,4 +69,5 @@ def profiles_help() -> str:
         "2. автозапчасти\n"
         "3. недвижимость\n"
         "4. электроника\n"
+        "5. анализ объекта\n"
     )

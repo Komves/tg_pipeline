@@ -228,6 +228,51 @@ def _describe_real_estate_image(img_bytes: bytes) -> str:
 
     return (getattr(resp, "output_text", "") or "").strip()
 
+
+
+def _describe_general_object_image(img_bytes: bytes) -> str:
+    import base64
+
+    from openai import OpenAI
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return ""
+
+    encoded = base64.b64encode(img_bytes).decode("ascii")
+
+    client = OpenAI()
+
+    resp = client.responses.create(
+        model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты vision/OCR модуль для анализа физического объекта.\n"
+                    "Не пиши финальный отчет.\n"
+                    "Извлеки только факты: тип объекта, бренд, модель, надписи, материал, состояние, назначение, видимые дефекты.\n"
+                    "Если бренд или модель не видны — так и напиши.\n"
+                    "Формат короткий, строками."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "Определи физический объект на изображении и извлеки факты для дальнейшего web-search анализа.",
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/jpeg;base64,{encoded}",
+                    },
+                ],
+            },
+        ],
+    )
+
+    return (getattr(resp, "output_text", "") or "").strip()
+
 async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
@@ -243,13 +288,52 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
         "renovation",
         "commercial_renovation",
         "real_estate",
+        "general_object",
     ):
         return False
 
     task = session.get("last_task")
 
-    if profile == "real_estate":
-        await message.answer("Сканирую объявление.")
+    if profile == "general_object":
+        from analytics_agent.profiles.general_object.parser import (
+            parse_general_object_input,
+            merge_current_object,
+        )
+        from analytics_agent.profiles.general_object.report import build_general_object_report
+
+        await message.answer("Сканирую объект.")
+
+        vision_text = _describe_general_object_image(img_bytes)
+
+        if not vision_text:
+            await message.answer(
+                "Не смогла распознать объект по фото. Пришли название, ссылку или текст объекта."
+            )
+            return True
+
+        parsed = parse_general_object_input(vision_text)
+        current_object = merge_current_object(None, parsed)
+
+        task = ResearchTask.create(
+            profile="general_object",
+            user_text=vision_text,
+            params={"current_object": current_object},
+        )
+
+        result = build_general_object_report(
+            task.task_id,
+            current_object,
+            "",
+        )
+
+        task.status = "done"
+        session["last_task"] = task
+        session["current_object"] = current_object
+        session["mode"] = "READY"
+        _save_task(task)
+
+        await answer_long(message, result)
+        return True
 
         vision_text = _describe_real_estate_image(img_bytes)
 
@@ -457,6 +541,7 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             "profile": None,
             "mode": "WAIT_PROFILE",
             "last_task": None,
+            "current_object": None,
         }
         await message.answer("Режим аналитика включен.\n\n" + profiles_help())
         return True
@@ -473,6 +558,7 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             "2": "auto_parts",
             "3": "real_estate",
             "4": "electronics",
+            "5": "general_object",
         }
 
         mapped = PROFILE_NUMBERS.get(raw.strip())
@@ -518,6 +604,22 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
                 "Например: ноутбук, телевизор, смартфон, наушники, роутер, монитор."
             )
             return True
+        
+        if detected == "general_object":
+            session["mode"] = "WAIT_GENERAL_OBJECT"
+            session["last_task"] = None
+            session["current_object"] = None
+
+            await message.answer(
+                f"Профиль выбран: {PROFILES[detected]['title']}.\n\n"
+                "Пришли:\n"
+                "- фото\n"
+                "- ссылку\n"
+                "- скрин\n"
+                "- название\n"
+                "- или текст объекта"
+            )
+            return True
 
         if detected == "real_estate":
             session["mode"] = "WAIT_REAL_ESTATE_OBJECT"
@@ -543,6 +645,75 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         return True
 
     existing = session.get("last_task")
+
+    if session.get("profile") == "general_object":
+        from analytics_agent.profiles.general_object.parser import (
+            parse_general_object_input,
+            merge_current_object,
+        )
+        from analytics_agent.profiles.general_object.report import build_general_object_report
+
+        if session.get("mode") == "WAIT_GENERAL_OBJECT":
+            if not raw.strip():
+                await message.answer("Пришли фото, ссылку, скрин, название или текст объекта.")
+                return True
+
+            parsed = parse_general_object_input(raw)
+            current_object = merge_current_object(None, parsed)
+
+            task = ResearchTask.create(
+                profile="general_object",
+                user_text=raw,
+                params={"current_object": current_object},
+            )
+
+            result = build_general_object_report(
+                task.task_id,
+                current_object,
+                "",
+            )
+
+            task.status = "done"
+            session["last_task"] = task
+            session["current_object"] = current_object
+            session["mode"] = "READY"
+            _save_task(task)
+
+            await answer_long(message, result)
+            return True
+
+        if session.get("mode") == "READY" and isinstance(existing, ResearchTask):
+            followup = raw.strip()
+
+            if not followup:
+                await message.answer("Напиши вопрос по этому объекту.")
+                return True
+
+            current_object = (
+                session.get("current_object")
+                or (existing.params or {}).get("current_object")
+                or {}
+            )
+
+            existing.params = existing.params or {}
+            existing.params["current_object"] = current_object
+            existing.params["followup"] = followup
+            existing.status = "followup_researching"
+            _save_task(existing)
+
+            result = build_general_object_report(
+                existing.task_id,
+                current_object,
+                followup,
+            )
+
+            existing.status = "done"
+            session["mode"] = "READY"
+            session["current_object"] = current_object
+            _save_task(existing)
+
+            await answer_long(message, result)
+            return True
 
     if session.get("profile") == "real_estate":
         if session.get("mode") == "WAIT_REAL_ESTATE_OBJECT":
