@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def build_real_estate_report(data: dict[str, Any]) -> str:
+def build_real_estate_report(data: dict[str, Any], analysis: dict[str, Any]) -> str:
     missing = _missing_required_fields(data)
     if missing:
         return "\n".join(missing)
@@ -21,9 +21,15 @@ def build_real_estate_report(data: dict[str, Any]) -> str:
         lines.append(f"- цена: {data['price_text']}")
 
     lines.append("")
-    lines.append("📊 Рынок")
-    lines.append("- ориентир рынка: нужен web-сравнительный этап")
-    lines.append("- статус цены: предварительно без рыночной проверки")
+    lines.append("📊 Быстрая оценка")
+
+    if analysis.get("price_per_m2"):
+        lines.append(f"- цена за м²: ~{analysis['price_per_m2']:,} ₽".replace(",", " "))
+    else:
+        lines.append("- цена за м²: не рассчитана")
+
+    lines.append("- рынок: нужен web-сравнительный этап")
+    lines.append("- статус цены: без сравнения с аналогами не подтверждён")
 
     if data.get("invest_mode"):
         lines.append("")
@@ -33,13 +39,25 @@ def build_real_estate_report(data: dict[str, Any]) -> str:
 
     lines.append("")
     lines.append("⚠️ Риски")
+
+    risks = analysis.get("risks") or []
+    if risks:
+        for risk in risks:
+            lines.append(f"- {risk}")
+    else:
+        lines.append("- явные базовые риски по введённым данным не выделены")
+
     lines.append("- юридическая проверка, ЕГРН и история переходов в MVP не выполняются")
-    lines.append("- рыночные риски будут уточняться после web-сравнения")
+    questions = analysis.get("questions") or []
+    if questions:
+        lines.append("")
+        lines.append("❓ Что уточнить")
+        for question in questions:
+            lines.append(f"- {question}")
 
     lines.append("")
     lines.append("🧠 Вердикт Веси")
-    lines.append("- объект можно предварительно разобрать")
-    lines.append("- для вывода по цене нужен следующий этап: web market comparison")
+    lines.append(f"- {analysis.get('verdict') or 'нужны данные для вывода'}")
 
     return "\n".join(lines)
 

@@ -68,10 +68,25 @@ def _extract_area(text: str) -> float | None:
         text,
         flags=re.IGNORECASE,
     )
-    if not match:
-        return None
+    if match:
+        return float(match.group(1).replace(",", "."))
 
-    return float(match.group(1).replace(",", "."))
+    # Avito URL slug:
+    # 2-k._kvartira_924_m_89_et -> 92.4 м²
+    match = re.search(
+        r"kvartira_(\d{2,4})_m_",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        raw = match.group(1)
+
+        if len(raw) >= 3:
+            return float(f"{raw[:-1]}.{raw[-1]}")
+
+        return float(raw)
+
+    return None
 
 
 def _extract_rooms(text: str) -> str | None:
@@ -88,7 +103,18 @@ def _extract_rooms(text: str) -> str | None:
 
 def _extract_floor_pair(text: str) -> tuple[int, int] | None:
     match = re.search(r"\b(\d{1,2})\s*/\s*(\d{1,2})\b", text)
-    if not match:
-        return None
+    if match:
+        return int(match.group(1)), int(match.group(2))
 
-    return int(match.group(1)), int(match.group(2))
+    # Avito URL slug:
+    # 2-k._kvartira_924_m_89_et -> 8/9
+    match = re.search(
+        r"_m_(\d{2})_et",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        raw = match.group(1)
+        return int(raw[0]), int(raw[1])
+
+    return None
