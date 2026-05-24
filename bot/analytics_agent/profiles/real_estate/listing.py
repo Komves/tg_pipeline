@@ -209,14 +209,9 @@ def _fetch_price_from_listing_page(raw_url: str, listing_id: str) -> str | None:
         return None
 
     patterns = [
-        r'\\"price\\"\s*:\s*\\"?(?P<price>\d{6,12})\\"?',
-        r'\\"itemPrice\\"\s*:\s*\\"?(?P<price>\d{6,12})\\"?',
-        r'\\"dynx_price\\"\s*:\s*\\"?(?P<price>\d{6,12})\\"?',
-        r'"price"\s*:\s*"?(?P<price>\d{6,12})"?',
-        r'"itemPrice"\s*:\s*"?(?P<price>\d{6,12})"?',
-        r'"dynx_price"\s*:\s*"?(?P<price>\d{6,12})"?',
-        r'"priceValue"\s*:\s*"?(?P<price>\d{6,12})"?',
-        r'"value"\s*:\s*"?(?P<price>\d{6,12})"?\s*,\s*"currency"\s*:\s*"RUB"',
+        r'\\?"(?:price|itemPrice|dynx_price)\\?"\s*:\s*\\?"?(?P<price>\d{6,12})\\?"?',
+        r'\\?"priceValue\\?"\s*:\s*\\?"?(?P<price>\d{6,12})\\?"?',
+        r'\\?"value\\?"\s*:\s*\\?"?(?P<price>\d{6,12})\\?"?\s*,\s*\\?"currency\\?"\s*:\s*\\?"RUB\\?"',
         r'(?P<price>\d[\d\s]{5,})\s*₽',
         r'(?P<price>\d[\d\s]{5,})\s*руб',
     ]
