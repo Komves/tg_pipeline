@@ -30,6 +30,10 @@ def enrich_listing_data(data: dict[str, Any]) -> dict[str, Any]:
     rows = _search_listing(raw_text, listing_id)
 
     price_text = _extract_price_from_listing_results(rows, listing_id)
+
+    if not price_text:
+        price_text = _fetch_price_from_listing_page(raw_text, listing_id)
+
     if price_text:
         data["price_text"] = price_text
 
@@ -166,4 +170,73 @@ def _extract_price_from_text(text: str) -> str | None:
         return None
 
     return f"{value:,}".replace(",", " ")
-# deploy touch
+def _fetch_price_from_listing_page(raw_url: str, listing_id: str) -> str | None:
+    url_match = re.search(r"https?://[^\s]+", raw_url)
+    if not url_match:
+        return None
+
+    url = url_match.group(0)
+
+    try:
+        r = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0 Safari/537.36"
+                ),
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+            },
+            timeout=20,
+        )
+    except Exception as e:
+        print(f"[REAL_ESTATE][FETCH_ERROR] {type(e).__name__}: {e}", flush=True)
+        return None
+
+    print(
+        f"[REAL_ESTATE][FETCH] status={r.status_code} "
+        f"url={url} bytes={len(r.text or '')}",
+        flush=True,
+    )
+
+    if r.status_code >= 400:
+        return None
+
+    html = r.text or ""
+
+    if listing_id not in html and "avito" not in html.lower():
+        return None
+
+    patterns = [
+        r'"price"\s*:\s*"?(?P<price>\d{6,12})"?',
+        r'"priceValue"\s*:\s*"?(?P<price>\d{6,12})"?',
+        r'"value"\s*:\s*"?(?P<price>\d{6,12})"?\s*,\s*"currency"\s*:\s*"RUB"',
+        r'(?P<price>\d[\d\s]{5,})\s*₽',
+        r'(?P<price>\d[\d\s]{5,})\s*руб',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, html, flags=re.IGNORECASE)
+        if not match:
+            continue
+
+        digits = re.sub(r"\s+", "", match.group("price"))
+
+        try:
+            value = int(digits)
+        except ValueError:
+            continue
+
+        if value < 300_000 or value > 500_000_000:
+            continue
+
+        price = f"{value:,}".replace(",", " ")
+        print(
+            f"[REAL_ESTATE][FETCH_PRICE_FOUND] listing_id={listing_id} price={price}",
+            flush=True,
+        )
+        return price
+
+    print("[REAL_ESTATE][FETCH_PRICE_NOT_FOUND]", flush=True)
+    return None
