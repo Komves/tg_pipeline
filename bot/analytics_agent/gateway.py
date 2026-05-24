@@ -199,10 +199,34 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
     if profile and profile not in (
         "renovation",
         "commercial_renovation",
+        "real_estate",
     ):
         return False
 
     task = session.get("last_task")
+    if profile == "real_estate":
+        from analytics_agent.vision.image_reader import describe_image
+
+        await message.answer("Сканирую объявление.")
+
+        vision_text = describe_image(img_bytes)
+
+        task = ResearchTask.create(
+            profile="real_estate",
+            user_text=vision_text,
+        )
+
+        result = run_task(task)
+
+        task.status = "done"
+
+        session["last_task"] = task
+        session["mode"] = "READY"
+
+        _save_task(task)
+
+        await answer_long(message, result)
+        return True
     if not isinstance(task, ResearchTask):
         from analytics_agent.profiles.renovation.parser import parse_renovation_task
 

@@ -200,6 +200,10 @@ def _fetch_price_from_listing_page(raw_url: str, listing_id: str) -> str | None:
         flush=True,
     )
 
+    if r.status_code == 429:
+        print("[REAL_ESTATE][FETCH_BLOCKED] Avito returned 429", flush=True)
+        return None
+
     if r.status_code >= 400:
         return None
 
