@@ -3,6 +3,7 @@ from __future__ import annotations
 from .models import ResearchTask
 from .report_builder import build_mock_report
 from analytics_agent.profiles.real_estate.parser import parse_real_estate_object
+from analytics_agent.profiles.real_estate.listing import enrich_listing_data
 from analytics_agent.profiles.real_estate.analyzer import analyze_real_estate
 from analytics_agent.profiles.real_estate.market import estimate_market
 from analytics_agent.profiles.real_estate.report import build_real_estate_report
@@ -42,6 +43,7 @@ def run_task(task: ResearchTask) -> str:
 
     if task.profile == "real_estate":
         data = parse_real_estate_object(task.user_text)
+        data = enrich_listing_data(data)
         analysis = analyze_real_estate(data)
         market = estimate_market(data, analysis)
 
