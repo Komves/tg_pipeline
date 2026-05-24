@@ -185,6 +185,49 @@ async def handle_analytics_callback(cb, answer_long) -> bool:
     await cb.answer("Неизвестный выбор.")
     return True
 
+def _describe_real_estate_image(img_bytes: bytes) -> str:
+    import base64
+
+    from openai import OpenAI
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        return ""
+
+    encoded = base64.b64encode(img_bytes).decode("ascii")
+
+    client = OpenAI()
+
+    resp = client.responses.create(
+        model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты OCR/extraction модуль для объявления недвижимости.\n"
+                    "Не описывай картинку художественно.\n"
+                    "Вытащи только факты объявления: город, комнатность, площадь, этаж, этажность, цена, адрес/район, тип дома, ремонт, продавец.\n"
+                    "Если видишь цену — обязательно напиши её числом с ₽.\n"
+                    "Формат короткий, строками."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "Прочитай скрин объявления недвижимости и извлеки факты.",
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/jpeg;base64,{encoded}",
+                    },
+                ],
+            },
+        ],
+    )
+
+    return (getattr(resp, "output_text", "") or "").strip()
+
 async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
@@ -204,12 +247,17 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
         return False
 
     task = session.get("last_task")
-    if profile == "real_estate":
-        from analytics_agent.vision.image_reader import describe_image
 
+    if profile == "real_estate":
         await message.answer("Сканирую объявление.")
 
-        vision_text = describe_image(img_bytes)
+        vision_text = _describe_real_estate_image(img_bytes)
+
+        if not vision_text:
+            await message.answer(
+                "Не смогла прочитать скрин. Пришли текст объявления или скрин крупнее."
+            )
+            return True
 
         task = ResearchTask.create(
             profile="real_estate",
@@ -227,6 +275,7 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
 
         await answer_long(message, result)
         return True
+
     if not isinstance(task, ResearchTask):
         from analytics_agent.profiles.renovation.parser import parse_renovation_task
 
