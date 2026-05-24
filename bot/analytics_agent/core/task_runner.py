@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from .models import ResearchTask
 from .report_builder import build_mock_report
+from analytics_agent.profiles.real_estate.parser import parse_real_estate_object
+from analytics_agent.profiles.real_estate.report import build_real_estate_report
 
 
 def run_task(task: ResearchTask) -> str:
@@ -35,5 +37,11 @@ def run_task(task: ResearchTask) -> str:
             str((task.params or {}).get("part") or ""),
             task.params,
         )
+
+    if task.profile == "real_estate":
+        data = parse_real_estate_object(task.user_text)
+        task.params = data
+        task.status = "parsed"
+        return build_real_estate_report(data)
 
     return build_mock_report(task)

@@ -440,6 +440,20 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             )
             return True
 
+        if detected == "real_estate":
+            session["mode"] = "WAIT_REAL_ESTATE_OBJECT"
+            session["last_task"] = None
+
+            await message.answer(
+                f"Профиль выбран: {PROFILES[detected]['title']}.\n\n"
+                "Пришли:\n"
+                "- ссылку\n"
+                "- текст объявления\n"
+                "- фото\n"
+                "- или скрин объявления"
+            )
+            return True
+
         await message.answer(
             f"Профиль выбран: {PROFILES[detected]['title']}."
         )
@@ -450,6 +464,53 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
         return True
 
     existing = session.get("last_task")
+
+    if session.get("profile") == "real_estate":
+        if session.get("mode") == "WAIT_REAL_ESTATE_OBJECT":
+            if not raw.strip():
+                await message.answer(
+                    "Пришли ссылку, текст объявления, фото или скрин объявления."
+                )
+                return True
+
+            task = ResearchTask.create(
+                profile="real_estate",
+                user_text=raw,
+            )
+
+            result = run_task(task)
+
+            task.status = "done"
+            session["last_task"] = task
+            session["mode"] = "READY"
+            _save_task(task)
+
+            await answer_long(message, result)
+            return True
+
+        if session.get("mode") == "READY" and isinstance(existing, ResearchTask):
+            followup = raw.strip()
+
+            if not followup:
+                await message.answer("Напиши вопрос по этому объекту.")
+                return True
+
+            existing.user_text = (
+                str(existing.user_text or "").strip()
+                + "\n\nУточнение пользователя:\n"
+                + followup
+            )
+            existing.status = "followup"
+            _save_task(existing)
+
+            result = run_task(existing)
+
+            existing.status = "done"
+            session["mode"] = "READY"
+            _save_task(existing)
+
+            await answer_long(message, result)
+            return True
 
     if session.get("profile") == "electronics" and session.get("mode") == "WAIT_ELECTRONICS_PRODUCT":
         product = raw.strip()
