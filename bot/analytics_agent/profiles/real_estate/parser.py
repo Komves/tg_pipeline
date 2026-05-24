@@ -44,36 +44,33 @@ def _detect_invest_mode(text: str) -> bool:
 
 
 def _extract_price(text: str) -> str | None:
+    # 1. Сначала ищем явную цену в рублях: "Цена: 10 500 000 ₽"
     match = re.search(
-        r"(?:цена[:\s]*)?(\d[\d\s]{5,})\s*(?:₽|руб(?:лей)?|р(?![а-я]))?",
+        r"(?:цена[:\s]*)?(\d[\d\s]{5,})\s*(?:₽|руб(?:лей)?|р(?![а-я]))",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        digits = re.sub(r"\s+", "", match.group(1))
+
+        try:
+            value = int(digits)
+        except ValueError:
+            value = 0
+
+        if 300_000 <= value <= 500_000_000:
+            return f"{value:,}".replace(",", " ")
+
+    # 2. Только если рублёвую цену не нашли — ищем "7.9 млн"
+    match = re.search(
+        r"\b(\d{1,3}(?:[,.]\d+)?)\s*(млн|миллион|миллиона|миллионов)\b",
         text,
         flags=re.IGNORECASE,
     )
     if match:
         return f"{match.group(1).replace(',', '.')} млн"
 
-    # Ищем цену только рядом с ₽ / руб
-    match = re.search(
-        r"(\d[\d\s]{5,})\s*(?:₽|руб|р)\b",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return None
-
-    digits = re.sub(r"\s+", "", match.group(1))
-
-    try:
-        value = int(digits)
-    except ValueError:
-        return None
-
-    # sanity check для квартир
-    if value < 300_000 or value > 500_000_000:
-        return None
-
-    return f"{value:,}".replace(",", " ")
-
+    return None
 
 def _extract_area(text: str) -> float | None:
     match = re.search(
@@ -119,8 +116,19 @@ def _extract_floor_pair(text: str) -> tuple[int, int] | None:
     if match:
         return int(match.group(1)), int(match.group(2))
 
-    # Avito URL slug:
-    # 2-k._kvartira_924_m_89_et -> 8/9
+    floor = re.search(
+        r"этаж[:\s]*(\d{1,2})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    floors_total = re.search(
+        r"этажность[:\s]*(\d{1,2})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if floor and floors_total:
+        return int(floor.group(1)), int(floors_total.group(1))
+
     match = re.search(
         r"_m_(\d{2})_et",
         text,
@@ -131,7 +139,6 @@ def _extract_floor_pair(text: str) -> tuple[int, int] | None:
         return int(raw[0]), int(raw[1])
 
     return None
-
 def _extract_city(text: str) -> str | None:
     lowered = (text or "").lower()
 

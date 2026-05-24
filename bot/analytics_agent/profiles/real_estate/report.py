@@ -34,9 +34,35 @@ def build_real_estate_report(
 
     if market.get("market_found"):
         lines.append(f"- ориентир рынка: {market.get('market_range')}")
+
+        if market.get("market_price_per_m2"):
+            lines.append(
+                f"- рынок за м²: ~{market.get('market_price_per_m2')}"
+            )
+
         lines.append(f"- статус: {market.get('market_status')}")
+
+        if market.get("liquidity"):
+            lines.append(
+                f"- ликвидность: {market.get('liquidity')}"
+            )
+
+        if market.get("investment_score"):
+            lines.append(
+                f"- инвестиционно: {market.get('investment_score')}"
+            )
+
         lines.append(f"- вывод: {market.get('market_comment')}")
-        lines.append(f"- торг: {market.get('bargain_comment')}")
+
+        if market.get("bargain_range"):
+            lines.append(
+                f"- торг: ~{market.get('bargain_range')}"
+            )
+
+        elif market.get("bargain_comment"):
+            lines.append(
+                f"- торг: {market.get('bargain_comment')}"
+            )
     else:
         lines.append(f"- {market.get('market_comment')}")
 
@@ -72,7 +98,13 @@ def build_real_estate_report(
 
     lines.append("")
     lines.append("🧠 Вердикт Веси")
-    lines.append(f"- {analysis.get('verdict') or 'нужны данные для вывода'}")
+    verdict = (
+        market.get("watch_decision")
+        or analysis.get("verdict")
+        or "нужны данные для вывода"
+    )
+
+    lines.append(f"- {verdict}")
 
     return "\n".join(lines)
 
