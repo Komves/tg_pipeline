@@ -253,6 +253,12 @@ async def handle_analytics_photo(message, img_bytes: bytes, answer_long) -> bool
 
         vision_text = _describe_real_estate_image(img_bytes)
 
+        print(
+            "[REAL_ESTATE][VISION_TEXT]",
+            vision_text[:2000],
+            flush=True,
+        )
+
         if not vision_text:
             await message.answer(
                 "Не смогла прочитать скрин. Пришли текст объявления или скрин крупнее."
