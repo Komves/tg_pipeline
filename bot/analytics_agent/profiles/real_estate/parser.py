@@ -45,7 +45,7 @@ def _detect_invest_mode(text: str) -> bool:
 
 def _extract_price(text: str) -> str | None:
     match = re.search(
-        r"(\d+(?:[,.]\d+)?)\s*(млн|миллион|миллиона|миллионов)",
+        r"(?:цена[:\s]*)?(\d[\d\s]{5,})\s*(?:₽|руб(?:лей)?|р(?![а-я]))?",
         text,
         flags=re.IGNORECASE,
     )
