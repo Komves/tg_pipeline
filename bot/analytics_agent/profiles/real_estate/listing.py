@@ -238,5 +238,49 @@ def _fetch_price_from_listing_page(raw_url: str, listing_id: str) -> str | None:
         )
         return price
 
+    _debug_price_html_fragments(html)
     print("[REAL_ESTATE][FETCH_PRICE_NOT_FOUND]", flush=True)
     return None
+
+def _debug_price_html_fragments(html: str) -> None:
+    markers = [
+        "price",
+        "Price",
+        "цена",
+        "Цена",
+        "₽",
+        "руб",
+        "10500000",
+        "10 500 000",
+    ]
+
+    printed = 0
+    seen = set()
+
+    for marker in markers:
+        start = 0
+
+        while True:
+            idx = html.find(marker, start)
+            if idx < 0:
+                break
+
+            left = max(0, idx - 250)
+            right = min(len(html), idx + 500)
+            fragment = html[left:right]
+
+            key = fragment[:120]
+            if key not in seen:
+                seen.add(key)
+                print(
+                    "[REAL_ESTATE][HTML_FRAGMENT]",
+                    marker,
+                    fragment.replace("\n", " ")[:900],
+                    flush=True,
+                )
+                printed += 1
+
+            if printed >= 12:
+                return
+
+            start = idx + len(marker)
