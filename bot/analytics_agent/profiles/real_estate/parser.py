@@ -18,6 +18,7 @@ def parse_real_estate_object(text: str) -> dict[str, Any]:
         "invest_mode": _detect_invest_mode(raw_text),
     }
 
+    result["city"] = _extract_city(raw_text)
     result["price_text"] = _extract_price(raw_text)
     result["area_m2"] = _extract_area(raw_text)
     result["rooms"] = _extract_rooms(raw_text)
@@ -51,15 +52,27 @@ def _extract_price(text: str) -> str | None:
     if match:
         return f"{match.group(1).replace(',', '.')} млн"
 
+    # Ищем цену только рядом с ₽ / руб
     match = re.search(
-        r"(\d[\d\s]{5,})\s*(?:₽|руб|р)?",
+        r"(\d[\d\s]{5,})\s*(?:₽|руб|р)\b",
         text,
         flags=re.IGNORECASE,
     )
-    if match:
-        return match.group(1).strip()
+    if not match:
+        return None
 
-    return None
+    digits = re.sub(r"\s+", "", match.group(1))
+
+    try:
+        value = int(digits)
+    except ValueError:
+        return None
+
+    # sanity check для квартир
+    if value < 300_000 or value > 500_000_000:
+        return None
+
+    return f"{value:,}".replace(",", " ")
 
 
 def _extract_area(text: str) -> float | None:
@@ -116,5 +129,41 @@ def _extract_floor_pair(text: str) -> tuple[int, int] | None:
     if match:
         raw = match.group(1)
         return int(raw[0]), int(raw[1])
+
+    return None
+
+def _extract_city(text: str) -> str | None:
+    lowered = (text or "").lower()
+
+    avito_city_map = {
+        "nizhnevartovsk": "Нижневартовск",
+        "novosibirsk": "Новосибирск",
+        "moskva": "Москва",
+        "sankt-peterburg": "Санкт-Петербург",
+        "ekaterinburg": "Екатеринбург",
+        "tyumen": "Тюмень",
+        "surgut": "Сургут",
+        "khanty-mansiysk": "Ханты-Мансийск",
+    }
+
+    match = re.search(r"avito\.ru/([^/]+)/", lowered)
+    if match:
+        slug = match.group(1).strip()
+        return avito_city_map.get(slug)
+
+    text_city_markers = {
+        "нижневартовск": "Нижневартовск",
+        "новосибирск": "Новосибирск",
+        "москва": "Москва",
+        "санкт-петербург": "Санкт-Петербург",
+        "екатеринбург": "Екатеринбург",
+        "тюмень": "Тюмень",
+        "сургут": "Сургут",
+        "ханты-мансийск": "Ханты-Мансийск",
+    }
+
+    for marker, city in text_city_markers.items():
+        if marker in lowered:
+            return city
 
     return None

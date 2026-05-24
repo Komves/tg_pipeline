@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 
-def build_real_estate_report(data: dict[str, Any], analysis: dict[str, Any]) -> str:
+def build_real_estate_report(
+    data: dict[str, Any],
+    analysis: dict[str, Any],
+    market: dict[str, Any],
+) -> str:
     missing = _missing_required_fields(data)
     if missing:
         return "\n".join(missing)
@@ -28,14 +32,25 @@ def build_real_estate_report(data: dict[str, Any], analysis: dict[str, Any]) -> 
     else:
         lines.append("- цена за м²: не рассчитана")
 
-    lines.append("- рынок: нужен web-сравнительный этап")
-    lines.append("- статус цены: без сравнения с аналогами не подтверждён")
+    if market.get("market_found"):
+        lines.append(f"- ориентир рынка: {market.get('market_range')}")
+        lines.append(f"- статус: {market.get('market_status')}")
+        lines.append(f"- вывод: {market.get('market_comment')}")
+        lines.append(f"- торг: {market.get('bargain_comment')}")
+    else:
+        lines.append(f"- {market.get('market_comment')}")
 
     if data.get("invest_mode"):
         lines.append("")
         lines.append("💰 Инвестиция")
-        lines.append("- аренда: нужен web-сравнительный этап")
-        lines.append("- окупаемость: считается после ориентира аренды")
+        rent_range = market.get("rent_range")
+
+        if rent_range:
+            lines.append(f"- аренда: ~{rent_range}")
+        else:
+            lines.append("- аренда: нет rough-оценки для этого города")
+
+        lines.append("- окупаемость: rough MVP-оценка")
 
     lines.append("")
     lines.append("⚠️ Риски")
