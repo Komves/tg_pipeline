@@ -96,9 +96,44 @@ def _safe_search_base(object_name: str) -> str:
     base = re.sub(r"[^\w\sА-Яа-яЁё\-\./]", " ", base)
     base = compact(base)
 
+    base = re.sub(
+        r"\b(надпись|надписи|колпак|колпаке|кожух|кожухе|label|labels|markings)\b",
+        " ",
+        base,
+        flags=re.IGNORECASE,
+    )
+    base = compact(base)
+
     words = base.split()
     return " ".join(words[:10])
 
+
+def _tokens(text: str) -> List[str]:
+    text = re.sub(r"[^\w\sА-Яа-яЁё\-]", " ", text.lower())
+    return [x for x in text.split() if len(x) >= 3]
+
+
+def _is_relevant_result(item: Dict[str, str], object_name: str) -> bool:
+    base_tokens = set(_tokens(_safe_search_base(object_name)))
+    haystack = " ".join([
+        item.get("title") or "",
+        item.get("description") or "",
+        item.get("url") or "",
+    ])
+    result_tokens = set(_tokens(haystack))
+
+    if not base_tokens:
+        return True
+
+    overlap = base_tokens & result_tokens
+
+    if len(overlap) >= 2:
+        return True
+
+    if len(base_tokens) <= 2 and overlap:
+        return True
+
+    return False
 
 def _fetch_page_text(url: str) -> str:
     try:
@@ -214,6 +249,9 @@ def _resolve_identity(
                     "Если точных данных нет — пиши null или пустой список.\n"
                     "Не обобщай по категории товара.\n"
                     "Не переноси характеристики других моделей.\n"
+                    "Если OCR/vision прочитал модель, но web-источники находят близкую подтвержденную модель/серию с похожим написанием, предпочитай web-подтвержденный вариант.\n"
+                    "Если OCR-модель не встречается в источниках, не делай её финальной моделью; перенеси её в uncertain_facts.\n"
+                    "Если web-источники подтверждают конкретную линейку/серию, укажи её в series/model даже при ошибке OCR.\n"
                     "Формат JSON:\n"
                     "{\n"
                     '  "object_type": null,\n'
@@ -335,7 +373,15 @@ def build_general_object_report(
         seen.add(key)
         unique_results.append(item)
 
-    unique_results = unique_results[:35]
+    relevant_results = [
+        item for item in unique_results
+        if _is_relevant_result(item, object_name)
+    ]
+
+    if relevant_results:
+        unique_results = relevant_results[:35]
+    else:
+        unique_results = unique_results[:35]
 
     print(f"[general_object][results_count] all={len(all_results)} unique={len(unique_results)}", flush=True)
     for idx, item in enumerate(unique_results[:10], start=1):
