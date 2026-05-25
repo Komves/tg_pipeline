@@ -74,7 +74,7 @@ def _extract_price(text: str) -> str | None:
 
 def _extract_area(text: str) -> float | None:
     match = re.search(
-        r"(\d+(?:[,.]\d+)?)\s*(?:м2|м²|кв\.?\s*м|метр)",
+        r"(\d+(?:[,.]\d+)?)\s*(?:м2|м²|м\.кв\.?|кв\.?\s*м|метр)",
         text,
         flags=re.IGNORECASE,
     )
@@ -101,7 +101,7 @@ def _extract_area(text: str) -> float | None:
 
 def _extract_rooms(text: str) -> str | None:
     match = re.search(
-        r"\b([1-5])\s*[- ]?\s*(?:к|комн|комнат)",
+        r"\b([1-5])\s*[- ]?\s*(?:к|комн|комнат|комнатная)",
         text,
         flags=re.IGNORECASE,
     )
