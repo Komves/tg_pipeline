@@ -46,43 +46,53 @@ def _search_web(query: str, count: int = 8) -> List[Dict[str, str]]:
     return rows
 
 
+def _safe_search_base(object_name: str) -> str:
+    text = compact(object_name)
+    text = re.sub(r"[^\w\sА-Яа-яЁё\-\./]", " ", text)
+    text = compact(text)
+
+    words = text.split()
+    return " ".join(words[:8])
+
+
 def _build_identity_queries(object_name: str) -> List[str]:
-    base = compact(object_name)
+    base = _safe_search_base(object_name)
 
     return [
-        f'"{base}" официальный сайт',
-        f'"{base}" характеристики',
-        f'"{base}" specs',
-        f'"{base}" модель',
-        f'"{base}" серия',
-        f'"{base}" manual',
-        f'"{base}" catalog',
+        f"{base} официальный сайт",
+        f"{base} характеристики",
+        f"{base} технические характеристики",
+        f"{base} specs",
+        f"{base} модель серия модификация",
+        f"{base} инструкция manual",
+        f"{base} каталог",
     ]
 
 
 def _build_review_queries(object_name: str, followup: str = "") -> List[str]:
-    base = compact(f"{object_name} {followup}")
+    base = _safe_search_base(f"{object_name} {followup}")
 
     return [
-        f'"{base}" отзывы владельцев',
-        f'"{base}" обзор',
-        f'"{base}" форум',
-        f'"{base}" проблемы',
-        f'"{base}" ресурс',
-        f'"{base}" сравнение',
+        f"{base} отзывы владельцев",
+        f"{base} обзор",
+        f"{base} форум",
+        f"{base} проблемы",
+        f"{base} ресурс",
+        f"{base} сравнение",
     ]
 
 
 def _build_price_queries(object_name: str) -> List[str]:
-    base = compact(object_name)
+    base = _safe_search_base(object_name)
 
     return [
-        f'"{base}" цена',
-        f'"{base}" Avito',
-        f'"{base}" Ozon',
-        f'"{base}" Wildberries',
-        f'"{base}" купить',
+        f"{base} цена",
+        f"{base} купить",
+        f"{base} Avito",
+        f"{base} Ozon",
+        f"{base} Wildberries",
     ]
+
 def build_general_object_report(
     task_id: str,
     current_object: Dict[str, Any],
@@ -234,6 +244,10 @@ def build_general_object_report(
                     "- если найдены характеристики только частично — прямо перечисли, чего не хватает\n"
                     "- не отбрасывай слова из названия объекта как 'маркетинг' без подтверждения источниками\n"
                     "- если есть несколько возможных моделей — перечисли их и оцени вероятность\n"
+                    "- запрещено писать финальную точную модель без подтверждения источниками\n"
+                    "- запрещено приписывать состояние объекта: б/у, новый, грязный, рабочий, неисправный — если это не указано пользователем или не видно из входных данных\n"
+                    "- если пользователь прямо уточнил модель/линию, используй это как основной контекст, но всё равно проверяй по web-источникам\n"
+                    "- если web-поиск не дал характеристик, не лей воду: напиши, какие данные нужны для точной идентификации\n"
                     "Твоя задача — не болтать, а сделать практический анализ объекта по web-выдаче и данным пользователя.\n"
                     "Не заявляй точную оригинальность, серийники, гарантию или юридическую проверку.\n"
                     "Если данных мало — прямо скажи, что уверенность ограничена.\n"
@@ -275,7 +289,8 @@ def build_general_object_report(
                     f"followup:\n{followup}\n\n"
                     f"review_density: {review_count}\n"
                     f"market_density: {market_count}\n"
-                    f"spec_density: {spec_count}\n\n"
+                    f"spec_density: {spec_count}\n"
+                    f"search_base: {_safe_search_base(object_name)}\n\n"
                     f"web_sources:\n" + "\n\n".join(source_lines)
                 ),
             },
