@@ -326,6 +326,58 @@ def _resolve_identity(
             "evidence": [],
         }
 
+def _build_comparison_report(
+    task_id: str,
+    followup: str,
+    resolved_identity: Dict[str, Any],
+) -> str:
+    client = OpenAI()
+
+    resp = client.responses.create(
+        model=MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты аналитик техники и физических объектов.\n"
+                    "Сделай короткое практическое сравнение.\n"
+                    "Не повторяй полный первичный отчет.\n"
+                    "Не повторяй длинную идентификацию объекта.\n"
+                    "Не лей воду.\n"
+                    "Формат строго:\n\n"
+                    "⚖️ Сравнение\n"
+                    "- объект 1: ...\n"
+                    "- объект 2: ...\n\n"
+                    "📊 Отличия\n"
+                    "- тяга:\n"
+                    "- расход:\n"
+                    "- вес:\n"
+                    "- шум:\n"
+                    "- надежность:\n"
+                    "- ликвидность:\n"
+                    "- обслуживание:\n"
+                    "- цена владения:\n\n"
+                    "✅ Где лучше первый\n"
+                    "- ...\n\n"
+                    "✅ Где лучше второй\n"
+                    "- ...\n\n"
+                    "🧠 Короткий вердикт\n"
+                    "- ...\n"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"task_id: {task_id}\n"
+                    f"followup_question: {followup}\n\n"
+                    f"primary_object:\n{json.dumps(resolved_identity, ensure_ascii=False)}\n"
+                ),
+            },
+        ],
+    )
+
+    return compact(getattr(resp, "output_text", "") or "")
+
 
 def build_general_object_report(
     task_id: str,
@@ -503,7 +555,7 @@ def build_general_object_report(
 
     report_mode = _detect_report_mode(followup)
 
-    resolved_identity = _resolve_identity(
+    resolved_identity = _resolve_identity(  
         client=client,
         object_name=object_name,
         source_lines=source_lines,
@@ -514,6 +566,15 @@ def build_general_object_report(
         + json.dumps(resolved_identity, ensure_ascii=False)[:2000],
         flush=True,
     )
+
+
+
+    if report_mode == "comparison":
+        return _build_comparison_report(
+            task_id=task_id,
+            followup=followup,
+            resolved_identity=resolved_identity,
+        )
 
     resp = client.responses.create(
         model=MODEL,
