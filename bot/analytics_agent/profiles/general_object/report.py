@@ -46,18 +46,43 @@ def _search_web(query: str, count: int = 8) -> List[Dict[str, str]]:
     return rows
 
 
-def _build_queries(object_name: str, followup: str = "") -> List[str]:
-    base = compact(f"{object_name} {followup}")
+def _build_identity_queries(object_name: str) -> List[str]:
+    base = compact(object_name)
 
     return [
-        f"{base} что это модель бренд отзывы",
-        f"{base} отзывы владельцев недостатки проблемы форум",
-        f"{base} качество стоит ли покупать аналоги",
-        f"{base} обзор YouTube отзывы",
-        f"{base} цена купить Ozon Wildberries Avito",
+        f'"{base}" официальный сайт',
+        f'"{base}" характеристики',
+        f'"{base}" specs',
+        f'"{base}" модель',
+        f'"{base}" серия',
+        f'"{base}" manual',
+        f'"{base}" catalog',
     ]
 
 
+def _build_review_queries(object_name: str, followup: str = "") -> List[str]:
+    base = compact(f"{object_name} {followup}")
+
+    return [
+        f'"{base}" отзывы владельцев',
+        f'"{base}" обзор',
+        f'"{base}" форум',
+        f'"{base}" проблемы',
+        f'"{base}" ресурс',
+        f'"{base}" сравнение',
+    ]
+
+
+def _build_price_queries(object_name: str) -> List[str]:
+    base = compact(object_name)
+
+    return [
+        f'"{base}" цена',
+        f'"{base}" Avito',
+        f'"{base}" Ozon',
+        f'"{base}" Wildberries',
+        f'"{base}" купить',
+    ]
 def build_general_object_report(
     task_id: str,
     current_object: Dict[str, Any],
@@ -85,7 +110,16 @@ def build_general_object_report(
             "Для профиля анализа объекта нужен web-search, иначе Веся будет гадать."
         )
 
-    queries = _build_queries(object_name, followup)
+    identity_queries = _build_identity_queries(object_name)
+    review_queries = _build_review_queries(object_name, followup)
+    price_queries = _build_price_queries(object_name)
+
+    queries = (
+        identity_queries
+        + review_queries
+        + price_queries
+    )
+
     all_results: List[Dict[str, str]] = []
 
     for q in queries:
@@ -130,7 +164,12 @@ def build_general_object_report(
         return "\n".join(lines)
 
     source_lines = []
-    for item in unique_results[:12]:
+
+    review_count = 0
+    market_count = 0
+    spec_count = 0
+
+    for item in unique_results[:30]:
         source_lines.append(
             "- "
             + compact(item.get("title") or "")
@@ -139,6 +178,37 @@ def build_general_object_report(
             + "\n  "
             + compact(item.get("url") or "")
         )
+
+        txt = (
+            (item.get("title") or "")
+            + " "
+            + (item.get("description") or "")
+            + " "
+            + (item.get("url") or "")
+        ).lower()
+
+        if any(x in txt for x in ["отзыв", "review", "форум"]):
+            review_count += 1
+
+        if any(x in txt for x in [
+            "характерист",
+            "spec",
+            "manual",
+            "catalog",
+            "official",
+            "официаль",
+        ]):
+            spec_count += 1
+
+        if any(x in txt for x in [
+            "avito",
+            "ozon",
+            "wildberries",
+            "wb",
+            "цена",
+            "купить",
+        ]):
+            market_count += 1
 
     client = OpenAI()
 
@@ -149,12 +219,37 @@ def build_general_object_report(
                 "role": "system",
                 "content": (
                     "Ты аналитик физических объектов: товаров, техники, одежды, моторов, инструментов, снастей, электроники.\n"
+                    "КРИТИЧНО:\n"
+                    "- не смешивай разные линейки и поколения товара\n"
+                    "- не переноси проблемы старых моделей на новые серии без прямых подтверждений\n"
+                    "- если отзывов мало — прямо говори об этом\n"
+                    "- если модель новая — не выдумывай массовые проблемы\n"
+                    "- не делай generic выводы про 'все китайские моторы'\n"
+                    "- отделяй подтвержденные проблемы от предположений\n"
+                    "- оценивай уверенность выводов\n"
+                    "- если данных мало — так и пиши\n"
+                    "- сначала попытайся точно определить модель, серию, поколение и модификацию объекта\n"
+                    "- перечисли все найденные технические характеристики\n"
+                    "- разделяй: подтверждено / вероятно / не удалось подтвердить\n"
+                    "- если найдены характеристики только частично — прямо перечисли, чего не хватает\n"
+                    "- не отбрасывай слова из названия объекта как 'маркетинг' без подтверждения источниками\n"
+                    "- если есть несколько возможных моделей — перечисли их и оцени вероятность\n"
                     "Твоя задача — не болтать, а сделать практический анализ объекта по web-выдаче и данным пользователя.\n"
                     "Не заявляй точную оригинальность, серийники, гарантию или юридическую проверку.\n"
                     "Если данных мало — прямо скажи, что уверенность ограничена.\n"
                     "Формат строго:\n\n"
                     "🔎 Что это\n"
                     "- ...\n\n"
+                    "🧾 Характеристики\n"
+                    "- бренд\n"
+                    "- точная модель\n"
+                    "- серия / линейка\n"
+                    "- модификация\n"
+                    "- назначение\n"
+                    "- технические характеристики\n"
+                    "- конструктивные особенности\n"
+                    "- что подтверждено\n"
+                    "- что не удалось подтвердить\n\n"
                     "📌 Где применяется\n"
                     "- ...\n\n"
                     "🌐 Что пишут владельцы\n"
@@ -163,7 +258,9 @@ def build_general_object_report(
                     "⚠️ Типовые проблемы\n"
                     "- ...\n\n"
                     "💰 По рынку\n"
-                    "- overpriced / норм / выгодно\n\n"
+                    "- примерный диапазон цен\n"
+                    "- overpriced / норм / выгодно\n"
+                    "- если цена не найдена — прямо сказать\n\n"
                     "🔁 Аналоги\n"
                     "- ...\n\n"
                     "🧠 Вердикт Веси\n"
@@ -176,6 +273,9 @@ def build_general_object_report(
                     f"task_id: {task_id}\n"
                     f"object:\n{json.dumps(current_object, ensure_ascii=False)}\n\n"
                     f"followup:\n{followup}\n\n"
+                    f"review_density: {review_count}\n"
+                    f"market_density: {market_count}\n"
+                    f"spec_density: {spec_count}\n\n"
                     f"web_sources:\n" + "\n\n".join(source_lines)
                 ),
             },
