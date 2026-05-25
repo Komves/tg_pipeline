@@ -100,6 +100,29 @@ def _safe_search_base(object_name: str) -> str:
     return " ".join(words[:10])
 
 
+def _fetch_page_text(url: str) -> str:
+    try:
+        r = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+            timeout=12,
+        )
+        if r.status_code != 200:
+            return ""
+
+        text = re.sub(r"<script[\s\S]*?</script>", " ", r.text, flags=re.IGNORECASE)
+        text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text)
+
+        return compact(text[:6000])
+    except Exception as e:
+        print(f"[general_object][fetch_page_error] url={url!r} error={type(e).__name__}: {e}", flush=True)
+        return ""
+
 def _build_search_bases(object_name: str) -> List[str]:
     base = _safe_search_base(object_name)
 
@@ -172,6 +195,78 @@ def _build_price_queries(object_name: str) -> List[str]:
         ])
 
     return queries
+
+def _resolve_identity(
+    client: OpenAI,
+    object_name: str,
+    source_lines: List[str],
+) -> Dict[str, Any]:
+    resp = client.responses.create(
+        model=MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты модуль извлечения идентичности физического объекта.\n"
+                    "Верни только JSON без markdown.\n"
+                    "Не пиши финальный отчет.\n"
+                    "Твоя задача: по входному описанию и web-источникам определить объект, модель, серию, характеристики и доказательства.\n"
+                    "Если точных данных нет — пиши null или пустой список.\n"
+                    "Не обобщай по категории товара.\n"
+                    "Не переноси характеристики других моделей.\n"
+                    "Формат JSON:\n"
+                    "{\n"
+                    '  "object_type": null,\n'
+                    '  "brand": null,\n'
+                    '  "model": null,\n'
+                    '  "series": null,\n'
+                    '  "modification": null,\n'
+                    '  "category": null,\n'
+                    '  "specs": [],\n'
+                    '  "confirmed_facts": [],\n'
+                    '  "uncertain_facts": [],\n'
+                    '  "missing_data": [],\n'
+                    '  "possible_models": [],\n'
+                    '  "price_signals": [],\n'
+                    '  "confidence": "low",\n'
+                    '  "evidence": []\n'
+                    "}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"INPUT_OBJECT:\n{object_name}\n\n"
+                    "WEB_SOURCES:\n"
+                    + "\n\n".join(source_lines[:20])
+                ),
+            },
+        ],
+    )
+
+    raw = (getattr(resp, "output_text", "") or "").strip()
+
+    try:
+        return json.loads(raw)
+    except Exception:
+        print(f"[general_object][identity_json_error] raw={raw[:1000]!r}", flush=True)
+        return {
+            "object_type": None,
+            "brand": None,
+            "model": None,
+            "series": None,
+            "modification": None,
+            "category": None,
+            "specs": [],
+            "confirmed_facts": [],
+            "uncertain_facts": [],
+            "missing_data": [],
+            "possible_models": [],
+            "price_signals": [],
+            "confidence": "low",
+            "evidence": [],
+        }
+
 
 def build_general_object_report(
     task_id: str,
@@ -272,7 +367,19 @@ def build_general_object_report(
     market_count = 0
     spec_count = 0
 
-    for item in unique_results[:30]:
+    for idx, item in enumerate(unique_results[:30], start=1):
+        page_text = ""
+        url = item.get("url") or ""
+
+        if idx <= 8:
+            page_text = _fetch_page_text(url)
+
+        if page_text:
+            print(
+                f"[general_object][page_text] idx={idx} url={url!r} chars={len(page_text)}",
+                flush=True,
+            )
+
         source_lines.append(
             "- "
             + compact(item.get("title") or "")
@@ -280,6 +387,7 @@ def build_general_object_report(
             + compact(item.get("description") or "")
             + "\n  "
             + compact(item.get("url") or "")
+            + ("\n  PAGE_TEXT: " + page_text[:2500] if page_text else "")
         )
 
         txt = (
@@ -320,6 +428,18 @@ def build_general_object_report(
 
     client = OpenAI()
 
+    resolved_identity = _resolve_identity(
+        client=client,
+        object_name=object_name,
+        source_lines=source_lines,
+    )
+
+    print(
+        "[general_object][resolved_identity] "
+        + json.dumps(resolved_identity, ensure_ascii=False)[:2000],
+        flush=True,
+    )
+
     resp = client.responses.create(
         model=MODEL,
         input=[
@@ -336,6 +456,9 @@ def build_general_object_report(
                     "- отделяй подтвержденные проблемы от предположений\n"
                     "- оценивай уверенность выводов\n"
                     "- если данных мало — так и пиши\n"
+                    "- используй resolved_identity как основной источник для модели, серии, характеристик и цены\n"
+                    "- если resolved_identity содержит модель/серию/характеристики — обязательно выведи их в отчёте\n"
+                    "- если resolved_identity пустой или confidence low — прямо скажи, что точная идентификация не подтверждена\n"
                     "- сначала попытайся точно определить модель, серию, поколение и модификацию объекта\n"
                     "- перечисли все найденные технические характеристики\n"
                     "- разделяй: подтверждено / вероятно / не удалось подтвердить\n"
@@ -385,6 +508,7 @@ def build_general_object_report(
                     f"task_id: {task_id}\n"
                     f"object:\n{json.dumps(current_object, ensure_ascii=False)}\n\n"
                     f"followup:\n{followup}\n\n"
+                    f"resolved_identity:\n{json.dumps(resolved_identity, ensure_ascii=False)}\n\n"
                     f"review_density: {review_count}\n"
                     f"market_density: {market_count}\n"
                     f"spec_density: {spec_count}\n"
