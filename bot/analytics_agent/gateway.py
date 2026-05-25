@@ -696,9 +696,19 @@ async def handle_analytics_message(message, text: str, answer_long) -> bool:
             )
 
             existing.params = existing.params or {}
-            existing.params["current_object"] = current_object
-            existing.params["followup"] = followup
-            existing.status = "followup_researching"
+
+            if re.search(r"https?://\S+", followup):
+                parsed = parse_general_object_input(followup)
+                current_object = merge_current_object(current_object, parsed)
+                existing.user_text = followup
+                existing.params["current_object"] = current_object
+                existing.params["followup"] = ""
+                existing.status = "object_url_added"
+            else:
+                existing.params["current_object"] = current_object
+                existing.params["followup"] = followup
+                existing.status = "followup_researching"
+
             _save_task(existing)
 
             result = build_general_object_report(

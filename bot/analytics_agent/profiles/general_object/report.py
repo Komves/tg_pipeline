@@ -311,11 +311,17 @@ def build_general_object_report(
     current_object: Dict[str, Any],
     followup: str = "",
 ) -> str:
+    urls = current_object.get("urls") or []
+
     object_name = compact(
-        current_object.get("display_name")
-        or current_object.get("object_text")
-        or current_object.get("raw_text")
-        or ""
+        (" ".join(urls) if urls else "")
+        + " "
+        + (
+            current_object.get("display_name")
+            or current_object.get("object_text")
+            or current_object.get("raw_text")
+            or ""
+        )
     )
 
     if not object_name:
@@ -503,6 +509,9 @@ def build_general_object_report(
                     "- оценивай уверенность выводов\n"
                     "- если данных мало — так и пиши\n"
                     "- используй resolved_identity как основной источник для модели, серии, характеристик и цены\n"
+                    "- не упоминай источники, которые не относятся к объекту, даже если они есть в web_sources_for_reference_only\n"
+                    "- если resolved_identity содержит evidence, опирайся сначала на него, а не на общий список web_sources_for_reference_only\n"
+                    "- запрещено включать в отчет нерелевантные объекты из поиска: 3D-принтеры, радары, яхты, одноимённые бренды и unrelated pages\n"
                     "- если resolved_identity содержит модель/серию/характеристики — обязательно выведи их в отчёте\n"
                     "- если resolved_identity пустой или confidence low — прямо скажи, что точная идентификация не подтверждена\n"
                     "- сначала попытайся точно определить модель, серию, поколение и модификацию объекта\n"
@@ -559,7 +568,7 @@ def build_general_object_report(
                     f"market_density: {market_count}\n"
                     f"spec_density: {spec_count}\n"
                     f"search_base: {_safe_search_base(object_name)}\n\n"
-                    f"web_sources:\n" + "\n\n".join(source_lines)
+                    f"web_sources_for_reference_only:\n" + "\n\n".join(source_lines[:8])
                 ),
             },
         ],
