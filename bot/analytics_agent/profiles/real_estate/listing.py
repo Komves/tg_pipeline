@@ -20,19 +20,21 @@ def enrich_listing_data(data: dict[str, Any]) -> dict[str, Any]:
 
     raw_text = _compact(str(data.get("raw_text") or ""))
 
-    if "avito.ru" not in raw_text.lower():
+    url = _extract_first_url(raw_text)
+
+    if not url:
         return data
 
-    listing_id = _extract_avito_listing_id(raw_text)
-    if not listing_id:
-        return data
+    domain = _extract_domain(url)
 
-    rows = _search_listing(raw_text, listing_id)
+    listing_id = _extract_listing_id(url)
 
-    price_text = _extract_price_from_listing_results(rows, listing_id)
+    rows = _search_listing(raw_text, listing_id or "")
+
+    price_text = _extract_price_from_listing_results(rows, listing_id or "")
 
     if not price_text:
-        price_text = _fetch_price_from_listing_page(raw_text, listing_id)
+        price_text = _fetch_price_from_listing_page(url, listing_id or "")
 
     if price_text:
         data["price_text"] = price_text
@@ -123,7 +125,7 @@ def _extract_price_from_listing_results(
     for row in rows:
         url = row.get("url") or ""
 
-        if listing_id not in url:
+        if listing_id and listing_id not in url:
             continue
 
         text = _compact(
@@ -209,7 +211,7 @@ def _fetch_price_from_listing_page(raw_url: str, listing_id: str) -> str | None:
 
     html = r.text or ""
 
-    if listing_id not in html and "avito" not in html.lower():
+    if listing_id and listing_id not in html:
         return None
 
     patterns = [
@@ -287,3 +289,35 @@ def _debug_price_html_fragments(html: str) -> None:
                 return
 
             start = idx + len(marker)
+
+def _extract_first_url(text: str) -> str | None:
+    match = re.search(r"https?://[^\s]+", text)
+    if not match:
+        return None
+
+    return match.group(0)
+
+
+def _extract_domain(url: str) -> str:
+    match = re.search(r"https?://([^/]+)", url)
+    if not match:
+        return ""
+
+    return match.group(1).lower()
+
+
+def _extract_listing_id(url: str) -> str | None:
+
+    patterns = [
+        r"_(\d{7,12})(?:\?|$)",   # avito
+        r"/flat/(\d+)",           # cian
+        r"/offer/(\d+)",          # generic
+        r"/card/(\d+)",           # generic
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+
+    return None
