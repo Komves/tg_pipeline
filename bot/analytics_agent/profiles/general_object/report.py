@@ -33,6 +33,10 @@ def _search_web(query: str, count: int = 8) -> List[Dict[str, str]]:
         },
         timeout=20,
     )
+    print(f"[general_object][search] query={query!r} status={r.status_code}", flush=True)
+    if r.status_code != 200:
+        print(f"[general_object][search_error_body] {r.text[:500]}", flush=True)
+
     r.raise_for_status()
 
     rows = []
@@ -120,6 +124,9 @@ def build_general_object_report(
             "Для профиля анализа объекта нужен web-search, иначе Веся будет гадать."
         )
 
+    print(f"[general_object][object_name] {object_name!r}", flush=True)
+    print(f"[general_object][search_base] {_safe_search_base(object_name)!r}", flush=True)
+
     identity_queries = _build_identity_queries(object_name)
     review_queries = _build_review_queries(object_name, followup)
     price_queries = _build_price_queries(object_name)
@@ -129,6 +136,8 @@ def build_general_object_report(
         + review_queries
         + price_queries
     )
+
+    print(f"[general_object][queries] {json.dumps(queries, ensure_ascii=False)}", flush=True)
 
     all_results: List[Dict[str, str]] = []
 
@@ -156,6 +165,14 @@ def build_general_object_report(
         unique_results.append(item)
 
     unique_results = unique_results[:35]
+
+    print(f"[general_object][results_count] all={len(all_results)} unique={len(unique_results)}", flush=True)
+    for idx, item in enumerate(unique_results[:10], start=1):
+        print(
+            "[general_object][result] "
+            f"{idx}. title={item.get('title')!r} url={item.get('url')!r} query={item.get('search_query')!r}",
+            flush=True,
+        )
 
     if not (os.getenv("OPENAI_API_KEY") or "").strip():
         lines = [
@@ -219,6 +236,11 @@ def build_general_object_report(
             "купить",
         ]):
             market_count += 1
+
+    print(
+        f"[general_object][density] review={review_count} market={market_count} spec={spec_count}",
+        flush=True,
+    )
 
     client = OpenAI()
 
