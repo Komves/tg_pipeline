@@ -231,11 +231,33 @@ def _build_price_queries(object_name: str) -> List[str]:
 
     return queries
 
+def _detect_report_mode(followup: str) -> str:
+    t = (followup or "").strip().lower()
+
+    if re.search(r"\b(отличия|сравни|сравнение|против|vs|versus|лучше|хуже)\b", t):
+        return "comparison"
+
+    if re.search(r"\b(расход|топлив|бензин|масло)\b", t):
+        return "consumption"
+
+    if re.search(r"\b(отзывы|владельц|форум|мнения)\b", t):
+        return "reviews"
+
+    if re.search(r"\b(цена|стоит|рынок|дорого|дешево|выгодно)\b", t):
+        return "price"
+
+    if re.search(r"\b(проблем|боляч|ломается|ресурс|надежн|надёжн)\b", t):
+        return "risks"
+
+    return "primary"
+
 def _resolve_identity(
     client: OpenAI,
     object_name: str,
     source_lines: List[str],
 ) -> Dict[str, Any]:
+    report_mode = _detect_report_mode(followup)
+
     resp = client.responses.create(
         model=MODEL,
         input=[
@@ -508,7 +530,11 @@ def build_general_object_report(
                     "- отделяй подтвержденные проблемы от предположений\n"
                     "- оценивай уверенность выводов\n"
                     "- если данных мало — так и пиши\n"
-                    "- используй resolved_identity как основной источник для модели, серии, характеристик и цены\n"
+                        "- используй resolved_identity как основной источник для модели, серии, характеристик и цены\n"
+                    "- если report_mode != primary, не повторяй полный первичный отчет; отвечай только на уточняющий вопрос\n"
+                    "- если report_mode == comparison, дай структурированное сравнение в таблице/пунктах: тяга, расход, вес, надежность, обслуживание, цена, ликвидность, вердикт\n"
+                    "- в блоке Аналоги запрещено повторять ту же модель, ту же линейку и соседние модификации как аналоги\n"
+                    "- аналоги — это другие бренды или принципиально другие модели, сопоставимые по задаче и классу\n"
                     "- не упоминай источники, которые не относятся к объекту, даже если они есть в web_sources_for_reference_only\n"
                     "- если resolved_identity содержит evidence, опирайся сначала на него, а не на общий список web_sources_for_reference_only\n"
                     "- запрещено включать в отчет нерелевантные объекты из поиска: 3D-принтеры, радары, яхты, одноимённые бренды и unrelated pages\n"
@@ -527,7 +553,25 @@ def build_general_object_report(
                     "Твоя задача — не болтать, а сделать практический анализ объекта по web-выдаче и данным пользователя.\n"
                     "Не заявляй точную оригинальность, серийники, гарантию или юридическую проверку.\n"
                     "Если данных мало — прямо скажи, что уверенность ограничена.\n"
-                    "Формат строго:\n\n"
+                    "Если report_mode == comparison, формат строго:\n\n"
+                    "⚖️ Сравнение\n"
+                    "- объект 1\n"
+                    "- объект 2\n\n"
+                    "📊 Отличия по пунктам\n"
+                    "- тяга:\n"
+                    "- расход:\n"
+                    "- вес:\n"
+                    "- надежность:\n"
+                    "- обслуживание:\n"
+                    "- цена:\n"
+                    "- ликвидность:\n\n"
+                    "✅ Где лучше первый\n"
+                    "- ...\n\n"
+                    "✅ Где лучше второй\n"
+                    "- ...\n\n"
+                    "🧠 Вердикт\n"
+                    "- ...\n\n"
+                    "Если report_mode != comparison, формат строго:\n\n"
                     "🔎 Что это\n"
                     "- ...\n\n"
                     "🧾 Характеристики\n"
@@ -563,6 +607,7 @@ def build_general_object_report(
                     f"task_id: {task_id}\n"
                     f"object:\n{json.dumps(current_object, ensure_ascii=False)}\n\n"
                     f"followup:\n{followup}\n\n"
+                    f"report_mode: {report_mode}\n\n"
                     f"resolved_identity:\n{json.dumps(resolved_identity, ensure_ascii=False)}\n\n"
                     f"review_density: {review_count}\n"
                     f"market_density: {market_count}\n"
