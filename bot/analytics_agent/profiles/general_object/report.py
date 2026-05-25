@@ -256,7 +256,6 @@ def _resolve_identity(
     object_name: str,
     source_lines: List[str],
 ) -> Dict[str, Any]:
-    report_mode = _detect_report_mode(followup)
 
     resp = client.responses.create(
         model=MODEL,
@@ -501,6 +500,8 @@ def build_general_object_report(
     )
 
     client = OpenAI()
+
+    report_mode = _detect_report_mode(followup)
 
     resolved_identity = _resolve_identity(
         client=client,
