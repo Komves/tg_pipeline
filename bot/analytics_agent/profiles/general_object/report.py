@@ -50,52 +50,128 @@ def _search_web(query: str, count: int = 8) -> List[Dict[str, str]]:
     return rows
 
 
+def _extract_labeled_value(text: str, labels: List[str]) -> str:
+    for label in labels:
+        m = re.search(
+            rf"{label}\s*:\s*([^\n\r]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            value = compact(m.group(1))
+            value = re.split(
+                r"\s+(Бренд|Модель|Надписи|Материал|Состояние|Назначение|Видимые дефекты)\s*:",
+                value,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+            return compact(value)
+    return ""
+
+
 def _safe_search_base(object_name: str) -> str:
     text = compact(object_name)
-    text = re.sub(r"[^\w\sА-Яа-яЁё\-\./]", " ", text)
-    text = compact(text)
+    brand = _extract_labeled_value(text, ["бренд", "brand"])
+    model = _extract_labeled_value(text, ["модель", "model"])
+    labels = _extract_labeled_value(text, ["надписи", "markings", "labels"])
 
-    words = text.split()
-    return " ".join(words[:8])
+    parts = []
+
+    if brand:
+        parts.append(brand)
+
+    if model:
+        parts.append(model)
+
+    if not model and labels:
+        cleaned_labels = re.sub(r"[“”\"']", " ", labels)
+        cleaned_labels = re.sub(r"[,;/|]+", " ", cleaned_labels)
+        parts.append(cleaned_labels)
+
+    if parts:
+        base = compact(" ".join(parts))
+    else:
+        base = text
+
+    base = re.sub(r"[^\w\sА-Яа-яЁё\-\./]", " ", base)
+    base = compact(base)
+
+    words = base.split()
+    return " ".join(words[:10])
+
+
+def _build_search_bases(object_name: str) -> List[str]:
+    base = _safe_search_base(object_name)
+
+    bases = [base]
+
+    if re.search(r"\btoroline\b", base, flags=re.IGNORECASE):
+        bases.append(re.sub(r"\btoroline\b", "Proline", base, flags=re.IGNORECASE))
+
+    if re.search(r"\bproline\b", base, flags=re.IGNORECASE):
+        bases.append(re.sub(r"\bproline\b", "Toroline", base, flags=re.IGNORECASE))
+
+    if "Marlin" in base and "Force" in base:
+        bases.append("Marlin Force лодочный мотор")
+
+    out = []
+    seen = set()
+    for x in bases:
+        x = compact(x)
+        if x and x.lower() not in seen:
+            seen.add(x.lower())
+            out.append(x)
+
+    return out
 
 
 def _build_identity_queries(object_name: str) -> List[str]:
-    base = _safe_search_base(object_name)
+    queries = []
 
-    return [
-        f"{base} официальный сайт",
-        f"{base} характеристики",
-        f"{base} технические характеристики",
-        f"{base} specs",
-        f"{base} модель серия модификация",
-        f"{base} инструкция manual",
-        f"{base} каталог",
-    ]
+    for base in _build_search_bases(object_name):
+        queries.extend([
+            f"{base} официальный сайт",
+            f"{base} характеристики",
+            f"{base} технические характеристики",
+            f"{base} specs",
+            f"{base} модель серия модификация",
+            f"{base} инструкция manual",
+            f"{base} каталог",
+        ])
+
+    return queries
 
 
 def _build_review_queries(object_name: str, followup: str = "") -> List[str]:
-    base = _safe_search_base(f"{object_name} {followup}")
+    queries = []
 
-    return [
-        f"{base} отзывы владельцев",
-        f"{base} обзор",
-        f"{base} форум",
-        f"{base} проблемы",
-        f"{base} ресурс",
-        f"{base} сравнение",
-    ]
+    for base in _build_search_bases(object_name):
+        qbase = compact(f"{base} {followup}")
+        queries.extend([
+            f"{qbase} отзывы владельцев",
+            f"{qbase} обзор",
+            f"{qbase} форум",
+            f"{qbase} проблемы",
+            f"{qbase} ресурс",
+            f"{qbase} сравнение",
+        ])
+
+    return queries
 
 
 def _build_price_queries(object_name: str) -> List[str]:
-    base = _safe_search_base(object_name)
+    queries = []
 
-    return [
-        f"{base} цена",
-        f"{base} купить",
-        f"{base} Avito",
-        f"{base} Ozon",
-        f"{base} Wildberries",
-    ]
+    for base in _build_search_bases(object_name):
+        queries.extend([
+            f"{base} цена",
+            f"{base} купить",
+            f"{base} Avito",
+            f"{base} Ozon",
+            f"{base} Wildberries",
+        ])
+
+    return queries
 
 def build_general_object_report(
     task_id: str,
