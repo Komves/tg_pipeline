@@ -15,29 +15,62 @@ def _compact(text: str) -> str:
 
 
 def enrich_listing_data(data: dict[str, Any]) -> dict[str, Any]:
-    if data.get("price_text"):
-        return data
-
     raw_text = _compact(str(data.get("raw_text") or ""))
 
     url = _extract_first_url(raw_text)
-
     if not url:
         return data
 
     domain = _extract_domain(url)
-
     listing_id = _extract_listing_id(url)
 
-    rows = _search_listing(raw_text, listing_id or "")
+    rows = _search_listing(raw_text, listing_id or "", domain)
 
-    price_text = _extract_price_from_listing_results(rows, listing_id or "")
+    page_text = _fetch_listing_page_text(url, listing_id or "")
 
-    if not price_text:
-        price_text = _fetch_price_from_listing_page(url, listing_id or "")
+    combined_text = _compact(
+        raw_text
+        + " "
+        + page_text
+        + " "
+        + " ".join(
+            _compact(
+                (row.get("title") or "")
+                + " "
+                + (row.get("description") or "")
+                + " "
+                + (row.get("url") or "")
+            )
+            for row in rows
+        )
+    )
 
-    if price_text:
-        data["price_text"] = price_text
+    print(f"[REAL_ESTATE][ENRICH_TEXT] {combined_text[:1200]}", flush=True)
+
+    if not data.get("price_text"):
+        price_text = _extract_price_from_text(combined_text)
+        if price_text:
+            data["price_text"] = price_text
+
+    if not data.get("area_m2"):
+        area = _extract_area_from_text(combined_text)
+        if area:
+            data["area_m2"] = area
+
+    if not data.get("rooms"):
+        rooms = _extract_rooms_from_text(combined_text)
+        if rooms:
+            data["rooms"] = rooms
+
+    if not data.get("floor") or not data.get("floors_total"):
+        floor_pair = _extract_floor_pair_from_text(combined_text)
+        if floor_pair:
+            data["floor"], data["floors_total"] = floor_pair
+
+    if not data.get("city"):
+        city = _extract_city_from_text(combined_text)
+        if city:
+            data["city"] = city
 
     return data
 
@@ -53,14 +86,18 @@ def _extract_avito_listing_id(text: str) -> str | None:
 def _search_listing(
     raw_text: str,
     listing_id: str,
+    domain: str = "",
 ) -> List[Dict[str, str]]:
+    
     if not BRAVE_SEARCH_API_KEY:
         return []
 
-    queries = [
-        raw_text,
-        f"site:avito.ru {listing_id}",
-    ]
+    queries = [raw_text]
+
+    if domain and listing_id:
+        queries.append(f"site:{domain} {listing_id}")
+    elif listing_id:
+        queries.append(listing_id)
 
     rows: List[Dict[str, str]] = []
 
@@ -172,10 +209,11 @@ def _extract_price_from_text(text: str) -> str | None:
         return None
 
     return f"{value:,}".replace(",", " ")
-def _fetch_price_from_listing_page(raw_url: str, listing_id: str) -> str | None:
+
+def _fetch_listing_page_text(raw_url: str, listing_id: str) -> str:
     url_match = re.search(r"https?://[^\s]+", raw_url)
     if not url_match:
-        return None
+        return ""
 
     url = url_match.group(0)
 
@@ -194,58 +232,32 @@ def _fetch_price_from_listing_page(raw_url: str, listing_id: str) -> str | None:
         )
     except Exception as e:
         print(f"[REAL_ESTATE][FETCH_ERROR] {type(e).__name__}: {e}", flush=True)
-        return None
+        return ""
+
+    html = r.text or ""
 
     print(
         f"[REAL_ESTATE][FETCH] status={r.status_code} "
-        f"url={url} bytes={len(r.text or '')}",
+        f"url={url} bytes={len(html)}",
         flush=True,
     )
 
     if r.status_code == 429:
-        print("[REAL_ESTATE][FETCH_BLOCKED] Avito returned 429", flush=True)
-        return None
+        print("[REAL_ESTATE][FETCH_BLOCKED] returned 429", flush=True)
+        return ""
 
     if r.status_code >= 400:
-        return None
-
-    html = r.text or ""
+        return ""
 
     if listing_id and listing_id not in html:
-        return None
+        print("[REAL_ESTATE][FETCH_ID_NOT_FOUND]", flush=True)
 
-    patterns = [
-        r'\\?"(?:price|itemPrice|dynx_price)\\?"\s*:\s*\\?"?(?P<price>\d{6,12})\\?"?',
-        r'\\?"priceValue\\?"\s*:\s*\\?"?(?P<price>\d{6,12})\\?"?',
-        r'(?P<price>\d[\d\s]{5,})\s*₽',
-        r'(?P<price>\d[\d\s]{5,})\s*руб',
-    ]
+    text = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
 
-    for pattern in patterns:
-        match = re.search(pattern, html, flags=re.IGNORECASE)
-        if not match:
-            continue
-
-        digits = re.sub(r"\s+", "", match.group("price"))
-
-        try:
-            value = int(digits)
-        except ValueError:
-            continue
-
-        if value < 300_000 or value > 500_000_000:
-            continue
-
-        price = f"{value:,}".replace(",", " ")
-        print(
-            f"[REAL_ESTATE][FETCH_PRICE_FOUND] listing_id={listing_id} price={price}",
-            flush=True,
-        )
-        return price
-
-    _debug_price_html_fragments(html)
-    print("[REAL_ESTATE][FETCH_PRICE_NOT_FOUND]", flush=True)
-    return None
+    return _compact(text[:20000])
 
 def _debug_price_html_fragments(html: str) -> None:
     markers = [
@@ -319,5 +331,64 @@ def _extract_listing_id(url: str) -> str | None:
         match = re.search(pattern, url)
         if match:
             return match.group(1)
+
+    return None
+
+def _extract_area_from_text(text: str) -> float | None:
+    match = re.search(
+        r"(\d+(?:[,.]\d+)?)\s*(?:м2|м²|м\.кв\.?|кв\.?\s*м|метр)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    try:
+        return float(match.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _extract_rooms_from_text(text: str) -> str | None:
+    match = re.search(
+        r"\b([1-5])\s*[- ]?\s*(?:к|комн|комнат|комнатная)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return f"{match.group(1)}к"
+
+    return None
+
+
+def _extract_floor_pair_from_text(text: str) -> tuple[int, int] | None:
+    match = re.search(
+        r"(?:этаж[:\s]*)?(\d{1,2})\s*/\s*(\d{1,2})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return int(match.group(1)), int(match.group(2))
+
+    return None
+
+
+def _extract_city_from_text(text: str) -> str | None:
+    lowered = (text or "").lower()
+
+    city_markers = {
+        "москва": "Москва",
+        "санкт-петербург": "Санкт-Петербург",
+        "нижневартовск": "Нижневартовск",
+        "новосибирск": "Новосибирск",
+        "екатеринбург": "Екатеринбург",
+        "тюмень": "Тюмень",
+        "сургут": "Сургут",
+        "ханты-мансийск": "Ханты-Мансийск",
+    }
+
+    for marker, city in city_markers.items():
+        if marker in lowered:
+            return city
 
     return None
