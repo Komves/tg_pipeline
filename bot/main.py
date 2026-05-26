@@ -1139,9 +1139,21 @@ def _wants_context_comment(text: str) -> bool:
     if not t:
         return False
 
+    # "как тебе / что думаешь / оцени" — это запрос на оценку объекта,
+    # даже если внутри есть слово "тебе".
+    if any(x in t for x in (
+        "как тебе",
+        "что думаешь",
+        "что скажешь",
+        "прокоммент",
+        "оцени",
+        "мнение",
+    )):
+        return True
+
     # Личный вопрос к Весе — отвечаем на вопрос, НЕ комментируем вложенный/пересланный объект.
     if re.search(
-        r"\b(ты|тебе|тебя|твой|твоя|твои|хочешь|можешь|будешь|стала бы|согласна|нравится ли тебе)\b",
+        r"\b(ты|тебя|твой|твоя|твои|хочешь|можешь|будешь|стала бы|согласна|нравится ли тебе)\b",
         t,
         flags=re.I,
     ):
@@ -1459,8 +1471,13 @@ def _should_use_universal_layer(message: Message, user_text: str, obj: dict) -> 
         return False
 
     # В группе не отвечаем на всё подряд.
-    # Но если текущий объект связан с pending-запросом, user_text уже содержит исходное обращение к Весе.
+    # Но pending-object request уже является явным обращением к Весе:
+    # пользователь сначала попросил оценить/объяснить/прокомментировать,
+    # а следующим сообщением прислал внешний объект.
     if message.chat.type in ("group", "supergroup"):
+        if obj.get("has_pending_object_request"):
+            return True
+
         return bool(user_text and chatgpt_dialog.persona.is_addressed(user_text))
 
     return True
@@ -1491,7 +1508,7 @@ async def _try_universal_message_layer(
                 or user_text
             )
             obj["user_text"] = user_text
-
+            obj["has_pending_object_request"] = True
     object_text = _message_object_text(obj)
 
     if not _should_use_universal_layer(message, user_text, obj):
