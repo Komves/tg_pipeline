@@ -143,10 +143,16 @@ def parse_birthday_lines(text: str, now_year: int) -> list[tuple[str, str]]:
 
     for raw in text.splitlines():
         line = raw.strip()
-        if not line or "—" not in line:
+
+        if not line:
             continue
 
-        name, date_raw = line.split("—", 1)
+        normalized = line.replace(" - ", " — ").replace("-", " — ")
+
+        if "—" not in normalized:
+            continue
+
+        name, date_raw = normalized.split("—", 1)
         name = name.strip()
         birthday = parse_birthday_date(date_raw.strip(), now_year)
 
