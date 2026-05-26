@@ -4667,6 +4667,15 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
         if handled:
             return
 
+        _set_pending_message_object_request(
+            int(message.chat.id),
+            int(message.from_user.id) if message.from_user else 0,
+            text,
+        )
+
+        await message.answer("Кинь, посмотрю.")
+        return
+
     dialog_text = text
 
     dialog_text = text
