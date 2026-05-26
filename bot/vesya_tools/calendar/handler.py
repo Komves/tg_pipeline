@@ -52,6 +52,29 @@ async def handle_calendar_message(message, storage) -> bool:
         await message.answer("\n".join(lines))
         return True
 
+    if low.startswith("покажи участников группы"):
+        group_name = parse_group_name_after(src, "покажи участников группы")
+        group = storage.find_group(user_id, group_name)
+        if not group:
+            await message.answer("Такую группу я пока не вижу.")
+            return True
+
+        rows = storage.list_group_members(int(group["group_id"]))
+        if not rows:
+            await message.answer("По этой группе я пока не вижу участников.")
+            return True
+
+        lines = []
+        for i, row in enumerate(rows, 1):
+            username = str(row.get("username") or "").strip()
+            username_part = f"@{username}" if username else "без username"
+            full_name = str(row.get("full_name") or "").strip() or "без имени"
+            user_id_part = str(row.get("telegram_user_id") or "")
+            lines.append(f"{i}. {full_name} | {username_part} | id={user_id_part}")
+
+        await message.answer("\n".join(lines[:80]))
+        return True
+
     if low.startswith("покажи др группы"):
         group_name = parse_group_name_after(src, "покажи др группы")
         group = storage.find_group(user_id, group_name)
@@ -89,7 +112,16 @@ async def handle_calendar_message(message, storage) -> bool:
             await message.answer("Не вижу дат. Формат: Серега — 5 марта")
             return True
 
+        linked = 0
+
         for person_name, birthday in items:
+            member = storage.find_group_member(int(group["group_id"]), person_name)
+            telegram_user_id = int(member["telegram_user_id"]) if member else None
+            username = str(member["username"]) if member and member.get("username") else None
+
+            if telegram_user_id:
+                linked += 1
+
             storage.upsert_birthday(
                 group_id=int(group["group_id"]),
                 owner_user_id=user_id,
@@ -97,9 +129,11 @@ async def handle_calendar_message(message, storage) -> bool:
                 person_name=person_name,
                 birthday=birthday,
                 now_iso=now_iso,
+                telegram_user_id=telegram_user_id,
+                username=username,
             )
 
-        await message.answer(f"Записала ДР: {len(items)}.")
+        await message.answer(f"Записала ДР: {len(items)}. Привязала к участникам: {linked}.")
         return True
 
     m = re.match(r"^исправь\s+др\s+(.+?)\s+на\s+(.+)$", src, flags=re.I)
