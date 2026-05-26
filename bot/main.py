@@ -148,6 +148,9 @@ import chatgpt_dialog
 import news_digest
 import memory as vesya_memory
 from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo, handle_analytics_callback, is_analytics_active
+from vesya_tools.calendar.handler import handle_calendar_message
+from vesya_tools.calendar.scheduler import calendar_loop
+from vesya_tools.calendar.storage import CalendarStorage
 
 from aiogram.enums import ChatAction
 from aiogram.types import FSInputFile
@@ -168,6 +171,8 @@ if not BOT_TOKEN:
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+CALENDAR_STORAGE = CalendarStorage(DATA_DIR / "vesya_calendar.sqlite3")
 
 TOPIC_TTL_SEC = int(os.getenv("V_TOPIC_TTL_SEC", str(7 * 24 * 3600)))
 TOPIC_PATH = DATA_DIR / "vesya_topics.json"
@@ -4287,6 +4292,9 @@ async def vesya_handler(message: Message) -> None:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
+    if await handle_calendar_message(message, CALENDAR_STORAGE):
+        return
+
     yt_query = _extract_manual_youtube_query(text)
     if yt_query:
         try:
@@ -5569,11 +5577,13 @@ async def _gmail_poll_once() -> None:
 # =========================
 # START
 # =========================
+
 async def main() -> None:
     _log("starting aiogram polling")
     asyncio.create_task(heartbeat_loop())
     asyncio.create_task(ingest24_loop(bot))
     asyncio.create_task(gmail_poll_loop())
+    asyncio.create_task(calendar_loop(bot, CALENDAR_STORAGE))
     await dp.start_polling(bot)
 
 @dp.callback_query(F.data.startswith("an:"))
