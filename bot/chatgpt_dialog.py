@@ -6,6 +6,8 @@ import os
 import random
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,6 +139,51 @@ def _dbg(msg: str) -> None:
 
 def _has_key() -> bool:
     return bool((os.getenv("OPENAI_API_KEY") or "").strip())
+
+
+def _runtime_now() -> datetime:
+    tz_name = os.getenv("V_RUNTIME_TZ", "Europe/Moscow")
+    try:
+        return datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        return datetime.now(ZoneInfo("Europe/Moscow"))
+
+
+def _runtime_context_block() -> str:
+    now = _runtime_now()
+    return (
+        "=== RUNTIME CONTEXT ===\n"
+        f"Текущая дата: {now.strftime('%Y-%m-%d')}.\n"
+        f"Текущая дата по-русски: {now.strftime('%d.%m.%Y')}.\n"
+        f"Текущее время: {now.strftime('%H:%M')}.\n"
+        f"Timezone: {now.tzinfo}.\n"
+        "Используй эту дату как единственную текущую дату. "
+        "Не считай даты будущими или прошлыми без сверки с этим блоком."
+    )
+
+
+def _is_runtime_date_question(text: str) -> bool:
+    t = (text or "").strip().lower()
+    t = re.sub(
+        r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
+        "",
+        t,
+        flags=re.I,
+    ).strip()
+
+    return bool(re.search(
+        r"\b(какое|какой|какая|что за)\s+сегодня\s+(число|дата|день)\b|"
+        r"\bкакое\s+сейчас\s+число\b|"
+        r"\bкакая\s+сейчас\s+дата\b|"
+        r"\bсегодняшн(?:яя|ее)\s+дат",
+        t,
+        flags=re.I,
+    ))
+
+
+def _runtime_date_reply() -> str:
+    now = _runtime_now()
+    return f"Сегодня {now.strftime('%d.%m.%Y')}. Время {now.strftime('%H:%M')} по {now.tzinfo}."
 def translate_to_ru(text: str) -> str:
     """
     Translate EN→RU. If already contains Cyrillic or no API key — return as-is.
@@ -682,6 +729,51 @@ def _cheap_search_blocker(user_text: str) -> bool:
         "евро",
     ))
 
+def _looks_like_opinion_request(text: str) -> bool:
+    t = (text or "").strip().lower()
+    t = re.sub(
+        r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
+        "",
+        t,
+        flags=re.I,
+    ).strip()
+
+    return bool(re.search(
+        r"\b(как тебе|тебе как|что думаешь|как думаешь|что скажешь|твое мнение|твоё мнение|прокомментируй|оцени)\b",
+        t,
+        flags=re.I,
+    ))
+
+
+def _looks_like_news_material(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+
+    return bool(
+        "http://" in t
+        or "https://" in t
+        or "t.me/" in t
+        or len(t) >= 350
+    )
+
+
+def _previous_user_message(chat_id: int, user_id: int) -> str:
+    s = _sessions.get((chat_id, user_id))
+    if not s:
+        return ""
+
+    users = [
+        str(x.get("content") or "")
+        for x in list(s.history)
+        if isinstance(x, dict) and x.get("role") == "user"
+    ]
+
+    if len(users) < 2:
+        return ""
+
+    return users[-2]
+
 def semantic_route(user_text: str) -> Optional[dict]:
     """
     Semantic intent router.
@@ -701,6 +793,8 @@ def semantic_route(user_text: str) -> Optional[dict]:
                 {
                     "role": "system",
                     "content": (
+                        _runtime_context_block()
+                        + "\n\n"
                         "Ты semantic-router для Telegram-бота Веси.\n"
                         "Твоя задача — определить intent, а НЕ отвечать пользователю.\n"
                         "Верни только JSON.\n\n"
@@ -734,7 +828,9 @@ def semantic_route(user_text: str) -> Optional[dict]:
                         "- что произошло;\n"
                         "- где найти;\n"
                         "- свежая новость без подсчета и сверки множества источников.\n\n"
-                        "chat выбирай, если пользователь просто обсуждает, спорит, спрашивает мнение или продолжает обычный диалог.\n\n"
+                        "chat выбирай, если пользователь просто обсуждает, спорит, спрашивает мнение или продолжает обычный диалог.\n"
+                        "Если пользователь прислал ссылку/новостной текст и спрашивает 'как тебе', 'что думаешь', 'твое мнение', 'прокомментируй' — это chat, а НЕ news, НЕ web_search и НЕ research.\n"
+                        "news выбирай только если пользователь явно просит дайджест, сводку или новости.\n\n"
                         "Никогда НЕ отправляй в research запросы, которые являются:\n"
                         "- риторикой;\n"
                         "- сарказмом;\n"
@@ -1085,6 +1181,8 @@ def _conversation_reply(chat_id: int, user_id: int, user_text: str) -> str:
     system = (
         getattr(persona, "_SYSTEM_PROMPT", "").strip()
         + "\n\n"
+        + _runtime_context_block()
+        + "\n\n"
         + _irritation_instruction(chat_id, user_id)
         + "\n\n"
         "Это обычный живой диалог с пользователем.\n"
@@ -1206,7 +1304,26 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         end(chat_id, user_id)
 
     add_user(chat_id, user_id, user_text)
-    touch(chat_id, user_id) 
+    touch(chat_id, user_id)
+
+    if _is_runtime_date_question(user_text):
+        reply = _runtime_date_reply()
+        add_assistant(chat_id, user_id, reply)
+        return DialogDecision(intent="chat", reply=reply)
+
+    prev_user_text = _previous_user_message(chat_id, user_id)
+    if (
+        _looks_like_news_material(user_text)
+        and (
+            _looks_like_opinion_request(user_text)
+            or _looks_like_opinion_request(prev_user_text)
+        )
+    ):
+        reply = _conversation_reply(chat_id, user_id, user_text)
+        if not reply:
+            reply = "Как материал для обсуждения — годится. Но я бы не рубила с плеча: сначала отделила бы сам факт от подачи."
+        add_assistant(chat_id, user_id, reply)
+        return DialogDecision(intent="chat", reply=reply)
 
     same_language_reply = _try_same_language_reply(chat_id, user_id, user_text)
     if same_language_reply:
@@ -1255,6 +1372,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             )
 
         if r_intent == "news":
+            if _looks_like_opinion_request(user_text) or _looks_like_opinion_request(prev_user_text):
+                reply = _conversation_reply(chat_id, user_id, user_text)
+                if not reply:
+                    reply = "Это скорее тема для обсуждения, а не повод запускать дайджест."
+                add_assistant(chat_id, user_id, reply)
+                return DialogDecision(intent="chat", reply=reply)
+
             reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
             add_assistant(chat_id, user_id, reply)
             return DialogDecision(intent="news", reply=reply)
@@ -1274,6 +1398,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
     tl = user_text.lower()
     if ("веся" in tl or "веслава" in tl) and ("новост" in tl or "дайджест" in tl):
+        if _looks_like_opinion_request(user_text) or _looks_like_opinion_request(prev_user_text):
+            reply = _conversation_reply(chat_id, user_id, user_text)
+            if not reply:
+                reply = "Я это восприняла как материал для обсуждения, а не как просьбу собрать новости."
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="chat", reply=reply)
+
         reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="news", reply=reply)
@@ -1307,6 +1438,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         return DialogDecision(intent="chat", reply=reply)
 
     if ir and ir.addressed and ir.intent in {"news"}:
+        if _looks_like_opinion_request(user_text) or _looks_like_opinion_request(prev_user_text):
+            reply = _conversation_reply(chat_id, user_id, user_text)
+            if not reply:
+                reply = "Комментировать — могу. Запускать дайджест тут не надо."
+            add_assistant(chat_id, user_id, reply)
+            return DialogDecision(intent="chat", reply=reply)
+
         reply = _deterministic_pick(_ACTION_ACKS_NEWS, f"news:{chat_id}:{user_id}:{user_text}")
         add_assistant(chat_id, user_id, reply)
         return DialogDecision(intent="news", reply=reply)
