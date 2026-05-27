@@ -1394,6 +1394,11 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             return DialogDecision(intent="news", reply=reply)
 
         if r_intent == "content":
+            if not _explicit_action_request(user_text, "content"):
+                reply = "Не поняла задачу. Скажи прямо: обсудить, найти, разобрать или прислать контент."
+                add_assistant(chat_id, user_id, reply)
+                return DialogDecision(intent="chat", reply=reply)
+
             reply = _deterministic_pick(ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
             add_assistant(chat_id, user_id, reply)
             return DialogDecision(intent="content", reply=reply)
@@ -1589,6 +1594,7 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         # Контент/новости запускаются только по явным словам-триггерам.
         if intent in {"news", "content"} and not _explicit_action_request(user_text, intent):
             intent = "chat"
+            reply = "Не поняла задачу. Скажи прямо: обсудить, найти, разобрать или прислать контент."
         reply = _sanitize_reply(str(data.get("reply", "")))
         reply = _dequestionize(reply)
 
