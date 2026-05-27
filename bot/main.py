@@ -1369,7 +1369,16 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
             or ""
         ).strip()
 
-        if reply_text:
+        current_text_l = current_text.lower()
+        explicit_reply_object_request = bool(re.search(
+            r"\b(переведи|перевод|что значит|что означает|прокоммент|разбери|оцени|что думаешь|как тебе)\b",
+            current_text_l,
+            flags=re.I,
+        ))
+
+        reply_from_bot = bool(getattr(getattr(r, "from_user", None), "is_bot", False))
+
+        if reply_text and (explicit_reply_object_request or not reply_from_bot):
             _add_object_part(parts, "reply_message_text", reply_text)
             obj["has_object"] = True
             obj["has_external_object"] = True
