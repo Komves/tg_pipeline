@@ -53,6 +53,26 @@ def parse_reminder(text: str, now: datetime) -> ReminderParse | None:
     body = re.sub(r"^напомни\s*", "", src, flags=re.I).strip()
 
     m = re.match(
+        r"^через\s+(минуту|час|день|год)\s*(.*)$",
+        body,
+        flags=re.I,
+    )
+    if m:
+        unit = m.group(1).lower()
+        reminder_text = m.group(2).strip(" ,.-") or "напоминание"
+
+        if unit == "минуту":
+            dt = now + timedelta(minutes=1)
+        elif unit == "час":
+            dt = now + timedelta(hours=1)
+        elif unit == "день":
+            dt = now + timedelta(days=1)
+        else:
+            dt = now + timedelta(days=365)
+
+        return ReminderParse(remind_at=dt, text=reminder_text)
+
+    m = re.match(
         r"^через\s+(\d+|один|одну|год)\s+(минуту|минут|минуты|час|часа|часов|день|дня|дней|год|года|лет)\s*(.*)$",
         body,
         flags=re.I,

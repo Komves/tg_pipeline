@@ -26,18 +26,17 @@ async def handle_calendar_message(message, storage) -> bool:
     low = src.lower()
     user_id = int(message.from_user.id) if message.from_user else 0
 
-    if message.chat.type == "private":
-        reminder = parse_reminder(text, now)
-        if reminder:
-            storage.add_reminder(
-                chat_id=int(message.chat.id),
-                user_id=user_id,
-                text=reminder.text,
-                remind_at=reminder.remind_at.isoformat(),
-                created_at=now_iso,
-            )
-            await message.answer("Ок, напомню.")
-            return True
+    reminder = parse_reminder(text, now)
+    if reminder:
+        storage.add_reminder(
+            chat_id=int(message.chat.id),
+            user_id=user_id,
+            text=reminder.text,
+            remind_at=reminder.remind_at.isoformat(),
+            created_at=now_iso,
+        )
+        await message.answer("Ок, напомню.")
+        return True
 
     if message.chat.type != "private":
         return False
