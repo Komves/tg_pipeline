@@ -229,28 +229,6 @@ class CalendarStorage:
 
         return result
 
-    def find_birthday_by_person_in_group(
-        self,
-        owner_user_id: int,
-        group_id: int,
-        person_name: str,
-    ) -> list[dict[str, Any]]:
-        needle = " ".join(person_name.strip().lower().split())
-
-        with self._connect() as con:
-            rows = con.execute(
-                """
-                SELECT id, group_id, group_title, person_name, birthday
-                FROM birthdays
-                WHERE owner_user_id = ?
-                  AND group_id = ?
-                  AND lower(trim(person_name)) = ?
-                """,
-                (owner_user_id, group_id, needle),
-            ).fetchall()
-
-        return [dict(r) for r in rows]
-
     def update_birthday(self, birthday_id: int, birthday: str, now_iso: str) -> None:
         with self._connect() as con:
             con.execute(
