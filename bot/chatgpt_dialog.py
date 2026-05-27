@@ -175,7 +175,14 @@ def _is_runtime_date_question(text: str) -> bool:
         r"\b(какое|какой|какая|что за)\s+сегодня\s+(число|дата|день)\b|"
         r"\bкакое\s+сейчас\s+число\b|"
         r"\bкакая\s+сейчас\s+дата\b|"
-        r"\bсегодняшн(?:яя|ее)\s+дат",
+        r"\bсегодняшн(?:яя|ее)\s+дат|"
+        r"\bсколько\s+сейчас\s+времени\b|"
+        r"\bкоторый\s+час\b|"
+        r"\bкакое\s+сейчас\s+время\b|"
+        r"\bкакой\s+у\s+тебя\s+часов(?:ой|ом)\s+пояс\b|"
+        r"\bв\s+каком\s+ты\s+часов(?:ом|ой)\s+поясе\b|"
+        r"\bкакой\s+у\s+тебя\s+timezone\b|"
+        r"\bкакой\s+у\s+тебя\s+tz\b",
         t,
         flags=re.I,
     ))
@@ -183,7 +190,8 @@ def _is_runtime_date_question(text: str) -> bool:
 
 def _runtime_date_reply() -> str:
     now = _runtime_now()
-    return f"Сегодня {now.strftime('%d.%m.%Y')}. Время {now.strftime('%H:%M')} по {now.tzinfo}."
+    return f"Сейчас {now.strftime('%H:%M')}, дата {now.strftime('%d.%m.%Y')}, timezone {now.tzinfo}."
+
 def translate_to_ru(text: str) -> str:
     """
     Translate EN→RU. If already contains Cyrillic or no API key — return as-is.

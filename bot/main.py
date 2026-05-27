@@ -1134,6 +1134,17 @@ def _is_forwarded_message(message: Message) -> bool:
         or getattr(message, "forward_from_chat", None)
     )
 
+def _is_direct_group_address(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+
+    return bool(re.match(
+        r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s+",
+        t,
+        flags=re.I,
+    ))
+
 def _wants_context_comment(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
@@ -4633,7 +4644,7 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
         t = text.lower()
 
         is_cmd = t.startswith("/")
-        is_name = chatgpt_dialog.persona.is_addressed(t)
+        is_name = _is_direct_group_address(text)
         is_reply_to_bot = (
             message.reply_to_message
             and message.reply_to_message.from_user
@@ -4645,7 +4656,12 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
 
         # optional: remove name prefix "Веся, ..."
         if is_name and not is_cmd:
-            text = chatgpt_dialog.persona.strip_name_prefix(text).lstrip(" ,:.-").strip()
+            text = re.sub(
+                r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s+",
+                "",
+                text,
+                flags=re.I,
+            ).strip()
             if not text:
                 await message.answer("да?")
                 return
@@ -4701,39 +4717,48 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
     if message.reply_to_message:
         r = message.reply_to_message
 
-        current_author = (
-            message.from_user.full_name
-            if message.from_user
-            else "пользователь"
-        )
-
-        replied_author = (
-            r.from_user.full_name
-            if r.from_user
-            else "пользователь"
-        )
-
-        replied_text = (
-            r.text
-            or r.caption
-            or ""
-        ).strip()
-
-        if replied_text:
-            dialog_text = (
-                f"Веся, сообщение от {current_author}. "
-                f"Он отвечает на сообщение пользователя {replied_author}: "
-                f"«{replied_text}». "
-                f"В его текущем сообщении местоимения вроде 'он', 'его', 'ему' относятся к {replied_author}. "
-                f"Текущий текст: «{text}»."
-            )
+        # Если пользователь отвечает самой Весе — это обычное продолжение диалога.
+        # Не превращаем его реплику в third-person meta-analysis.
+        if r.from_user and r.from_user.is_bot:
+            dialog_text = text
         else:
-            dialog_text = (
-                f"Веся, сообщение от {current_author}. "
-                f"Он отвечает на сообщение пользователя {replied_author}. "
-                f"В его текущем сообщении местоимения вроде 'он', 'его', 'ему' относятся к {replied_author}. "
-                f"Текущий текст: «{text}»."
+            current_author = (
+                message.from_user.full_name
+                if message.from_user
+                else "пользователь"
             )
+
+            replied_author = (
+                r.from_user.full_name
+                if r.from_user
+                else "пользователь"
+            )
+
+            replied_text = (
+                r.text
+                or r.caption
+                or ""
+            ).strip()
+
+            if replied_text:
+                dialog_text = (
+                    f"Контекст: {current_author} отвечает на сообщение от {replied_author}:\n"
+                    f"«{replied_text}»\n\n"
+                    f"Текущая реплика {current_author}, на которую нужно ответить напрямую:\n"
+                    f"«{text}»\n\n"
+                    "Ответь напрямую текущему пользователю от лица Веси. "
+                    "Не пересказывай его реплику. "
+                    "Не называй его 'собеседник', 'автор' или 'он'. "
+                    "Не анализируй интонацию и намерения, если пользователь прямо этого не просит."
+                )
+            else:
+                dialog_text = (
+                    f"Контекст: {current_author} отвечает на сообщение от {replied_author}.\n\n"
+                    f"Текущая реплика {current_author}, на которую нужно ответить напрямую:\n"
+                    f"«{text}»\n\n"
+                    "Ответь напрямую текущему пользователю от лица Веси. "
+                    "Не называй его 'собеседник', 'автор' или 'он'."
+                )
 
     elif message.chat.type in ("group", "supergroup") and "is_reply_to_bot" in locals() and is_reply_to_bot:
         if not chatgpt_dialog.persona.is_addressed(dialog_text):

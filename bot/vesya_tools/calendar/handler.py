@@ -156,10 +156,30 @@ async def handle_calendar_message(message, storage) -> bool:
         await message.answer("Исправила.")
         return True
 
-    m = re.match(r"^удали\s+др\s+(.+)$", src, flags=re.I)
+    m = re.match(
+        r"^удали\s+др\s+(.+?)(?:\s+из\s+группы\s+(.+))?$",
+        src,
+        flags=re.I,
+    )
+
     if m:
         person_name = m.group(1).strip()
-        found = storage.find_birthday_by_person(user_id, person_name)
+        group_name = (m.group(2) or "").strip()
+
+        if group_name:
+            group = storage.find_group(user_id, group_name)
+
+            if not group:
+                await message.answer("Такую группу я пока не вижу.")
+                return True
+
+            found = storage.find_birthday_by_person_in_group(
+                user_id,
+                int(group["group_id"]),
+                person_name,
+            )
+        else:
+            found = storage.find_birthday_by_person(user_id, person_name)
         if not found:
             await message.answer("Такого ДР не нашла.")
             return True

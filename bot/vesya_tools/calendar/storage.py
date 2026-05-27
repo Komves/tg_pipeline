@@ -180,16 +180,75 @@ class CalendarStorage:
         return [dict(r) for r in rows]
 
     def find_birthday_by_person(self, owner_user_id: int, person_name: str) -> list[dict[str, Any]]:
-        needle = person_name.strip().lower()
+        needle = " ".join(person_name.strip().lower().split())
+
         with self._connect() as con:
             rows = con.execute(
                 """
                 SELECT id, group_id, group_title, person_name, birthday
                 FROM birthdays
-                WHERE owner_user_id = ? AND lower(person_name) = ?
+                WHERE owner_user_id = ?
                 """,
-                (owner_user_id, needle),
+                (owner_user_id,),
             ).fetchall()
+
+        result = []
+
+        for row in rows:
+            normalized = " ".join(str(row["person_name"]).strip().lower().split())
+            if normalized == needle:
+                result.append(dict(row))
+
+        return result
+
+    def find_birthday_by_person_in_group(
+        self,
+        owner_user_id: int,
+        group_id: int,
+        person_name: str,
+    ) -> list[dict[str, Any]]:
+        needle = " ".join(person_name.strip().lower().split())
+
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT id, group_id, group_title, person_name, birthday
+                FROM birthdays
+                WHERE owner_user_id = ?
+                  AND group_id = ?
+                """,
+                (owner_user_id, group_id),
+            ).fetchall()
+
+        result = []
+
+        for row in rows:
+            normalized = " ".join(str(row["person_name"]).strip().lower().split())
+            if normalized == needle:
+                result.append(dict(row))
+
+        return result
+
+    def find_birthday_by_person_in_group(
+        self,
+        owner_user_id: int,
+        group_id: int,
+        person_name: str,
+    ) -> list[dict[str, Any]]:
+        needle = " ".join(person_name.strip().lower().split())
+
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT id, group_id, group_title, person_name, birthday
+                FROM birthdays
+                WHERE owner_user_id = ?
+                  AND group_id = ?
+                  AND lower(trim(person_name)) = ?
+                """,
+                (owner_user_id, group_id, needle),
+            ).fetchall()
+
         return [dict(r) for r in rows]
 
     def update_birthday(self, birthday_id: int, birthday: str, now_iso: str) -> None:
