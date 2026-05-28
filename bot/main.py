@@ -1093,12 +1093,21 @@ def _record_memory_event(
 
         vesya_memory.save_profiles(profiles)
 
+        reply_to_message_id = 0
+        try:
+            if getattr(message, "reply_to_message", None):
+                reply_to_message_id = int(message.reply_to_message.message_id)
+        except Exception:
+            reply_to_message_id = 0
+
         vesya_memory.append_event({
             "ts": datetime.now(timezone.utc).isoformat(),
             "chat_id": chat_id,
             "chat_type": message.chat.type,
             "user_id": user_id,
+            "user_name": getattr(user, "full_name", "") or "",
             "message_id": int(message.message_id),
+            "reply_to_message_id": reply_to_message_id,
             "type": event_type,
             "intent": intent,
             "text": (text or "")[:2000],
@@ -4726,10 +4735,41 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
     if message.reply_to_message:
         r = message.reply_to_message
 
-        # Если пользователь отвечает самой Весе — это обычное продолжение диалога.
-        # Не превращаем его реплику в third-person meta-analysis.
+        # Если пользователь отвечает самой Весе — это продолжение конкретной reply-ветки.
+        # Не превращаем в third-person meta-analysis, но обязательно даём LLM текст
+        # сообщения Веси, на которое пришёл reply. Иначе короткие фразы типа
+        # "это помогает?" цепляются к старой глобальной теме.
         if r.from_user and r.from_user.is_bot:
-            dialog_text = text
+            replied_text = (
+                r.text
+                or r.caption
+                or ""
+            ).strip()
+
+            if replied_text:
+                thread_context = ""
+                try:
+                    if hasattr(vesya_memory, "render_reply_thread_context"):
+                        thread_context = vesya_memory.render_reply_thread_context(
+                            chat_id=int(message.chat.id),
+                            reply_to_message_id=int(r.message_id),
+                            limit=6,
+                        )
+                except Exception:
+                    thread_context = ""
+
+                dialog_text = (
+                    (thread_context + "\n\n" if thread_context else "")
+                    + "Пользователь отвечает реплаем на твою предыдущую реплику:\n"
+                    f"«{replied_text}»\n\n"
+                    "Текущая реплика пользователя:\n"
+                    f"«{text}»\n\n"
+                    "Отвечай именно в контексте этой reply-ветки. "
+                    "Не переключайся на старые темы из общей истории, если текущая реплика понятна через replied-message. "
+                    "Не пересказывай reply-chain и не говори о пользователе в третьем лице."
+                )
+            else:
+                dialog_text = text
         else:
             current_author = (
                 message.from_user.full_name
@@ -4751,7 +4791,19 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
 
             if replied_text:
                 dialog_text = (
-                    f"Контекст: {current_author} отвечает на сообщение от {replied_author}:\n"
+                    (
+                        (
+                            vesya_memory.render_reply_thread_context(
+                                chat_id=int(message.chat.id),
+                                reply_to_message_id=int(r.message_id),
+                                limit=6,
+                            )
+                            + "\n\n"
+                        )
+                        if hasattr(vesya_memory, "render_reply_thread_context")
+                        else ""
+                    )
+                    + f"Контекст: {current_author} отвечает на сообщение от {replied_author}:\n"
                     f"«{replied_text}»\n\n"
                     f"Текущая реплика {current_author}, на которую нужно ответить напрямую:\n"
                     f"«{text}»\n\n"

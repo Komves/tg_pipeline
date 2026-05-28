@@ -132,6 +132,100 @@ def append_event(event: Dict[str, Any]) -> None:
         pass
 
 
+def get_recent_events_for_chat(chat_id: int, limit: int = 300) -> List[Dict[str, Any]]:
+    if not MEMORY_JSONL.exists():
+        return []
+
+    try:
+        lines = MEMORY_JSONL.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+
+    out: List[Dict[str, Any]] = []
+
+    for line in reversed(lines[-2000:]):
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+
+        try:
+            if int(obj.get("chat_id") or 0) != int(chat_id):
+                continue
+        except Exception:
+            continue
+
+        out.append(obj)
+
+        if len(out) >= int(limit):
+            break
+
+    out.reverse()
+    return out
+
+
+def render_reply_thread_context(
+    *,
+    chat_id: int,
+    reply_to_message_id: int,
+    limit: int = 6,
+) -> str:
+    events = get_recent_events_for_chat(chat_id, limit=500)
+
+    by_msg: Dict[int, Dict[str, Any]] = {}
+
+    for e in events:
+        try:
+            mid = int(e.get("message_id") or 0)
+        except Exception:
+            mid = 0
+
+        if mid:
+            by_msg[mid] = e
+
+    chain: List[Dict[str, Any]] = []
+    current_id = int(reply_to_message_id or 0)
+    visited = set()
+
+    while current_id and current_id not in visited and len(chain) < int(limit):
+        visited.add(current_id)
+
+        e = by_msg.get(current_id)
+        if not e:
+            break
+
+        chain.append(e)
+
+        try:
+            current_id = int(e.get("reply_to_message_id") or 0)
+        except Exception:
+            current_id = 0
+
+    chain.reverse()
+
+    if not chain:
+        return ""
+
+    lines = ["Контекст reply-ветки. Используй как главный контекст текущего ответа:"]
+
+    for e in chain:
+        user_name = str(e.get("user_name") or "").strip() or "участник"
+        text = str(e.get("text") or "").replace("\n", " ").strip()
+        reply = str(e.get("reply") or "").replace("\n", " ").strip()
+
+        if text:
+            lines.append(f"- {user_name}: {text[:500]}")
+
+        if reply:
+            lines.append(f"- Веся: {reply[:500]}")
+
+    return "\n".join(lines).strip()
+
+
 def prune_memory(*, retention_days: int = RETENTION_DAYS, max_events: int = MAX_EVENTS) -> None:
     if not MEMORY_JSONL.exists():
         return
