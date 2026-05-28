@@ -234,6 +234,18 @@ def _build_price_queries(object_name: str) -> List[str]:
 def _detect_report_mode(followup: str) -> str:
     t = (followup or "").strip().lower()
 
+    if re.search(r"\b(переведи|перевод|что тут написано|что написано)\b", t):
+        return "translate"
+
+    if re.search(r"\b(кратко|коротко|в двух словах|итог)\b", t):
+        return "summary"
+
+    if re.search(r"\b(опасно|вредно|можно пить|норм состав|стоит брать)\b", t):
+        return "opinion"
+
+    if re.search(r"\b(что значит|объясни)\b", t):
+        return "explain"
+
     if re.search(r"\b(отличия|сравни|сравнение|против|vs|versus|лучше|хуже)\b", t):
         return "comparison"
 
@@ -567,14 +579,47 @@ def build_general_object_report(
         flush=True,
     )
 
+    if report_mode in {"translate", "summary", "opinion", "explain"}:
+        resp = client.responses.create(
+            model=MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты продолжаешь диалог по УЖЕ ПРОАНАЛИЗИРОВАННОМУ объекту.\n"
+                        "НЕ генерируй полный отчет заново.\n"
+                        "Отвечай только на follow-up вопрос пользователя.\n"
+                        "Используй current_object и resolved_identity как контекст.\n\n"
+                        "Если режим translate — дай только перевод.\n"
+                        "Если summary — дай краткий итог.\n"
+                        "Если opinion — дай практическое мнение Веси.\n"
+                        "Если explain — объясни только то, о чем спросили.\n\n"
+                        "Без разделов полного отчета. Без повторов. Коротко."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"report_mode: {report_mode}\n"
+                        f"followup: {followup}\n\n"
+                        f"current_object:\n{json.dumps(current_object, ensure_ascii=False)}\n\n"
+                        f"resolved_identity:\n{json.dumps(resolved_identity, ensure_ascii=False)}"
+                    ),
+                },
+            ],
+        )
 
+        short_text = compact(getattr(resp, "output_text", "") or "")
+
+        if short_text:
+            return short_text
 
     if report_mode == "comparison":
         return _build_comparison_report(
             task_id=task_id,
             followup=followup,
             resolved_identity=resolved_identity,
-        )
+        )    
 
     resp = client.responses.create(
         model=MODEL,
