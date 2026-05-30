@@ -871,8 +871,14 @@ def semantic_route(user_text: str) -> Optional[dict]:
                         "1) суммой отдельных найденных инцидентов;\n"
                         "2) готовой опубликованной общей оценкой.\n"
                         "В этом случае верни reply с коротким выбором: 'Считать по отдельным подтверждённым случаям или искать готовую общую оценку по источникам.'\n\n"
+                        "Для intent=content обязательно определи action, object и confidence.\n"
+                        "action — что именно надо сделать: find_photo, find_video, find_music, send_memes, send_beauty, send_content, unknown.\n"
+                        "object — объект запроса: человек, группа, тема, товар, клип, фото или пусто.\n"
+                        "confidence — число от 0 до 1.\n"
+                        "Если пользователь явно просит что-то найти/дать/показать/прислать, action не должен быть unknown.\n"
+                        "Если непонятно, что именно делать, ставь action=unknown и confidence ниже 0.65.\n\n"
                         "JSON формат строго:\n"
-                        "{\"intent\":\"chat|news|content|web_search|research_count|research_aggregate|research_clarify|end\",\"query\":\"строка для поиска или пусто\",\"reply\":\"короткое уточнение или пусто\"}"
+                        "{\"intent\":\"chat|news|content|web_search|research_count|research_aggregate|research_clarify|end\",\"query\":\"строка для поиска или пусто\",\"reply\":\"короткое уточнение или пусто\",\"action\":\"строка или пусто\",\"object\":\"строка или пусто\",\"confidence\":0.0}"
                     ),
                 },
                 {"role": "user", "content": t},
@@ -1353,6 +1359,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
         r_intent = (route.get("intent") or "chat").strip().lower()
         semantic_query = str(route.get("query") or "").strip()
         semantic_reply = str(route.get("reply") or "").strip()
+        semantic_action = str(route.get("action") or "").strip().lower()
+        semantic_object = str(route.get("object") or "").strip()
+
+        try:
+            semantic_confidence = float(route.get("confidence") or 0.0)
+        except Exception:
+            semantic_confidence = 0.0
 
         if r_intent == "research_clarify":
             reply = semantic_reply or (
@@ -1399,14 +1412,18 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             return DialogDecision(intent="news", reply=reply)
 
         if r_intent == "content":
-            if not _explicit_action_request(user_text, "content"):
-                reply = "Не поняла задачу. Скажи прямо: обсудить, найти, разобрать или прислать контент."
+            if semantic_action in {"", "unknown"} or semantic_confidence < 0.65:
+                reply = semantic_reply or "Не поняла, что именно сделать: обсудить, найти фото, найти видео или прислать контент."
                 add_assistant(chat_id, user_id, reply)
                 return DialogDecision(intent="chat", reply=reply)
 
             reply = _deterministic_pick(ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
             add_assistant(chat_id, user_id, reply)
-            return DialogDecision(intent="content", reply=reply)
+            return DialogDecision(
+                intent="content",
+                reply=reply,
+                query=semantic_query or semantic_object or user_text,
+            )
 
         if r_intent == "end":
             reply = "ладно."
