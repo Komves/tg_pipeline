@@ -4279,8 +4279,34 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         return
 
     if intent == "content":
+        content_query = (getattr(decision, "query", "") or "").strip()
+
+        yt_query = _extract_manual_youtube_query(content_query)
+        if yt_query:
+            if reply:
+                await _send_reply_for_event(message, reply, event_type=event_type)
+
+            try:
+                found = await _youtube_manual_search_for_message(message, yt_query)
+
+                if not found:
+                    await message.answer("Не нашла.")
+                    return
+
+                title = (found.get("title") or "").strip()
+                url = (found.get("url") or "").strip()
+
+                await _answer_long(message, f"{title}\n{url}".strip())
+                return
+
+            except Exception as e:
+                print(f"[yt_manual][content] error: {type(e).__name__}: {e}", flush=True)
+                await message.answer("Ошибка поиска.")
+                return
+
         if reply:
             await _send_reply_for_event(message, reply, event_type=event_type)
+
         await _send_content(message, user_id=chat_id, ingest_hours_n=None)
         return
 

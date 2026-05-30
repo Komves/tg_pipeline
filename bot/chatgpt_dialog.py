@@ -77,6 +77,15 @@ class _Session:
 
 
 _sessions: Dict[Tuple[int, int], _Session] = {}
+
+# Незавершённая content-команда:
+# пользователь назвал объект, но не уточнил действие.
+# Пример:
+# "дай что-нибудь из Offspring" -> object=Offspring, action=unknown
+# "найти клип" -> action=find_video + pending object=Offspring
+_PENDING_CONTENT: Dict[Tuple[int, int], Dict[str, Any]] = {}
+_PENDING_CONTENT_TTL_SEC = int(os.getenv("V_PENDING_CONTENT_TTL_SEC", "180"))
+
 # === PERSISTENT USER MEMORY ===
 
 USER_MEMORY_PATH = DATA_DIR / "vesya_user_memory.json"
@@ -388,10 +397,80 @@ def add_user(chat_id: int, user_id: int, text: str) -> None:
 
     _set_saved_irritation(chat_id, user_id, s.irritation)
 
-def add_assistant(chat_id: int, user_id: int, text: str) -> None:
-    s = _sessions.get((chat_id, user_id))
-    if s:
-        s.history.append({"role": "assistant", "content": text})
+def _set_pending_content(
+    chat_id: int,
+    user_id: int,
+    *,
+    obj: str,
+    action: str = "",
+    query: str = "",
+) -> None:
+    obj = (obj or "").strip()
+    if not obj:
+        return
+
+    _PENDING_CONTENT[(int(chat_id), int(user_id))] = {
+        "object": obj[:200],
+        "action": (action or "").strip()[:80],
+        "query": (query or "").strip()[:300],
+        "ts": _now(),
+    }
+
+
+def _get_pending_content(chat_id: int, user_id: int) -> Dict[str, Any]:
+    key = (int(chat_id), int(user_id))
+    rec = _PENDING_CONTENT.get(key)
+
+    if not rec:
+        return {}
+
+    ts = float(rec.get("ts") or 0)
+    if (_now() - ts) > _PENDING_CONTENT_TTL_SEC:
+        _PENDING_CONTENT.pop(key, None)
+        return {}
+
+    return rec
+
+
+def _clear_pending_content(chat_id: int, user_id: int) -> None:
+    _PENDING_CONTENT.pop((int(chat_id), int(user_id)), None)
+
+
+def _router_context_for_prompt(chat_id: int, user_id: int) -> str:
+    parts: List[str] = []
+
+    pending = _get_pending_content(chat_id, user_id)
+    if pending:
+        parts.append(
+            "Незавершённая content-команда:\n"
+            f"- object: {pending.get('object') or ''}\n"
+            f"- action: {pending.get('action') or ''}\n"
+            f"- query: {pending.get('query') or ''}\n"
+            "Если текущая реплика задаёт действие без нового объекта, используй этот object."
+        )
+
+    hist = _build_conversation_history(
+        chat_id=chat_id,
+        user_id=user_id,
+        user_text="",
+        max_turns=6,
+    )
+
+    if hist:
+        lines = []
+        for h in hist[-6:]:
+            role = h.get("role") or ""
+            content = (h.get("content") or "").replace("\n", " ").strip()
+            if content:
+                lines.append(f"{role}: {content[:500]}")
+
+        if lines:
+            parts.append(
+                "Последний контекст диалога для разрешения местоимений и коротких follow-up:\n"
+                + "\n".join(lines)
+            )
+
+    return "\n\n".join(parts).strip()
 
 def _memory_context_for_prompt(chat_id: int, user_id: int) -> str:
     if vesya_memory is None:
@@ -789,7 +868,7 @@ def _previous_user_message(chat_id: int, user_id: int) -> str:
 
     return users[-2]
 
-def semantic_route(user_text: str) -> Optional[dict]:
+def semantic_route(user_text: str, *, route_context: str = "") -> Optional[dict]:
     """
     Semantic intent router.
     LLM decides intent and research mode.
@@ -875,13 +954,23 @@ def semantic_route(user_text: str) -> Optional[dict]:
                         "action — что именно надо сделать: find_photo, find_video, find_music, send_memes, send_beauty, send_content, unknown.\n"
                         "object — объект запроса: человек, группа, тема, товар, клип, фото или пусто.\n"
                         "confidence — число от 0 до 1.\n"
+                        "Если в CONTEXT есть незавершённая content-команда, используй её object для коротких follow-up.\n"
+                        "Например: context object=Offspring, текущая реплика='найти клип' => intent=content, action=find_video, object=Offspring.\n"
+                        "Например: context object=Саша Грей, текущая реплика='дай ещё её фото' => intent=content, action=find_photo, object=Саша Грей.\n"
+                        "Не отвечай отказом внутри router. Router только классифицирует.\n"
                         "Если пользователь явно просит что-то найти/дать/показать/прислать, action не должен быть unknown.\n"
                         "Если непонятно, что именно делать, ставь action=unknown и confidence ниже 0.65.\n\n"
                         "JSON формат строго:\n"
                         "{\"intent\":\"chat|news|content|web_search|research_count|research_aggregate|research_clarify|end\",\"query\":\"строка для поиска или пусто\",\"reply\":\"короткое уточнение или пусто\",\"action\":\"строка или пусто\",\"object\":\"строка или пусто\",\"confidence\":0.0}"
                     ),
                 },
-                {"role": "user", "content": t},
+                {
+                    "role": "user",
+                    "content": (
+                        (f"CONTEXT:\n{route_context}\n\n" if route_context else "")
+                        + f"CURRENT_USER_MESSAGE:\n{t}"
+                    ),
+                },
             ],
         )
 
@@ -1354,7 +1443,8 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
     semantic_chat = False
     semantic_query = ""
 
-    route = semantic_route(user_text)
+    route_context = _router_context_for_prompt(chat_id, user_id)
+    route = semantic_route(user_text, route_context=route_context)
     if route:
         r_intent = (route.get("intent") or "chat").strip().lower()
         semantic_query = str(route.get("query") or "").strip()
@@ -1412,10 +1502,43 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
             return DialogDecision(intent="news", reply=reply)
 
         if r_intent == "content":
+            pending = _get_pending_content(chat_id, user_id)
+
+            if not semantic_object and pending:
+                semantic_object = str(pending.get("object") or "").strip()
+
             if semantic_action in {"", "unknown"} or semantic_confidence < 0.65:
-                reply = semantic_reply or "Не поняла, что именно сделать: обсудить, найти фото, найти видео или прислать контент."
+                if semantic_object:
+                    _set_pending_content(
+                        chat_id,
+                        user_id,
+                        obj=semantic_object,
+                        action=semantic_action,
+                        query=semantic_query,
+                    )
+                    reply = (
+                        semantic_reply
+                        or f"Что именно по «{semantic_object}»: фото, клип/видео, музыка или обычный контент?"
+                    )
+                else:
+                    reply = (
+                        semantic_reply
+                        or "Не поняла, что именно сделать: обсудить, найти фото, найти видео или прислать контент."
+                    )
+
                 add_assistant(chat_id, user_id, reply)
                 return DialogDecision(intent="chat", reply=reply)
+
+            _clear_pending_content(chat_id, user_id)
+
+            if semantic_action in {"find_video", "find_music"} and semantic_object:
+                semantic_query = f"найди клип {semantic_object}"
+
+            elif semantic_action == "find_photo" and semantic_object:
+                semantic_query = f"найди фото {semantic_object}"
+
+            elif semantic_object and not semantic_query:
+                semantic_query = semantic_object
 
             reply = _deterministic_pick(ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
             add_assistant(chat_id, user_id, reply)
