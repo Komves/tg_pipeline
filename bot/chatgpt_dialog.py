@@ -397,6 +397,14 @@ def add_user(chat_id: int, user_id: int, text: str) -> None:
 
     _set_saved_irritation(chat_id, user_id, s.irritation)
 
+def add_assistant(chat_id: int, user_id: int, text: str) -> None:
+    activate(chat_id, user_id)
+    s = _sessions[(int(chat_id), int(user_id))]
+    s.history.append({
+        "role": "assistant",
+        "content": text or "",
+    })
+
 def _set_pending_content(
     chat_id: int,
     user_id: int,
