@@ -989,11 +989,26 @@ def semantic_route(user_text: str, *, route_context: str = "") -> Optional[dict]
 
         query = str(data.get("query") or "").strip()
         reply = str(data.get("reply") or "").strip()
+        action = str(data.get("action") or "").strip().lower()
+        obj = str(data.get("object") or "").strip()
+
+        try:
+            confidence = float(data.get("confidence") or 0.0)
+        except Exception:
+            confidence = 0.0
+
         if intent in {"research_count", "research_aggregate"} and _cheap_search_blocker(t):
             intent = "web_search"
             query = query or t
 
-        return {"intent": intent, "query": query, "reply": reply}
+        return {
+            "intent": intent,
+            "query": query,
+            "reply": reply,
+            "action": action,
+            "object": obj,
+            "confidence": confidence,
+        }
 
     except Exception as e:
         _dbg(f"semantic_route EXC: {type(e).__name__}: {e}")
