@@ -723,6 +723,81 @@ def _beauty_followup(text: str) -> bool:
 
     return any(x in t for x in triggers)
 
+def _is_explicit_non_beauty_request(text: str) -> bool:
+    t = _strip_vesya_prefix(text).strip().lower()
+    t = re.sub(r"\s+", " ", t).strip(" ?!.,:;")
+
+    if not t:
+        return False
+
+    return bool(re.search(
+        r"\b("
+        r"фото|фотки|фотограф|картинк|изображен|"
+        r"клип|клипы|youtube|ютуб|ролик|видео|"
+        r"песня|трек|музык|offspring|off spring|"
+        r"где купить|купить|цена|стоит|"
+        r"найди|поищи|покажи|скинь|пришли|дай"
+        r")\b",
+        t,
+        flags=re.I,
+    )) and not bool(re.search(
+        r"\b(красот|красив|эстетик|вайб)\b",
+        t,
+        flags=re.I,
+    ))
+
+def _make_beauty_caption(user_text: str, item: dict) -> str:
+    fallback = "Вот. Красиво, но без восторженного кудахтанья."
+
+    try:
+        if not (os.getenv("OPENAI_API_KEY") or "").strip():
+            return fallback
+
+        from openai import OpenAI
+
+        client = OpenAI()
+
+        meta = {
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "caption": item.get("caption"),
+            "src": item.get("src"),
+        }
+
+        resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты Веся. Нужно написать короткую подпись к отправляемому beauty-видео.\n"
+                        "Не повторяй шаблоны.\n"
+                        "Не пиши как блогер.\n"
+                        "Не используй фразы: 'красоту заказывали', 'сделала красиво', "
+                        "'лови', 'эстетика подъехала', 'почти искусство'.\n"
+                        "Стиль: сухо, умно, слегка язвительно, но без пошлости.\n"
+                        "Формат: одна короткая фраза, максимум 12 слов.\n"
+                        "Без вопросов пользователю."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Запрос пользователя: {user_text}\n"
+                        f"Метаданные ролика: {json.dumps(meta, ensure_ascii=False)}"
+                    ),
+                },
+            ],
+        )
+
+        out = (getattr(resp, "output_text", "") or "").strip()
+        out = re.sub(r"\s+", " ", out).strip()
+        out = out.strip("\"'«» ")
+
+        return out[:180] or fallback
+
+    except Exception:
+        return fallback
 
 def _relay_command_text(text: str) -> bool:
     t = (text or "").strip().lower()
@@ -1153,6 +1228,28 @@ def _is_direct_group_address(text: str) -> bool:
         t,
         flags=re.I,
     ))
+
+
+def _is_reply_to_bot(message: Message) -> bool:
+    r = getattr(message, "reply_to_message", None)
+    return bool(
+        r
+        and getattr(r, "from_user", None)
+        and r.from_user.is_bot
+    )
+
+
+def _group_message_addresses_vesya(message: Message, text: str) -> bool:
+    if message.chat.type not in ("group", "supergroup"):
+        return True
+
+    t = (text or "").strip()
+
+    return bool(
+        t.startswith("/")
+        or _is_direct_group_address(t)
+        or _is_reply_to_bot(message)
+    )
 
 def _wants_context_comment(text: str) -> bool:
     t = (text or "").strip().lower()
@@ -4338,6 +4435,12 @@ async def vesya_handler(message: Message) -> None:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
+    # ЖЁСТКИЙ GROUP GATE:
+    # в группе Веся не влезает в чужие разговоры.
+    # Отвечает только на /команду, прямое обращение или reply на её сообщение.
+    if not _group_message_addresses_vesya(message, text):
+        return
+
     if await handle_calendar_message(message, CALENDAR_STORAGE):
         return
 
@@ -4391,14 +4494,18 @@ async def vesya_handler(message: Message) -> None:
     clean_action = _strip_vesya_prefix(text).strip().lower().strip(" ?!.,:;")
 
     beauty_text = _strip_vesya_prefix(text).strip()
+    explicit_non_beauty = _is_explicit_non_beauty_request(beauty_text)
 
     if (
-        chatgpt_dialog.detect_beauty_intent(beauty_text)
-        or (
-            _beauty_is_active(chat_id, user_id)
-            and (
-                _beauty_followup(beauty_text)
-                or chatgpt_dialog.classify_beauty_followup(beauty_text)
+        not explicit_non_beauty
+        and (
+            chatgpt_dialog.detect_beauty_intent(beauty_text)
+            or (
+                _beauty_is_active(chat_id, user_id)
+                and (
+                    _beauty_followup(beauty_text)
+                    or chatgpt_dialog.classify_beauty_followup(beauty_text)
+                )
             )
         )
     ):
@@ -4418,16 +4525,7 @@ async def vesya_handler(message: Message) -> None:
                 await message.answer("В пуле есть запись, но сам ролик не найден.")
                 return
 
-            beauty_captions = [
-                "Держи. Красоту заказывали — без лишней бухгалтерии.",
-                "Вот. Почти искусство, если не придираться.",
-                "Сделала красиво. Не благодари слишком громко.",
-                "Лови. Эстетика подъехала.",
-                "Вот тебе немного визуального порядка в этом цирке.",
-                "Красота по заявке. Редкий случай, когда получилось.",
-            ]
-
-            caption = random.choice(beauty_captions)
+            caption = _make_beauty_caption(beauty_text, item)
 
             _beauty_activate(chat_id, user_id)
 
@@ -4657,22 +4755,12 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
             return
 
 
-    # In groups: react only when bot is addressed (name/command/reply)
+    # В группе сюда доходят только разрешённые сообщения:
+    # /команда, прямое обращение или reply на Весю.
     if message.chat.type in ("group", "supergroup"):
-        t = text.lower()
-
-        is_cmd = t.startswith("/")
+        is_cmd = text.lower().startswith("/")
         is_name = _is_direct_group_address(text)
-        is_reply_to_bot = (
-            message.reply_to_message
-            and message.reply_to_message.from_user
-            and message.reply_to_message.from_user.is_bot
-        )
 
-        if not (is_cmd or is_name or is_reply_to_bot):
-            return
-
-        # optional: remove name prefix "Веся, ..."
         if is_name and not is_cmd:
             text = re.sub(
                 r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s+",
@@ -4683,7 +4771,6 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
             if not text:
                 await message.answer("да?")
                 return
-
     # =========================
     # RELAY CANCEL / ARM
     # =========================
