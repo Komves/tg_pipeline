@@ -256,7 +256,7 @@ def _parse_translator_on_command(text: str) -> tuple[str, str] | None:
     t = re.sub(r"\s+", " ", t).strip(" .,!?:;")
 
     m = re.search(
-        r"^(?:включи|активируй|запусти)\s+режим\s+переводчика\s+(?:с|из)\s+(.+?)\s+на\s+(.+?)(?:\s+и\s+обратно)?$",
+        r"^(?:включи|активируй|запусти)\s+(?:режим\s+)?переводчика\s+(?:с|из)\s+(.+?)\s+на\s+(.+?)(?:\s+и\s+обратно)?$",
         t,
         flags=re.I,
     )
@@ -277,7 +277,7 @@ def _is_translator_off_command(text: str) -> bool:
     t = re.sub(r"\s+", " ", t).strip(" .,!?:;")
 
     return bool(re.search(
-        r"^(?:отключи|выключи|останови|заверши)\s+режим\s+переводчика$",
+        r"^(?:отключи|выключи|останови|заверши)\s+(?:режим\s+)?переводчика$",
         t,
         flags=re.I,
     ))
@@ -4515,6 +4515,30 @@ async def vesya_handler(message: Message) -> None:
         await message.answer("Режим переводчика отключен.")
         return
 
+    clean_service_text = _strip_vesya_prefix(text).strip().lower()
+    clean_service_text = re.sub(r"\s+", " ", clean_service_text).strip(" ?!.:;")
+
+    if re.search(
+        r"^(?:покажи\s+)?(?:свои\s+)?функции$|^(?:что\s+ты\s+умеешь|что\s+умеешь|меню|help|помощь)$",
+        clean_service_text,
+        flags=re.I,
+    ):
+        await _answer_long(
+            message,
+            (
+                "Функции:\n\n"
+                "1. Переводчик — `Веся включи переводчика с русского на английский`\n"
+                "2. Напоминания — `Веся напомни завтра в 9 ...`\n"
+                "3. Новости — `Веся новости`\n"
+                "4. Поиск YouTube — `Веся дай что-нибудь из Offspring`\n"
+                "5. Поиск фото/информации — `Веся дай фото Козельска`\n"
+                "6. Аналитик — `Веся включи аналитика`\n"
+                "7. Документы/фото/скрины — пришли файл или фото с вопросом\n"
+                "8. Обычный диалог — просто спроси"
+            ),
+        )
+        return
+
     mode = _get_translator_mode(chat_id, user_id)
     if mode:
         translated = await asyncio.to_thread(
@@ -4528,6 +4552,27 @@ async def vesya_handler(message: Message) -> None:
             await _answer_long(message, translated)
         else:
             await message.answer("Перевод не вышел.")
+        return
+    
+    if re.search(
+        r"\b(покажи функции|что умеешь|твои функции|список функций|меню|help)\b",
+        text,
+        flags=re.I,
+    ):
+        await _answer_long(
+            message,
+            (
+                "Что умею:\n\n"
+                "• Переводчик\n"
+                "• Напоминания\n"
+                "• Новости\n"
+                "• Поиск клипов YouTube\n"
+                "• Поиск фото\n"
+                "• Аналитика\n"
+                "• Работа с документами\n"
+                "• Обычный диалог"
+            ),
+        )
         return
 
     clean_action = _strip_vesya_prefix(text).strip().lower().strip(" ?!.,:;")
