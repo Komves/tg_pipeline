@@ -2157,9 +2157,10 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
                 },
                 params={
                     "q": query,
-                    "count": 5,
+                    "count": 8,
                     "search_lang": "ru",
                     "country": "RU",
+                    "freshness": "pd",
                 },
                 timeout=20,
             )
@@ -2174,12 +2175,26 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
             return
 
         compact = []
-        for x in results[:5]:
+        seen_urls = set()
+
+        for x in results[:8]:
+            url = (x.get("url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+
+            seen_urls.add(url)
             compact.append({
                 "title": (x.get("title") or "").strip(),
-                "url": (x.get("url") or "").strip(),
+                "url": url,
                 "description": (x.get("description") or "").strip(),
+                "age": (x.get("age") or "").strip(),
+                "page_age": (x.get("page_age") or "").strip(),
+                "profile": x.get("profile") or {},
             })
+
+        if not compact:
+            await message.answer("Нашла пустую выдачу. Подтверждать нечего.")
+            return
 
         client = OpenAI()
         resp = client.responses.create(
@@ -2187,53 +2202,118 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
             input=[
                 {
                     "role": "system",
-                    "content":
-                        (
-                        "Ты — Веся.\n\n"
-                        "Отвечай как человек, который уже знает ответ.\n\n"
-                        "НЕ делай обзор поисковой выдачи.\n"
-                        "НЕ перечисляй СМИ.\n"
-                        "НЕ анализируй качество источников.\n"
-                        "НЕ пиши:\n"
-                        "- 'по сообщениям СМИ'\n"
-                        "- 'источники противоречат'\n"
-                        "- 'по найденным материалам'\n"
-                        "- 'источник слабый'\n\n"
-                        "Сначала дай прямой ответ.\n"
-                        "Потом максимум 1-2 коротких уточнения.\n\n"
-                        "Стиль:\n"
-                        "- кратко\n"
-                        "- уверенно\n"
-                        "- без воды\n"
-                        "- без журналистики\n"
-                        "- без длинных вступлений\n\n"
-                        "Максимум 4 коротких абзаца."
-                    )
+                    "content": (
+                        "Ты — проверочный web-search executor Веси.\n"
+                        "Твоя задача — НЕ красиво отвечать, а проверить факт по выдаче.\n\n"
+                        "Правила:\n"
+                        "1. Отвечай только по переданным результатам поиска.\n"
+                        "2. Не используй память, прошлый диалог и общие знания.\n"
+                        "3. Для актуальных фактов, спорта, дат, победителей, цен, событий, новостей и персон нужен минимум 2 независимых источника.\n"
+                        "4. Если источников меньше двух, данные старые, источник не совпадает с вопросом или есть противоречия — verified=false.\n"
+                        "5. Если verified=false, НЕ формулируй предположение и НЕ давай вероятностный ответ. Напиши, что точный ответ по выдаче не подтверждён, и почему.\n"
+                        "6. Если verified=true, дай прямой точный ответ без слов 'возможно', 'скорее всего', 'похоже', 'вероятно'.\n"
+                        "7. Если пользователь просит прогноз, сначала установи проверенные текущие факты, потом отдельно дай прогноз как мнение, явно отделив его от факта.\n\n"
+                        "Верни строго JSON:\n"
+                        "{"
+                        "\"verified\": true/false,"
+                        "\"confidence\": \"high|medium|low\","
+                        "\"answer\": \"короткий ответ или причина неподтверждения\","
+                        "\"source_count\": 0,"
+                        "\"sources\": [{\"title\":\"\",\"url\":\"\",\"supports\":\"\"}],"
+                        "\"conflicts\": \"описание противоречий или пусто\""
+                        "}"
+                    ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"Запрос: {query}\n\n"
+                        f"Запрос пользователя: {query}\n\n"
                         f"Результаты поиска JSON:\n{json.dumps(compact, ensure_ascii=False)}"
                     ),
                 },
             ],
         )
 
-        summary = (getattr(resp, "output_text", "") or "").strip()
-        if not summary:
-            summary = "Нашла, но пересказать красиво не вышло. Очень по-человечески."
+        raw = (getattr(resp, "output_text", "") or "").strip()
 
-        links = []
+        try:
+            raw_json = raw
+            m = re.search(r"\{.*\}", raw_json, flags=re.S)
+            if m:
+                raw_json = m.group(0)
+            verdict = json.loads(raw_json)
+        except Exception:
+            verdict = {
+                "verified": False,
+                "confidence": "low",
+                "answer": "Поиск вернул данные, но проверочный разбор не удалось разобрать. Уверенно отвечать не буду.",
+                "source_count": 0,
+                "sources": [],
+                "conflicts": "",
+            }
 
-        if compact:
-            x = compact[0]
-            url = (x.get("url") or "").strip()
+        verified = bool(verdict.get("verified"))
+        source_count = int(verdict.get("source_count") or 0)
+        answer = (verdict.get("answer") or "").strip()
+        confidence = (verdict.get("confidence") or "low").strip()
+        conflicts = (verdict.get("conflicts") or "").strip()
+        sources = verdict.get("sources") or []
 
-            if url:
-                links.append(f"Источник:\n{url}")
+        valid_sources = []
+        seen = set()
 
-        final_text = summary.strip()
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+
+            url = (src.get("url") or "").strip()
+            title = (src.get("title") or "").strip()
+            supports = (src.get("supports") or "").strip()
+
+            if not url or url in seen:
+                continue
+
+            seen.add(url)
+            valid_sources.append({
+                "title": title,
+                "url": url,
+                "supports": supports,
+            })
+
+        if verified and source_count >= 2 and len(valid_sources) >= 2:
+            final_lines = [answer or "Подтверждено."]
+            final_lines.append("")
+            final_lines.append(f"Проверка: {source_count} источника, уверенность: {confidence}.")
+
+            if conflicts:
+                final_lines.append(f"Оговорка: {conflicts}")
+
+            final_lines.append("")
+            final_lines.append("Источники:")
+            for src in valid_sources[:3]:
+                title = src["title"] or "Источник"
+                final_lines.append(f"- {title}: {src['url']}")
+
+            final_text = "\n".join(final_lines).strip()
+
+        else:
+            final_lines = [
+                answer or "Точный ответ по найденной выдаче не подтверждён: не набралось двух независимых источников."
+                "",
+                f"Проверка: источников для уверенного ответа — {len(valid_sources)}; уверенность: {confidence}.",
+            ]
+
+            if conflicts:
+                final_lines.append(f"Противоречия: {conflicts}")
+
+            if valid_sources:
+                final_lines.append("")
+                final_lines.append("Что нашла:")
+                for src in valid_sources[:3]:
+                    title = src["title"] or "Источник"
+                    final_lines.append(f"- {title}: {src['url']}")
+
+            final_text = "\n".join(final_lines).strip()
 
         try:
             final_text = chatgpt_dialog.polish_research_reply(
@@ -2245,9 +2325,6 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
         except Exception:
             pass
 
-        if links:
-            final_text += "\n\n" + "\n".join(links)
-
         _remember_topic(
             int(message.chat.id),
             int(message.from_user.id) if message.from_user else 0,
@@ -2257,6 +2334,7 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
                 "summary": final_text[:1200],
             },
         )
+
         await _answer_long(message, final_text)
 
     except Exception as e:
