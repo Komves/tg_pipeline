@@ -4770,10 +4770,20 @@ async def vesya_handler(message: Message) -> None:
                 if is_analytics_active(chat_id, user_id):
                     pending_probe = {"wait_for_object": False}
                 else:
-                    pending_probe = chatgpt_dialog.semantic_needs_next_object(
-                        text,
-                        topic=_get_topic(chat_id, user_id),
-                    )
+                    direct_info_question = bool(re.search(
+                        r"\b(кто\s+(?:такой|такая|такие)|что\s+такое|кто\s+это|что\s+это)\b",
+                        _strip_vesya_prefix(text).strip().lower(),
+                        flags=re.I,
+                    ))
+
+                    if direct_info_question:
+                        pending_probe = {}
+                    else:
+                        pending_probe = chatgpt_dialog.semantic_needs_next_object(
+                            text,
+                            topic=_get_topic(chat_id, user_id),
+                        )
+                    
             except Exception:
                 pending_probe = {"wait_for_object": False}
 
