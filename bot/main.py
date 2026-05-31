@@ -4519,7 +4519,7 @@ async def vesya_handler(message: Message) -> None:
     clean_service_text = re.sub(r"\s+", " ", clean_service_text).strip(" ?!.:;")
 
     if re.search(
-        r"^(?:покажи\s+)?(?:свои\s+)?функции$|^(?:что\s+ты\s+умеешь|что\s+умеешь|меню|help|помощь)$",
+        r"^(?:покажи\s+)?(?:свои\s+)?функции$|^функции$|^(?:что\s+ты\s+умеешь|что\s+умеешь|меню|help|помощь)$",
         clean_service_text,
         flags=re.I,
     ):
