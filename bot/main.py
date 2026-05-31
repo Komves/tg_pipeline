@@ -3683,6 +3683,11 @@ async def on_photo(message: Message) -> None:
         raw = await _download_tg_file_bytes(message.bot, ph.file_id)
         img_bytes = _shrink_jpeg_bytes(raw)
 
+        caption = (message.caption or "").strip()
+
+        if not _group_message_addresses_vesya(message, caption):
+            return
+
         if await handle_analytics_photo(message, img_bytes, _answer_long):
             return
 
@@ -3691,7 +3696,6 @@ async def on_photo(message: Message) -> None:
             int(message.from_user.id) if message.from_user else 0,
             img_bytes,
         )
-        caption = (message.caption or "").strip()
 
         if await _try_universal_message_layer(message, caption, event_type="photo"):
             return
@@ -3802,6 +3806,9 @@ async def on_document(message: Message) -> None:
     fn = getattr(doc, "file_name", "") or "document"
     caption = (message.caption or "").strip()
 
+    if not _group_message_addresses_vesya(message, caption):
+        return
+
     if await _try_universal_message_layer(message, caption, event_type="document"):
         return
 
@@ -3849,8 +3856,7 @@ async def on_document(message: Message) -> None:
                     await _answer_long(message, dd.reply)
                     return
 
-            if message.chat.type in ("group", "supergroup"):
-                if not _img_should_react(int(message.chat.id)):
+                if not _group_message_addresses_vesya(message, caption):
                     return
 
             res = chatgpt_dialog.image_react(
@@ -4164,6 +4170,9 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
     """
     text = (text or "").strip()
     if not text:
+        return
+
+    if not _group_message_addresses_vesya(message, text):
         return
 
     chat_id = int(message.chat.id)
