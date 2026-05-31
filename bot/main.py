@@ -4640,20 +4640,23 @@ async def vesya_handler(message: Message) -> None:
     beauty_text = _strip_vesya_prefix(text).strip()
     explicit_non_beauty = _is_explicit_non_beauty_request(beauty_text)
 
-    if (
+    direct_beauty_request = (
         not explicit_non_beauty
         and (
             _looks_like_direct_beauty_request(beauty_text)
             or chatgpt_dialog.detect_beauty_intent(beauty_text)
-            or (
-                _beauty_is_active(chat_id, user_id)
-                and (
-                    _beauty_followup(beauty_text)
-                    or chatgpt_dialog.classify_beauty_followup(beauty_text)
-                )
-            )
         )
-    ):
+    )
+
+    beauty_followup_request = (
+        _beauty_is_active(chat_id, user_id)
+        and _beauty_followup(beauty_text)
+    )
+
+    if _beauty_is_active(chat_id, user_id) and not beauty_followup_request and not direct_beauty_request:
+        BEAUTY_DIALOG_STATE.pop(_beauty_key(chat_id, user_id), None)
+
+    if direct_beauty_request or beauty_followup_request:
         try:
             from beauty_pool import pick_unseen_beauty_clip, mark_beauty_clip_sent
 
