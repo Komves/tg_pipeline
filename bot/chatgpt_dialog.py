@@ -2262,6 +2262,23 @@ def semantic_dialog_continuity(
     if not current:
         return {"continue_dialog": True, "reason": "empty"}
 
+    current_clean = re.sub(
+        r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
+        "",
+        current,
+        flags=re.I,
+    ).strip().lower()
+
+    if re.search(
+        r"^(кто|что|где|когда|почему|зачем|как|какой|какая|какое|какие|сколько)\b",
+        current_clean,
+        flags=re.I,
+    ):
+        return {
+            "continue_dialog": False,
+            "reason": "standalone_question_guard",
+        }
+
     s = _sessions.get((chat_id, user_id))
     if not s:
         return {"continue_dialog": False, "reason": "no_active_session"}
