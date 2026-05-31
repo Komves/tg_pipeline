@@ -1020,6 +1020,11 @@ def semantic_route(user_text: str, *, route_context: str = "") -> Optional[dict]
             intent = "web_search"
             query = query or t
 
+        print(
+            f"[semantic_route] intent={intent} query={query} action={action} object={obj}",
+            flush=True,
+        )
+
         return {
             "intent": intent,
             "query": query,
@@ -1529,6 +1534,13 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
                 intent="web_search",
                 reply="",
                 query=semantic_query,
+            )
+
+        if r_intent == "youtube_search":
+            return DialogDecision(
+                intent="youtube_search",
+                reply="",
+                query=semantic_query or user_text,
             )
 
         if r_intent == "news":
