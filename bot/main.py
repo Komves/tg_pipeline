@@ -4171,10 +4171,7 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
     text = (text or "").strip()
     if not text:
         return
-
-    if not _group_message_addresses_vesya(message, text):
-        return
-
+    
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
@@ -4400,6 +4397,9 @@ async def on_voice(message: Message) -> None:
             return
 
         print(f"[voice] transcribed={text!r}", flush=True)
+
+        if not _group_message_addresses_vesya(message, text):
+            return
 
         chat_id = int(message.chat.id)
         user_id = int(message.from_user.id) if message.from_user else 0
@@ -5329,19 +5329,6 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
     )
 
     plain_dialog_followup = _looks_like_plain_dialog_followup(text)
-
-    topic = _get_topic(chat_id, user_id)
-    if topic and (not plain_dialog_followup):
-        semantic_ctx = chatgpt_dialog.semantic_context_route(
-            text,
-            topic=topic,
-        )
-
-        if semantic_ctx.get("route") == "topic_followup":
-            dd = chatgpt_dialog.continue_topic_discussion(text, topic)
-            if dd and (dd.reply or "").strip():
-                await _answer_long(message, dd.reply)
-                return
 
     if is_reply_to_bot_content:
         await _handle_text_core(message, f"Веся, {text}", event_type="text")
