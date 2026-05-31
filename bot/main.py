@@ -746,6 +746,20 @@ def _is_explicit_non_beauty_request(text: str) -> bool:
         flags=re.I,
     ))
 
+def _looks_like_direct_beauty_request(text: str) -> bool:
+    t = _strip_vesya_prefix(text).strip().lower()
+    t = re.sub(r"\s+", " ", t).strip(" ?!.,:;")
+
+    if not t:
+        return False
+
+    return bool(re.search(
+        r"\b(дай|покажи|пришли|скинь|подбери|хочу|сделай|порадуй)\b.*\b(красот|красив|эстетик|вайб)\b|"
+        r"\b(красот|красив|эстетик|вайб)\b.*\b(дай|покажи|пришли|скинь|подбери|хочу|сделай|порадуй)\b",
+        t,
+        flags=re.I,
+    ))
+
 def _make_beauty_caption(user_text: str, item: dict) -> str:
     fallback = "Вот. Красиво, но без восторженного кудахтанья."
 
@@ -4583,7 +4597,8 @@ async def vesya_handler(message: Message) -> None:
     if (
         not explicit_non_beauty
         and (
-            chatgpt_dialog.detect_beauty_intent(beauty_text)
+            _looks_like_direct_beauty_request(beauty_text)
+            or chatgpt_dialog.detect_beauty_intent(beauty_text)
             or (
                 _beauty_is_active(chat_id, user_id)
                 and (
