@@ -4241,9 +4241,12 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
 
     decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
 
-        if decision.intent == "youtube_search":
+    if decision.intent == "youtube_search":
         try:
-            found = await _youtube_manual_search_for_message(message, decision.query or dialog_text)
+            found = await _youtube_manual_search_for_message(
+                message,
+                decision.query or dialog_text,
+            )
 
             if not found:
                 await message.answer("Не нашла.")
