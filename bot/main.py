@@ -4529,6 +4529,13 @@ async def vesya_handler(message: Message) -> None:
     if not _group_message_addresses_vesya(message, text):
         return
 
+    addressed_body = _strip_vesya_prefix(text).strip()
+    addressed_body = re.sub(r"\s+", " ", addressed_body).strip(" ?!.,:;")
+
+    if not addressed_body:
+        await message.answer("Я тут. Что нужно?")
+        return
+
     if await handle_calendar_message(message, CALENDAR_STORAGE):
         return
 
