@@ -4218,25 +4218,7 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         }:
             dialog_text = replied_text
 
-    yt_query = _extract_manual_youtube_query(dialog_text)
-    if yt_query:
-        try:
-            found = await _youtube_manual_search_for_message(message, yt_query)
 
-            if not found:
-                await message.answer("Не нашла.")
-                return
-
-            title = (found.get("title") or "").strip()
-            url = (found.get("url") or "").strip()
-
-            await _answer_long(message, f"{title}\n{url}".strip())
-            return
-
-        except Exception as e:
-            print(f"[yt_manual] error: {type(e).__name__}: {e}", flush=True)
-            await message.answer("Ошибка поиска.")
-            return
 
     pending_research = _get_topic(chat_id, user_id)
     if pending_research and pending_research.get("type") == "research_clarify":
@@ -4258,6 +4240,25 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         return
 
     decision = chatgpt_dialog.decide(chat_id, user_id, dialog_text)
+
+        if decision.intent == "youtube_search":
+        try:
+            found = await _youtube_manual_search_for_message(message, decision.query or dialog_text)
+
+            if not found:
+                await message.answer("Не нашла.")
+                return
+
+            title = (found.get("title") or "").strip()
+            url = (found.get("url") or "").strip()
+
+            await _answer_long(message, f"{title}\n{url}".strip())
+            return
+
+        except Exception as e:
+            print(f"[yt_semantic] error: {type(e).__name__}: {e}", flush=True)
+            await message.answer("Ошибка поиска.")
+            return
 
     print(f"[route][{event_type}] intent={decision.intent} reply={decision.reply!r}", flush=True)
 

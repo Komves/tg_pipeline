@@ -59,7 +59,7 @@ _PERSONA_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
 @dataclass
 class DialogDecision:
-    intent: str  # chat | news | content | web_search | research_count | research_aggregate | research_clarify | end
+    intent: str  # chat | news | content | youtube_search | web_search | research_count | research_aggregate | research_clarify | end
     reply: str
     query: str = ""
 # =============================================================================
@@ -903,8 +903,9 @@ def semantic_route(user_text: str, *, route_context: str = "") -> Optional[dict]
                         "Доступные intent:\n"
                         "- chat: обычный разговор, мнение, шутка, обсуждение, риторика.\n"
                         "- news: пользователь явно просит новостную сводку/дайджест.\n"
-                        "- content: пользователь явно просит прислать контент, мемы, видосы, get12/get24, жги/огня.\n"
-                        "- web_search: нужен быстрый внешний поиск одного факта, события, имени, даты или свежей новости.\n"
+                        "- content: пользователь явно просит внутреннюю подборку контента Веси: мемы, видосы, get12/get24, жги/огня.\n"
+                        "- youtube_search: пользователь просит найти/дать/показать клип, песню, трек, музыку, live, выступление или YouTube-видео.\n"
+                        "- web_search: нужен быстрый внешний поиск одного факта, события, имени, даты, свежей новости или фото/картинок.\n"
                         "- research_count: нужно найти несколько отдельных событий/случаев/инцидентов, извлечь из них счетные факты и посчитать итог.\n"
                         "- research_aggregate: нужно найти уже опубликованные общие цифры, статистику, оценки, диапазоны или итоги разных источников; НЕ список отдельных инцидентов.\n"
                         "- research_clarify: запрос требует подсчёта, но метод подсчёта неоднозначен; нужно уточнить методологию перед поиском.\n"
@@ -968,8 +969,12 @@ def semantic_route(user_text: str, *, route_context: str = "") -> Optional[dict]
                         "Не отвечай отказом внутри router. Router только классифицирует.\n"
                         "Если пользователь явно просит что-то найти/дать/показать/прислать, action не должен быть unknown.\n"
                         "Если непонятно, что именно делать, ставь action=unknown и confidence ниже 0.65.\n\n"
+                                                "Правила маршрутизации:\n"
+                        "- find_video и find_music — это youtube_search, а НЕ content.\n"
+                        "- find_photo — это web_search с query для поиска фото/картинок.\n"
+                        "- content оставляй только для внутренних подборок Веси: мемы, видосы, огня, get12/get24.\n\n"
                         "JSON формат строго:\n"
-                        "{\"intent\":\"chat|news|content|web_search|research_count|research_aggregate|research_clarify|end\",\"query\":\"строка для поиска или пусто\",\"reply\":\"короткое уточнение или пусто\",\"action\":\"строка или пусто\",\"object\":\"строка или пусто\",\"confidence\":0.0}"
+                        "{\"intent\":\"chat|news|content|youtube_search|web_search|research_count|research_aggregate|research_clarify|end\",\"query\":\"строка для поиска или пусто\",\"reply\":\"короткое уточнение или пусто\",\"action\":\"строка или пусто\",\"object\":\"строка или пусто\",\"confidence\":0.0}"
                     ),
                 },
                 {
@@ -984,7 +989,7 @@ def semantic_route(user_text: str, *, route_context: str = "") -> Optional[dict]
 
         data = _parse_json_object(_extract_text(resp)) or {}
         intent = str(data.get("intent") or "chat").strip().lower()
-        if intent not in {"chat", "news", "content", "web_search", "research_count", "research_aggregate", "research_clarify", "end"}:
+        if intent not in {"chat", "news", "content", "youtube_search", "web_search", "research_count", "research_aggregate", "research_clarify", "end"}:
             intent = "chat"
 
         query = str(data.get("query") or "").strip()
@@ -1554,13 +1559,23 @@ def decide(chat_id: int, user_id: int, user_text: str) -> DialogDecision:
 
             _clear_pending_content(chat_id, user_id)
 
-            if semantic_action in {"find_video", "find_music"} and semantic_object:
-                semantic_query = f"найди клип {semantic_object}"
+            if semantic_action in {"find_video", "find_music"}:
+                semantic_query = semantic_query or semantic_object or user_text
+                return DialogDecision(
+                    intent="youtube_search",
+                    reply="",
+                    query=semantic_query,
+                )
 
-            elif semantic_action == "find_photo" and semantic_object:
-                semantic_query = f"найди фото {semantic_object}"
+            if semantic_action == "find_photo":
+                semantic_query = semantic_query or f"фото {semantic_object or user_text}"
+                return DialogDecision(
+                    intent="web_search",
+                    reply="",
+                    query=semantic_query,
+                )
 
-            elif semantic_object and not semantic_query:
+            if semantic_object and not semantic_query:
                 semantic_query = semantic_object
 
             reply = _deterministic_pick(ACTION_ACKS_CONTENT, f"content:{chat_id}:{user_id}:{user_text}")
