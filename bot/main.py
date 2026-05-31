@@ -741,7 +741,7 @@ def _is_explicit_non_beauty_request(text: str) -> bool:
         t,
         flags=re.I,
     )) and not bool(re.search(
-        r"\b(красот|красив|эстетик|вайб)\b",
+        r"(?:красот\w*|красив\w*|эстетик\w*|вайб\w*)",
         t,
         flags=re.I,
     ))
@@ -754,14 +754,22 @@ def _looks_like_direct_beauty_request(text: str) -> bool:
         return False
 
     return bool(re.search(
-        r"\b(дай|покажи|пришли|скинь|подбери|хочу|сделай|порадуй)\b.*\b(красот|красив|эстетик|вайб)\b|"
-        r"\b(красот|красив|эстетик|вайб)\b.*\b(дай|покажи|пришли|скинь|подбери|хочу|сделай|порадуй)\b",
+        r"\b(дай|покажи|пришли|скинь|подбери|хочу|сделай|порадуй)\b.*(?:красот\w*|красив\w*|эстетик\w*|вайб\w*)|"
+        r"(?:красот\w*|красив\w*|эстетик\w*|вайб\w*).*\b(дай|покажи|пришли|скинь|подбери|хочу|сделай|порадуй)\b",
         t,
         flags=re.I,
     ))
 
-def _make_beauty_caption(user_text: str, item: dict) -> str:
-    fallback = "Вот. Красиво, но без восторженного кудахтанья."
+def _make_beauty_caption(user_text: str, item: dict, chat_id: int = 0, user_id: int = 0) -> str:
+    fallback_options = [
+        "Вот. Красиво, но без восторженного кудахтанья.",
+        "Красиво. Даже спорить не с чем.",
+        "Редкий случай, когда картинка справилась без помощи людей.",
+        "Нормально. Глазам можно выдать премию.",
+        "Вот это уже похоже на порядок.",
+    ]
+
+    fallback = random.choice(fallback_options)
 
     try:
         if not (os.getenv("OPENAI_API_KEY") or "").strip():
@@ -778,21 +786,43 @@ def _make_beauty_caption(user_text: str, item: dict) -> str:
             "src": item.get("src"),
         }
 
+        persona_prompt = ""
+        irritation_prompt = ""
+
+        try:
+            persona_prompt = getattr(chatgpt_dialog.persona, "_SYSTEM_PROMPT", "").strip()
+        except Exception:
+            persona_prompt = ""
+
+        try:
+            irritation_prompt = chatgpt_dialog._irritation_instruction(chat_id, user_id)
+        except Exception:
+            irritation_prompt = ""
+
+        system = (
+            (persona_prompt or "Ты Веся: сухая, умная, ироничная, без блогерского восторга.")
+            + "\n\n"
+            + (irritation_prompt or "")
+            + "\n\n"
+            "Задача: написать короткую подпись к отправляемому beauty-видео.\n"
+            "Это не обычный диалог и не описание видео. Это подпись к уже выбранному ролику.\n"
+            "Сохрани общий стиль Веси: сухо, умно, слегка язвительно, но без пошлости.\n"
+            "Каждый раз формулируй по-разному.\n"
+            "Не используй готовые шаблоны и не повторяй старые подписи.\n"
+            "Не пиши как блогер.\n"
+            "Не используй фразы: 'красоту заказывали', 'сделала красиво', "
+            "'лови', 'эстетика подъехала', 'почти искусство'.\n"
+            "Не задавай вопросов пользователю.\n"
+            "Не объясняй, что ты делаешь.\n"
+            "Формат: одна короткая фраза, максимум 12 слов."
+        )
+
         resp = client.responses.create(
             model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
             input=[
                 {
                     "role": "system",
-                    "content": (
-                        "Ты Веся. Нужно написать короткую подпись к отправляемому beauty-видео.\n"
-                        "Не повторяй шаблоны.\n"
-                        "Не пиши как блогер.\n"
-                        "Не используй фразы: 'красоту заказывали', 'сделала красиво', "
-                        "'лови', 'эстетика подъехала', 'почти искусство'.\n"
-                        "Стиль: сухо, умно, слегка язвительно, но без пошлости.\n"
-                        "Формат: одна короткая фраза, максимум 12 слов.\n"
-                        "Без вопросов пользователю."
-                    ),
+                    "content": system,
                 },
                 {
                     "role": "user",
@@ -807,6 +837,11 @@ def _make_beauty_caption(user_text: str, item: dict) -> str:
         out = (getattr(resp, "output_text", "") or "").strip()
         out = re.sub(r"\s+", " ", out).strip()
         out = out.strip("\"'«» ")
+
+        try:
+            out = chatgpt_dialog.persona.postprocess_text(out, user_text)
+        except Exception:
+            pass
 
         return out[:180] or fallback
 
@@ -4624,7 +4659,7 @@ async def vesya_handler(message: Message) -> None:
                 await message.answer("В пуле есть запись, но сам ролик не найден.")
                 return
 
-            caption = _make_beauty_caption(beauty_text, item)
+            caption = _make_beauty_caption(beauty_text, item, chat_id, user_id)
 
             _beauty_activate(chat_id, user_id)
 
