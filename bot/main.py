@@ -2282,11 +2282,14 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
 
         if verified and source_count >= 2 and len(valid_sources) >= 2:
             final_lines = [answer or "Подтверждено."]
-            final_lines.append("")
-            final_lines.append(f"Проверка: {source_count} источника, уверенность: {confidence}.")
 
             if conflicts:
-                final_lines.append(f"Оговорка: {conflicts}")
+                print(f"[web_search][conflicts] {conflicts}", flush=True)
+
+            print(
+                f"[web_search][verified] sources={source_count} confidence={confidence}",
+                flush=True,
+            )
 
             final_lines.append("")
             final_lines.append("Источники:")
