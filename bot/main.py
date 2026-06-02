@@ -1875,7 +1875,7 @@ def _looks_like_plain_dialog_followup(text: str) -> bool:
         flags=re.I,
     ))
 
-async def _answer_long(message: Message, text: str, *, chunk_size: int = 3600) -> None:
+async def _answer_long(message: Message, text: str, *, chunk_size: int = 10000) -> None:
     t = (text or "").strip()
     if not t:
         return
@@ -1886,7 +1886,6 @@ async def _answer_long(message: Message, text: str, *, chunk_size: int = 3600) -
             return
 
         part = t[:chunk_size]
-
         cut = max(
             part.rfind("\n\n"),
             part.rfind("\n"),
@@ -1895,20 +1894,12 @@ async def _answer_long(message: Message, text: str, *, chunk_size: int = 3600) -
             part.rfind("? "),
             part.rfind("; "),
         )
-
-        if cut < 1000:
-            cut = part.rfind(" ")
-
-        if cut < 1000:
+        # убрать минимальный порог, всегда брать найденный cut
+        if cut == -1:
             cut = chunk_size
 
         part = t[:cut].rstrip()
         rest = t[cut:].lstrip()
-
-        if rest in {"₽", "руб.", "руб"} and part:
-            part = f"{part} {rest}"
-            rest = ""
-
         await message.answer(part)
         t = rest
 
