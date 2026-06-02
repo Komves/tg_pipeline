@@ -1653,7 +1653,7 @@ def _should_use_universal_layer(message: Message, user_text: str, obj: dict) -> 
         if obj.get("has_pending_object_request"):
             return True
 
-        return bool(user_text and chatgpt_dialog.persona.is_addressed(user_text))
+        return _group_message_addresses_vesya(message, user_text)
 
     return True
 
@@ -2160,7 +2160,6 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
                     "count": 8,
                     "search_lang": "ru",
                     "country": "RU",
-                    "freshness": "pd",
                 },
                 timeout=20,
             )
