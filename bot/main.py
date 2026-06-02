@@ -3920,8 +3920,10 @@ async def on_photo(message: Message) -> None:
             pass
         # In groups: react rarely (cooldown + probability)
         if message.chat.type in ("group", "supergroup"):
-            if not _img_should_react(int(message.chat.id)):
-                return
+            # разрешаем прогноз для групп так же, как для лички
+            run_forecast()  # использовать is_forecast_query и forecast_resp
+        else:
+            run_forecast()
         res = chatgpt_dialog.image_react(
             chat_id=int(message.chat.id),
             user_id=int(message.from_user.id) if message.from_user else 0,
@@ -4887,7 +4889,7 @@ async def vesya_handler(message: Message) -> None:
         chat_id = int(message.chat.id)
         user_id = int(message.from_user.id) if message.from_user else 0
 
-        if message.chat.type == "private" or chatgpt_dialog.persona.is_addressed(text):
+        if message.chat.type in ("private", "group", "supergroup") or chatgpt_dialog.persona.is_addressed(text):
 
             try:
                 if is_analytics_active(chat_id, user_id):
