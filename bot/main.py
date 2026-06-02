@@ -2287,7 +2287,15 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
                 "supports": supports,
             })
 
-        if verified and source_count >= 2 and len(valid_sources) >= 2:
+        is_forecast_query = bool(re.search(
+            r"\b(прогноз|спрогнозируй|кто выйдет|кто победит|кто пройдет|кто пройдёт|шансы|фаворит|сценарий)\b",
+            query,
+            flags=re.I,
+        ))
+
+        if (verified and source_count >= 2 and len(valid_sources) >= 2) or (
+            is_forecast_query and answer and len(valid_sources) >= 1
+        ):
             final_lines = [answer or "Подтверждено."]
 
             if conflicts:
