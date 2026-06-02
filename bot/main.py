@@ -2157,9 +2157,10 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
                 },
                 params={
                     "q": query,
-                    "count": 8,
+                    "count": 20,
                     "search_lang": "ru",
                     "country": "RU",
+                    "freshness": "pm",
                 },
                 timeout=20,
             )
@@ -2176,7 +2177,7 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
         compact = []
         seen_urls = set()
 
-        for x in results[:8]:
+        for x in results[:20]:
             url = (x.get("url") or "").strip()
             if not url or url in seen_urls:
                 continue
@@ -2354,7 +2355,7 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
         )
 
         await _answer_long(message, final_text)
-
+        
     except Exception as e:
         print(f"[web_search] failed: {type(e).__name__}: {e}", flush=True)
         await message.answer(f"поиск сломался: {type(e).__name__}: {e}")
@@ -4492,7 +4493,7 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         if not q:
             q = _extract_web_search_query(dialog_text)
 
-        await _run_research_count_for_message(message, q)
+        await _run_research_aggregate_for_message(message, q)
         return
 
     if intent == "research_count":
