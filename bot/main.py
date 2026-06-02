@@ -4543,6 +4543,18 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
         if not q:
             q = _extract_web_search_query(dialog_text)
 
+        if re.search(
+            r"\b(прогноз|спрогнозируй|кто выйдет|кто победит|кто пройдет|кто пройдёт|шансы|фаворит|сценарий)\b",
+            dialog_text,
+            flags=re.I,
+        ) and not re.search(
+            r"\b(прогноз|спрогнозируй|кто выйдет|кто победит|кто пройдет|кто пройдёт|шансы|фаворит|сценарий)\b",
+            q,
+            flags=re.I,
+        ):
+            q = f"{q} {dialog_text}".strip()
+            q = re.sub(r"\s+", " ", q)[:250]
+
         topic = _get_topic(chat_id, user_id)
         if topic and topic.get("type") == "web_search":
             dtl = dialog_text.lower()
