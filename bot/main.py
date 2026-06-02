@@ -2295,10 +2295,43 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
             flags=re.I,
         ))
 
-        if (verified and source_count >= 2 and len(valid_sources) >= 2) or (
-            is_forecast_query and answer and len(valid_sources) >= 1
-        ):
-            final_lines = [answer or "Подтверждено."]
+        if is_forecast_query and answer and len(valid_sources) >= 1:
+            forecast_resp = client.responses.create(
+                model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты — Веся.\n"
+                            "Пользователь просит прогноз по спортивному турниру.\n"
+                            "Факты уже проверены отдельным web-search executor.\n"
+                            "Твоя задача — НЕ перепроверять источники и НЕ отказываться из-за того, "
+                            "что в источниках нет готового прогноза.\n"
+                            "Сначала кратко обозначь фактическую базу, затем дай свой прогноз как мнение.\n"
+                            "Прогноз отделяй от фактов.\n"
+                            "Не пиши канцеляритом.\n"
+                            "Не говори 'недостаточно источников для прогноза', если есть список групп или участников.\n"
+                            "Если часть данных неполная — прямо скажи это, но всё равно дай осторожный прогноз по имеющейся базе.\n"
+                            "Стиль: сухо, умно, с лёгкой иронией."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Запрос пользователя:\n{query}\n\n"
+                            f"Проверочный вывод фактчекера:\n{answer}\n\n"
+                            f"Найденные источники:\n{json.dumps(valid_sources, ensure_ascii=False)}\n\n"
+                            f"Материалы поиска:\n{json.dumps(compact, ensure_ascii=False)[:45000]}"
+                        ),
+                    },
+                ],
+            )
+
+            final_text = (getattr(forecast_resp, "output_text", "") or "").strip()
+            if not final_text:
+                final_text = answer or "Факты нашла, но прогноз сформулировать не вышло."
+
+            final_lines = [final_text]
 
             if conflicts:
                 print(f"[web_search][conflicts] {conflicts}", flush=True)
