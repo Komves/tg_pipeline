@@ -2359,15 +2359,16 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
 
             final_text = "\n".join(final_lines).strip()
 
-        try:
-            final_text = chatgpt_dialog.polish_research_reply(
-                int(message.chat.id),
-                int(message.from_user.id) if message.from_user else 0,
-                query,
-                final_text,
-            )
-        except Exception:
-            pass
+        if not is_forecast_query:
+            try:
+                final_text = chatgpt_dialog.polish_research_reply(
+                    int(message.chat.id),
+                    int(message.from_user.id) if message.from_user else 0,
+                    query,
+                    final_text,
+                )
+            except Exception:
+                pass
 
         _remember_topic(
             int(message.chat.id),
