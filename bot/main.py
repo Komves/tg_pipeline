@@ -2195,6 +2195,14 @@ async def _run_web_search_for_message(message: Message, query: str) -> None:
             await message.answer("Нашла пустую выдачу. Подтверждать нечего.")
             return
 
+        for item in compact[:5]:
+            try:
+                page_text = await asyncio.to_thread(_fetch_url_text, item["url"])
+                if page_text:
+                    item["page_text"] = page_text[:6000]
+            except Exception as e:
+                print(f"[web_search] page fetch failed: {type(e).__name__}: {e}", flush=True)
+
         client = OpenAI()
         resp = client.responses.create(
             model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
