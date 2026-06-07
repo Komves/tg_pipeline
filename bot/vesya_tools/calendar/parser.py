@@ -21,6 +21,34 @@ RU_MONTHS = {
     "декабря": 12,
 }
 
+RU_HOURS = {
+    "ноль": 0,
+    "один": 1,
+    "час": 1,
+    "два": 2,
+    "три": 3,
+    "четыре": 4,
+    "пять": 5,
+    "шесть": 6,
+    "семь": 7,
+    "восемь": 8,
+    "девять": 9,
+    "десять": 10,
+    "одиннадцать": 11,
+    "двенадцать": 12,
+    "тринадцать": 13,
+    "четырнадцать": 14,
+    "пятнадцать": 15,
+    "шестнадцать": 16,
+    "семнадцать": 17,
+    "восемнадцать": 18,
+    "девятнадцать": 19,
+    "двадцать": 20,
+    "двадцать один": 21,
+    "двадцать два": 22,
+    "двадцать три": 23,
+}
+
 
 @dataclass(frozen=True)
 class ReminderParse:
@@ -38,14 +66,30 @@ def _parse_time(value: str | None) -> tuple[int, int]:
         return 9, 0
 
     m = re.search(r"(\d{1,2})(?:[:.\-](\d{2}))?", s)
-    if not m:
-        return 9, 0
+    if m:
+        hour = max(0, min(23, int(m.group(1))))
+        minute = max(0, min(59, int(m.group(2) or 0)))
+    else:
+        hour = None
+        minute = 0
 
-    hour = max(0, min(23, int(m.group(1))))
-    minute = max(0, min(59, int(m.group(2) or 0)))
+        normalized = re.sub(r"\s+", " ", s).strip()
+        for word, value_hour in sorted(RU_HOURS.items(), key=lambda x: len(x[0]), reverse=True):
+            if re.search(rf"\b{re.escape(word)}\b", normalized, flags=re.I):
+                hour = int(value_hour)
+                break
+
+        if hour is None:
+            return 9, 0
 
     if re.search(r"\bвечера\b", s) and 1 <= hour <= 11:
         hour += 12
+
+    if re.search(r"\bдня\b", s) and 1 <= hour <= 11:
+        hour += 12
+
+    if re.search(r"\bночи\b", s) and hour == 12:
+        hour = 0
 
     return hour, minute
 
@@ -60,7 +104,7 @@ def parse_reminder(text: str, now: datetime) -> ReminderParse | None:
     body = re.sub(r"^напомни\s*", "", src, flags=re.I).strip()
 
     m = re.match(
-        r"^через\s+(минуту|час|день|год)\s*(.*)$",
+        r"^(сегодня|завтра)(?:\s+в\s*с?\s*((?:\d{1,2}(?:(?::|\.|-)\d{2})?|[а-яё]+(?:\s+[а-яё]+)?)(?:\s*(?:утра|дня|вечера|ночи))?))?\s*(.*)$",
         body,
         flags=re.I,
     )
@@ -127,7 +171,7 @@ def parse_reminder(text: str, now: datetime) -> ReminderParse | None:
         return ReminderParse(remind_at=dt, text=reminder_text)
 
     m = re.match(
-        r"^(\d{1,2})\s+([а-яё]+)(?:\s+в\s+(\d{1,2}(?:(?::|\.|-)\d{2})?(?:\s*(?:утра|дня|вечера|ночи))?))?\s*(.*)$",
+        r"^(\d{1,2})\s+([а-яё]+)(?:\s+в\s+((?:\d{1,2}(?:(?::|\.|-)\d{2})?|[а-яё]+(?:\s+[а-яё]+)?)(?:\s*(?:утра|дня|вечера|ночи))?))?\s*(.*)$",
         body,
         flags=re.I,
     )
