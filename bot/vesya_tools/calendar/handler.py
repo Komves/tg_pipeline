@@ -35,7 +35,9 @@ async def handle_calendar_message(message, storage) -> bool:
             remind_at=reminder.remind_at.isoformat(),
             created_at=now_iso,
         )
-        await message.answer("Ок, напомню.")
+        await message.answer(
+            f"Ок, напомню {reminder.remind_at.strftime('%d.%m в %H:%M')}: {reminder.text}"
+        )
         return True
 
     if message.chat.type != "private":

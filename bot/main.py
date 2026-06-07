@@ -204,6 +204,92 @@ def _save_blocked_users(users: set[int]) -> None:
 def _is_blocked_user(user_id: int) -> bool:
     return int(user_id or 0) in _load_blocked_users()
 
+
+GROUP_MUTES_PATH = DATA_DIR / "vesya_group_mutes.json"
+
+
+def _load_group_mutes() -> dict:
+    try:
+        if GROUP_MUTES_PATH.exists():
+            data = json.loads(GROUP_MUTES_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_group_mutes(data: dict) -> None:
+    try:
+        tmp = GROUP_MUTES_PATH.with_suffix(GROUP_MUTES_PATH.suffix + ".tmp")
+        tmp.write_text(json.dumps(data or {}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(GROUP_MUTES_PATH)
+    except Exception:
+        pass
+
+
+def _group_mute_until(chat_id: int) -> float:
+    data = _load_group_mutes()
+    try:
+        until = float(data.get(str(int(chat_id))) or 0)
+    except Exception:
+        until = 0
+
+    if until and until <= time.time():
+        data.pop(str(int(chat_id)), None)
+        _save_group_mutes(data)
+        return 0
+
+    return until
+
+
+def _is_group_muted(chat_id: int) -> bool:
+    return _group_mute_until(chat_id) > time.time()
+
+
+def _set_group_mute(chat_id: int, seconds: int) -> None:
+    data = _load_group_mutes()
+    data[str(int(chat_id))] = time.time() + max(60, int(seconds))
+    _save_group_mutes(data)
+
+
+def _clear_group_mute(chat_id: int) -> None:
+    data = _load_group_mutes()
+    data.pop(str(int(chat_id)), None)
+    _save_group_mutes(data)
+
+
+def _parse_group_mute_seconds(text: str) -> int | None:
+    t = _strip_vesya_prefix(text).strip().lower()
+    t = re.sub(r"\s+", " ", t).strip(" ?!.,:;")
+
+    if not re.search(r"\b(не отвечай|молчи|замолчи|пауза)\b", t, flags=re.I):
+        return None
+
+    if re.search(r"\b(сутки|день)\b", t, flags=re.I):
+        return 24 * 3600
+
+    m = re.search(r"(\d{1,3})\s*(час|часа|часов|ч)\b", t, flags=re.I)
+    if m:
+        return int(m.group(1)) * 3600
+
+    m = re.search(r"(\d{1,3})\s*(минут|минуты|мин|м)\b", t, flags=re.I)
+    if m:
+        return int(m.group(1)) * 60
+
+    return None
+
+
+def _is_group_unmute_command(text: str) -> bool:
+    t = _strip_vesya_prefix(text).strip().lower()
+    t = re.sub(r"\s+", " ", t).strip(" ?!.,:;")
+
+    return bool(re.search(
+        r"\b(можешь отвечать|сними паузу|отмена паузы|вернись|включись|говори)\b",
+        t,
+        flags=re.I,
+    ))
+
 def _translator_key(chat_id: int, user_id: int) -> str:
     return f"{int(chat_id)}:{int(user_id)}"
 
@@ -1290,15 +1376,33 @@ def _is_reply_to_bot(message: Message) -> bool:
 
 def _group_message_addresses_vesya(message: Message, text: str) -> bool:
     if message.chat.type not in ("group", "supergroup"):
+        print(
+            "[GROUP_GATE] pass reason=not_group "
+            f"chat_type={message.chat.type!r} text={(text or '')[:120]!r}",
+            flush=True,
+        )
         return True
 
     t = (text or "").strip()
 
-    return bool(
-        t.startswith("/")
-        or _is_direct_group_address(t)
-        or _is_reply_to_bot(message)
+    is_cmd = t.startswith("/")
+    is_direct = _is_direct_group_address(t)
+    is_reply_bot = _is_reply_to_bot(message)
+
+    allowed = bool(is_cmd or is_direct or is_reply_bot)
+
+    print(
+        "[GROUP_GATE] "
+        f"allowed={allowed} "
+        f"chat_type={message.chat.type!r} "
+        f"is_cmd={is_cmd} "
+        f"is_direct={is_direct} "
+        f"is_reply_bot={is_reply_bot} "
+        f"text={t[:120]!r}",
+        flush=True,
     )
+
+    return allowed
 
 def _wants_context_comment(text: str) -> bool:
     t = (text or "").strip().lower()
@@ -2001,6 +2105,137 @@ async def _send_reply_for_event(message: Message, reply: str, *, event_type: str
         return
 
     await _answer_long(message, r)
+
+def _looks_like_calendar_view_request(text: str) -> bool:
+    t = _strip_vesya_prefix(text).strip().lower()
+    t = re.sub(r"\s+", " ", t).strip(" ?!.,:;")
+
+    return bool(re.search(
+        r"\b(покажи|проверь|что у меня|какие|список)\b.*\b(календарь|напоминан|дела)\b|"
+        r"\b(календарь|напоминан|дела)\b.*\b(сегодня|завтра|на сегодня|на завтра)\b",
+        t,
+        flags=re.I,
+    ))
+
+
+def _calendar_view_range(text: str):
+    import sqlite3
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    t = _strip_vesya_prefix(text).strip().lower()
+    tz = ZoneInfo(os.getenv("V_RUNTIME_TZ", "Europe/Moscow"))
+    now = datetime.now(tz)
+
+    if "завтра" in t:
+        day = now.date() + timedelta(days=1)
+    else:
+        day = now.date()
+
+    start = datetime.combine(day, datetime.min.time(), tzinfo=tz)
+    end = start + timedelta(days=1)
+
+    return start, end
+
+
+def _calendar_view_text(chat_id: int, user_id: int, text: str) -> str:
+    import sqlite3
+    from datetime import datetime
+
+    start, end = _calendar_view_range(text)
+    db_path = DATA_DIR / "vesya_calendar.sqlite3"
+
+    if not db_path.exists():
+        return "Календарь пуст. База напоминаний ещё не создана."
+
+    rows = []
+
+    try:
+        con = sqlite3.connect(str(db_path))
+        con.row_factory = sqlite3.Row
+
+        tables = [
+            r["name"]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        ]
+
+        if not tables:
+            con.close()
+            return "Календарь пуст. Таблиц напоминаний в базе нет."
+
+        # Ищем таблицу календаря по реальным колонкам, а не по придуманному имени.
+        target = None
+        columns = []
+
+        for table in tables:
+            cols = con.execute(f"PRAGMA table_info({table})").fetchall()
+            col_names = [str(c["name"]) for c in cols]
+
+            has_time = any(c in col_names for c in ("remind_at", "run_at", "due_at", "event_at", "dt", "datetime", "time"))
+            has_text = any(c in col_names for c in ("text", "title", "message", "body", "description"))
+            has_chat = "chat_id" in col_names
+
+            if has_time and has_text and has_chat:
+                target = table
+                columns = col_names
+                break
+
+        if not target:
+            con.close()
+            return "Календарь не прочитала: не нашла таблицу с chat_id, временем и текстом."
+
+        time_col = next(c for c in ("remind_at", "run_at", "due_at", "event_at", "dt", "datetime", "time") if c in columns)
+        text_col = next(c for c in ("text", "title", "message", "body", "description") if c in columns)
+
+        done_col = next((c for c in ("done", "sent", "is_done", "completed") if c in columns), None)
+        user_filter = " AND user_id = ?" if "user_id" in columns else ""
+        done_filter = f" AND COALESCE({done_col}, 0) = 0" if done_col else ""
+
+        sql = (
+            f"SELECT * FROM {target} "
+            f"WHERE chat_id = ?{user_filter} "
+            f"AND {time_col} >= ? AND {time_col} < ?"
+            f"{done_filter} "
+            f"ORDER BY {time_col} ASC"
+        )
+
+        params = [int(chat_id)]
+        if "user_id" in columns:
+            params.append(int(user_id))
+
+        params.extend([
+            start.isoformat(),
+            end.isoformat(),
+        ])
+
+        rows = con.execute(sql, params).fetchall()
+        con.close()
+
+    except Exception as e:
+        return f"Календарь не прочитала: {type(e).__name__}: {e}"
+
+    label = "завтра" if "завтра" in _strip_vesya_prefix(text).lower() else "сегодня"
+
+    if not rows:
+        return f"На {label} напоминаний не вижу."
+
+    out = [f"Напоминания на {label}:"]
+
+    for r in rows:
+        raw_time = str(r[time_col])
+        item_text = str(r[text_col] or "").strip() or "напоминание"
+
+        try:
+            dt = datetime.fromisoformat(raw_time)
+            hhmm = dt.strftime("%H:%M")
+        except Exception:
+            hhmm = raw_time
+
+        out.append(f"- {hhmm} — {item_text}")
+
+    return "\n".join(out)
 
 def _extract_web_search_query(text: str) -> str:
     q = _strip_vesya_prefix(text)
@@ -4660,6 +4895,22 @@ async def vesya_handler(message: Message) -> None:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
+    if message.chat.type in ("group", "supergroup"):
+        addressed_to_vesya = _group_message_addresses_vesya(message, text)
+
+        mute_seconds = _parse_group_mute_seconds(text)
+        if addressed_to_vesya and mute_seconds:
+            _set_group_mute(chat_id, mute_seconds)
+            await message.answer("Пауза включена. Молчу.")
+            return
+
+        if _is_group_muted(chat_id):
+            if addressed_to_vesya and _is_group_unmute_command(text):
+                _clear_group_mute(chat_id)
+                await message.answer("Пауза снята.")
+                return
+            return
+
     # ЖЁСТКИЙ GROUP GATE:
     # в группе Веся не влезает в чужие разговоры.
     # Отвечает только на /команду, прямое обращение или reply на её сообщение.
@@ -4673,7 +4924,23 @@ async def vesya_handler(message: Message) -> None:
         await message.answer("Я тут. Что нужно?")
         return
 
+    if _looks_like_calendar_view_request(text):
+        await _answer_long(
+            message,
+            _calendar_view_text(chat_id, user_id, text),
+        )
+        return
+
     if await handle_calendar_message(message, CALENDAR_STORAGE):
+        return
+
+    if re.match(r"^напомни\b", addressed_body, flags=re.I):
+        await message.answer(
+            "Не поняла время напоминания. Формат: "
+            "«напомни сегодня в 13:00 ...», "
+            "«напомни завтра в 8 утра ...», "
+            "«напомни через 5 минут ...»."
+        )
         return
 
     yt_query = _extract_manual_youtube_query(text)
@@ -4901,7 +5168,7 @@ async def vesya_handler(message: Message) -> None:
         chat_id = int(message.chat.id)
         user_id = int(message.from_user.id) if message.from_user else 0
 
-        if message.chat.type in ("private", "group", "supergroup") or chatgpt_dialog.persona.is_addressed(text):
+        if message.chat.type == "private" or chatgpt_dialog.persona.is_addressed(text):
 
             try:
                 if is_analytics_active(chat_id, user_id):

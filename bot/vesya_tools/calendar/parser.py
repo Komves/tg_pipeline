@@ -33,13 +33,20 @@ def strip_vesya(text: str) -> str:
 
 
 def _parse_time(value: str | None) -> tuple[int, int]:
-    if not value:
+    s = (value or "").strip().lower()
+    if not s:
         return 9, 0
-    m = re.search(r"(\d{1,2})(?::(\d{2}))?", value)
+
+    m = re.search(r"(\d{1,2})(?:[:.\-](\d{2}))?", s)
     if not m:
         return 9, 0
+
     hour = max(0, min(23, int(m.group(1))))
     minute = max(0, min(59, int(m.group(2) or 0)))
+
+    if re.search(r"\bвечера\b", s) and 1 <= hour <= 11:
+        hour += 12
+
     return hour, minute
 
 
@@ -101,15 +108,26 @@ def parse_reminder(text: str, now: datetime) -> ReminderParse | None:
 
         return ReminderParse(remind_at=dt, text=reminder_text)
 
-    m = re.match(r"^завтра(?:\s+в\s+(\d{1,2}(?::\d{2})?))?\s*(.*)$", body, flags=re.I)
+    m = re.match(
+        r"^(сегодня|завтра)(?:\s+в\s*с?\s*(\d{1,2}(?:(?::|\.|-)\d{2})?(?:\s*(?:утра|дня|вечера|ночи))?))?\s*(.*)$",
+        body,
+        flags=re.I,
+    )
     if m:
-        hour, minute = _parse_time(m.group(1))
-        reminder_text = m.group(2).strip(" ,.-") or "напоминание"
-        dt = (now + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+        day_word = m.group(1).lower()
+        hour, minute = _parse_time(m.group(2))
+        reminder_text = m.group(3).strip(" ,.-") or "напоминание"
+
+        days = 1 if day_word == "завтра" else 0
+        dt = (now + timedelta(days=days)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+        if day_word == "сегодня" and dt <= now:
+            return None
+
         return ReminderParse(remind_at=dt, text=reminder_text)
 
     m = re.match(
-        r"^(\d{1,2})\s+([а-яё]+)(?:\s+в\s+(\d{1,2}(?::\d{2})?))?\s*(.*)$",
+        r"^(\d{1,2})\s+([а-яё]+)(?:\s+в\s+(\d{1,2}(?:(?::|\.|-)\d{2})?(?:\s*(?:утра|дня|вечера|ночи))?))?\s*(.*)$",
         body,
         flags=re.I,
     )
