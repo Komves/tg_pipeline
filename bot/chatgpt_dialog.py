@@ -2363,6 +2363,18 @@ def semantic_context_route(
     if not current and not obj:
         return {"route": "chat", "instruction": ""}
 
+    # --- календарь ---
+    calendar_text = current.strip()
+    if re.search(
+        r"\b(напомни|напоминание|поставь\s+напоминание|добавь\s+в\s+календарь|запланируй)\b",
+        calendar_text,
+        flags=re.I,
+    ):
+        return {
+            "route": "calendar",
+            "instruction": "Создать календарное напоминание или событие из текущего сообщения.",
+        }
+
     calendar_text = re.sub(
         r"^\s*(веся|вися|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
         "",
