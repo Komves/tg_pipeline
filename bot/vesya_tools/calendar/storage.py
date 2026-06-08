@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from typing import Any
-
+from datetime import datetime
 
 class CalendarStorage:
     def __init__(self, db_path: Path):
@@ -86,17 +86,32 @@ class CalendarStorage:
             )
 
     def due_reminders(self, now_iso: str) -> list[dict[str, Any]]:
+        now_dt = datetime.fromisoformat(now_iso)
+
         with self._connect() as con:
             rows = con.execute(
                 """
                 SELECT id, chat_id, user_id, text, remind_at
                 FROM reminders
-                WHERE sent_at IS NULL AND remind_at <= ?
+                WHERE sent_at IS NULL
                 ORDER BY remind_at ASC
-                """,
-                (now_iso,),
+                """
             ).fetchall()
-        return [dict(r) for r in rows]
+
+        due = []
+
+        for row in rows:
+            item = dict(row)
+            try:
+                remind_dt = datetime.fromisoformat(str(item["remind_at"]))
+            except Exception:
+                continue
+
+            if remind_dt <= now_dt:
+                due.append(item)
+
+        return due
+
 
     def mark_reminder_sent(self, reminder_id: int, sent_at: str) -> None:
         with self._connect() as con:

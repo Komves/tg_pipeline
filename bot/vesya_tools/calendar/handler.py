@@ -15,7 +15,8 @@ from .parser import (
 
 
 async def handle_calendar_message(message, storage) -> bool:
-    tz = ZoneInfo("Europe/Moscow")
+    import os
+    tz = ZoneInfo(os.getenv("V_CALENDAR_TZ", "Europe/Moscow"))
     now = datetime.now(tz)
     now_iso = now.isoformat()
 
