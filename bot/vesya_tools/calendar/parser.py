@@ -57,7 +57,12 @@ class ReminderParse:
 
 
 def strip_vesya(text: str) -> str:
-    return re.sub(r"^\s*веся[\s,.:;!-]+", "", text or "", flags=re.I).strip()
+    return re.sub(
+        r"^\s*(веся|вися|веська|веслава|vesya|сергеевна)[\s,.:;!-]+",
+        "",
+        text or "",
+        flags=re.I,
+    ).strip()
 
 
 def _parse_time(value: str | None) -> tuple[int, int]:

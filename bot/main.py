@@ -1747,19 +1747,18 @@ def _message_object_text(obj: dict) -> str:
 
 
 def _should_use_universal_layer(message: Message, user_text: str, obj: dict) -> bool:
-    if not obj.get("has_external_object"):
-        return False
-
     # В группе не отвечаем на всё подряд.
-    # Но pending-object request уже является явным обращением к Весе:
-    # пользователь сначала попросил оценить/объяснить/прокомментировать,
-    # а следующим сообщением прислал внешний объект.
+    # Отвечаем только если есть явное обращение, reply на Весю,
+    # команда или pending-object request.
     if message.chat.type in ("group", "supergroup"):
         if obj.get("has_pending_object_request"):
             return True
 
         return _group_message_addresses_vesya(message, user_text)
 
+    # В личке любой текст/голос должен пройти semantic_context_route:
+    # chat вернётся обратно в обычный dialog,
+    # calendar уйдёт в handle_calendar_message.
     return True
 
 async def _try_universal_message_layer(
@@ -1824,6 +1823,11 @@ async def _try_universal_message_layer(
     )
 
     route = str(semantic_ctx.get("route") or "chat").strip().lower()
+
+    if route == "calendar":
+        if await handle_calendar_message(message, CALENDAR_STORAGE):
+            return True
+        return False
 
     if route == "topic_followup" and topic and not object_text:
         dd = chatgpt_dialog.continue_topic_discussion(user_text, topic)
@@ -1951,7 +1955,7 @@ def _looks_like_topic_followup(text: str) -> bool:
 def _strip_vesya_prefix(text: str) -> str:
     t = (text or "").strip()
     return re.sub(
-        r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
+        r"^\s*(веся|вися|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
         "",
         t,
         flags=re.I,
