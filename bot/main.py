@@ -1825,8 +1825,21 @@ async def _try_universal_message_layer(
     route = str(semantic_ctx.get("route") or "chat").strip().lower()
 
     if route == "calendar":
-        if await handle_calendar_message(message, CALENDAR_STORAGE):
+        calendar_text = re.sub(
+            r"^.*?\b(напомни|напоминание|поставь\s+напоминание|добавь\s+в\s+календарь|запланируй)\b",
+            r"\1",
+            user_text,
+            count=1,
+            flags=re.I,
+        ).strip()
+
+        calendar_message = message.model_copy(update={"text": calendar_text})
+
+        if await handle_calendar_message(calendar_message, CALENDAR_STORAGE):
+            print("[calendar] reminder created", flush=True)
             return True
+
+        print("[calendar] route=calendar but handler returned false", flush=True)
         return False
 
     if route == "topic_followup" and topic and not object_text:
