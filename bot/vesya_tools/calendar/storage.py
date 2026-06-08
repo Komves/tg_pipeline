@@ -66,6 +66,13 @@ class CalendarStorage:
                     PRIMARY KEY (group_id, telegram_user_id)
                 )
             """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS user_timezones (
+                    user_id INTEGER PRIMARY KEY,
+                    timezone TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
             self._ensure_column(con, "birthdays", "telegram_user_id", "INTEGER")
             self._ensure_column(con, "birthdays", "username", "TEXT")
 
@@ -74,6 +81,36 @@ class CalendarStorage:
         existing = {str(row["name"]) for row in rows}
         if column not in existing:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+    def set_user_timezone(self, user_id: int, timezone: str, updated_at: str) -> None:
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT INTO user_timezones(user_id, timezone, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id)
+                DO UPDATE SET timezone = excluded.timezone,
+                              updated_at = excluded.updated_at
+                """,
+                (int(user_id), str(timezone), str(updated_at)),
+            )
+
+    def get_user_timezone(self, user_id: int) -> str | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT timezone
+                FROM user_timezones
+                WHERE user_id = ?
+                """,
+                (int(user_id),),
+            ).fetchone()
+
+        if not row:
+            return None
+
+        value = str(row["timezone"] or "").strip()
+        return value or None
 
     def add_reminder(self, chat_id: int, user_id: int, text: str, remind_at: str, created_at: str) -> None:
         with self._connect() as con:
