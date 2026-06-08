@@ -4572,12 +4572,12 @@ async def _youtube_manual_search_for_message(message: Message, query: str) -> di
         "url": f"https://www.youtube.com/watch?v={vid}",
     }
 
-async def _handle_text_core(message: Message, text: str, *, event_type: str = "text") -> None:
+async def _handle_text_core(message: Message, dialog_text: str, *, event_type: str = "text") -> None:
     """
     Shared semantic core for normal text and transcribed voice.
     Voice must not have its own intelligence: it becomes text and uses the same router/executors.
     """
-    text = (text or "").strip()
+    text = (dialog_text or "").strip()
     if not text:
         return
     
@@ -4677,6 +4677,10 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
     intent = (decision.intent or "chat").strip().lower()
     reply = (decision.reply or "").strip()
 
+    reply_event_type = event_type
+    if event_type == "voice" and intent != "chat":
+        reply_event_type = "text"
+
     _record_memory_event(
         message,
         text=dialog_text,
@@ -4688,7 +4692,7 @@ async def _handle_text_core(message: Message, text: str, *, event_type: str = "t
     if intent == "end":
         chatgpt_dialog.end(chat_id, user_id)
         if reply:
-            await _send_reply_for_event(message, reply, event_type=event_type)
+            await _send_reply_for_event(message, reply, event_type=reply_event_type)
         return
 
     if intent == "news":
