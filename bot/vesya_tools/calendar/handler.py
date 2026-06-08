@@ -16,9 +16,23 @@ from .parser import (
 
 async def handle_calendar_message(message, storage) -> bool:
     import os
-    tz = ZoneInfo(os.getenv("V_CALENDAR_TZ", "Europe/Moscow"))
+
+    tz_name = (
+        os.getenv("V_RUNTIME_TZ")
+        or os.getenv("V_CALENDAR_TZ")
+        or "Europe/Moscow"
+    )
+    tz = ZoneInfo(tz_name)
     now = datetime.now(tz)
     now_iso = now.isoformat()
+
+    print(
+        f"[calendar] tz={tz_name} now={now_iso} "
+        f"chat_id={getattr(message.chat, 'id', None)} "
+        f"user_id={getattr(message.from_user, 'id', None)} "
+        f"text={(message.text or '')!r}",
+        flush=True,
+    )
 
     await register_seen_group(storage, message, now_iso)
 
@@ -29,17 +43,40 @@ async def handle_calendar_message(message, storage) -> bool:
 
     reminder = parse_reminder(text, now)
     if reminder:
+        remind_at_iso = reminder.remind_at.isoformat()
+
+        print(
+            f"[calendar] parsed reminder "
+            f"now={now_iso} remind_at={remind_at_iso} "
+            f"delta_sec={(reminder.remind_at - now).total_seconds():.0f} "
+            f"reminder_text={reminder.text!r}",
+            flush=True,
+        )
+
         storage.add_reminder(
             chat_id=int(message.chat.id),
             user_id=user_id,
             text=reminder.text,
-            remind_at=reminder.remind_at.isoformat(),
+            remind_at=remind_at_iso,
             created_at=now_iso,
         )
+
+        print(
+            f"[calendar] stored reminder "
+            f"chat_id={int(message.chat.id)} user_id={user_id} "
+            f"remind_at={remind_at_iso}",
+            flush=True,
+        )
+
         await message.answer(
             f"Ок, напомню {reminder.remind_at.strftime('%d.%m в %H:%M')}: {reminder.text}"
         )
         return True
+
+    print(
+        f"[calendar] not handled text={text!r} src={src!r} low={low!r}",
+        flush=True,
+    )
 
     if message.chat.type != "private":
         return False

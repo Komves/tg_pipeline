@@ -10,7 +10,11 @@ from .birthday import build_birthday_message
 
 
 async def calendar_loop(bot, storage) -> None:
-    tz_name = os.getenv("V_CALENDAR_TZ", "Europe/Moscow")
+    tz_name = (
+        os.getenv("V_RUNTIME_TZ")
+        or os.getenv("V_CALENDAR_TZ")
+        or "Europe/Moscow"
+    )
     check_sec = int(os.getenv("V_CALENDAR_CHECK_SEC", "60"))
     birthday_hour = int(os.getenv("V_BIRTHDAY_HOUR", "9"))
     birthday_jitter_min = int(os.getenv("V_BIRTHDAY_JITTER_MIN", "40"))
@@ -22,13 +26,34 @@ async def calendar_loop(bot, storage) -> None:
             now = datetime.now(tz)
             now_iso = now.isoformat()
 
-            for item in storage.due_reminders(now_iso):
+            due = storage.due_reminders(now_iso)
+
+            if due:
+                print(
+                    f"[calendar_loop] tz={tz_name} now={now_iso} due_count={len(due)}",
+                    flush=True,
+                )
+
+            for item in due:
                 try:
+                    print(
+                        f"[calendar_loop] sending reminder "
+                        f"id={item['id']} chat_id={item['chat_id']} "
+                        f"remind_at={item.get('remind_at')} text={item['text']!r}",
+                        flush=True,
+                    )
+
                     await bot.send_message(
                         int(item["chat_id"]),
                         f"Напоминаю: {item['text']}",
                     )
                     storage.mark_reminder_sent(int(item["id"]), now_iso)
+
+                    print(
+                        f"[calendar_loop] sent reminder id={item['id']} sent_at={now_iso}",
+                        flush=True,
+                    )
+
                 except Exception as e:
                     print(f"[calendar] reminder send failed: {type(e).__name__}: {e}", flush=True)
 
