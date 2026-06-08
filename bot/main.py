@@ -25,6 +25,7 @@ from meme_ranker import rank_memes
 import c_youtube_fetcher
 # deploy trigger
 RECENT_MSG_IDS = {}
+VOICE_TEXT_MSG_IDS = {}
 GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]
 GMAIL_POLL_INTERVAL_SEC = int(os.getenv("GMAIL_POLL_INTERVAL_SEC", "900"))
 GMAIL_LAST_MESSAGES = {}  # user_id -> list[dict]# last image per (chat_id, user_id) to support "опиши фото" without reply
@@ -4572,6 +4573,60 @@ async def _youtube_manual_search_for_message(message: Message, query: str) -> di
         "url": f"https://www.youtube.com/watch?v={vid}",
     }
 
+async def _handle_normalized_text_pipeline(message: Message, text: str, *, event_type: str = "text") -> None:
+    text = (text or "").strip()
+    if not text:
+        return
+
+    chat_id = int(message.chat.id)
+    user_id = int(message.from_user.id) if message.from_user else 0
+
+    if not _group_message_addresses_vesya(message, text):
+        return
+
+    addressed_body = _strip_vesya_prefix(text).strip()
+    addressed_body = re.sub(r"\s+", " ", addressed_body).strip(" ?!.,:;")
+
+    if not addressed_body:
+        await message.answer("Я тут. Что нужно?")
+        return
+
+    mode = _get_translator_mode(chat_id, user_id)
+    if mode:
+        translated = await asyncio.to_thread(
+            _translate_bidirectional,
+            text,
+            str(mode.get("lang_a") or ""),
+            str(mode.get("lang_b") or ""),
+        )
+
+        if translated:
+            await _answer_long(message, translated)
+        else:
+            await message.answer("Перевод не вышел.")
+        return
+
+    if _looks_like_calendar_view_request(text):
+        await _answer_long(
+            message,
+            _calendar_view_text(chat_id, user_id, text),
+        )
+        return
+
+    if await handle_calendar_message(message, CALENDAR_STORAGE):
+        return
+
+    if re.match(r"^напомни\b", addressed_body, flags=re.I):
+        await message.answer(
+            "Не поняла время напоминания. Формат: "
+            "«напомни сегодня в 13:00 ...», "
+            "«напомни завтра в 8 утра ...», "
+            "«напомни через 5 минут ...»."
+        )
+        return
+
+    await _handle_text_core(message, text, event_type=event_type)
+
 async def _handle_text_core(message: Message, dialog_text: str, *, event_type: str = "text") -> None:
     """
     Shared semantic core for normal text and transcribed voice.
@@ -4697,7 +4752,7 @@ async def _handle_text_core(message: Message, dialog_text: str, *, event_type: s
 
     if intent == "news":
         if reply:
-            await _send_reply_for_event(message, reply, event_type=event_type)
+            await _send_reply_for_event(message, reply, event_type=reply_event_type)
         await _run_news_for_message(message, hours=DEFAULT_NEWS_HOURS, limit=DEFAULT_NEWS_LIMIT)
         return
 
@@ -4707,7 +4762,7 @@ async def _handle_text_core(message: Message, dialog_text: str, *, event_type: s
         yt_query = _extract_manual_youtube_query(content_query)
         if yt_query:
             if reply:
-                await _send_reply_for_event(message, reply, event_type=event_type)
+                await _send_reply_for_event(message, reply, event_type=reply_event_type)
 
             try:
                 found = await _youtube_manual_search_for_message(message, yt_query)
@@ -4728,14 +4783,14 @@ async def _handle_text_core(message: Message, dialog_text: str, *, event_type: s
                 return
 
         if reply:
-            await _send_reply_for_event(message, reply, event_type=event_type)
+            await _send_reply_for_event(message, reply, event_type=reply_event_type)
 
         await _send_content(message, user_id=chat_id, ingest_hours_n=None)
         return
 
     if intent == "research_clarify":
         if reply:
-            await _send_reply_for_event(message, reply, event_type=event_type)
+            await _send_reply_for_event(message, reply, event_type=reply_event_type)
 
         q = (getattr(decision, "query", "") or "").strip()
         if not q:
@@ -4754,7 +4809,7 @@ async def _handle_text_core(message: Message, dialog_text: str, *, event_type: s
 
     if intent == "research_aggregate":
         if reply:
-            await _send_reply_for_event(message, reply, event_type=event_type)
+            await _send_reply_for_event(message, reply, event_type=reply_event_type)
 
         q = (getattr(decision, "query", "") or "").strip()
         if not q:
@@ -4765,7 +4820,7 @@ async def _handle_text_core(message: Message, dialog_text: str, *, event_type: s
 
     if intent == "research_count":
         if reply:
-            await _send_reply_for_event(message, reply, event_type=event_type)
+            await _send_reply_for_event(message, reply, event_type=reply_event_type)
 
         q = (getattr(decision, "query", "") or "").strip()
         if not q:
@@ -4776,7 +4831,7 @@ async def _handle_text_core(message: Message, dialog_text: str, *, event_type: s
 
     if intent == "web_search":
         if reply:
-            await _send_reply_for_event(message, reply, event_type=event_type)
+            await _send_reply_for_event(message, reply, event_type=reply_event_type)
 
         q = (getattr(decision, "query", "") or "").strip()
         if not q:
@@ -4805,7 +4860,7 @@ async def _handle_text_core(message: Message, dialog_text: str, *, event_type: s
         return
 
     if reply:
-        await _send_reply_for_event(message, reply, event_type=event_type)
+        await _send_reply_for_event(message, reply, event_type=reply_event_type)
 
 @dp.message(F.voice)
 async def on_voice(message: Message) -> None:
@@ -4827,28 +4882,11 @@ async def on_voice(message: Message) -> None:
 
         print(f"[voice] transcribed={text!r}", flush=True)
 
-        if not _group_message_addresses_vesya(message, text):
-            return
+        key = (int(message.chat.id), int(message.message_id))
+        VOICE_TEXT_MSG_IDS[key] = time.time()
 
-        chat_id = int(message.chat.id)
-        user_id = int(message.from_user.id) if message.from_user else 0
-
-        mode = _get_translator_mode(chat_id, user_id)
-        if mode:
-            translated = await asyncio.to_thread(
-                _translate_bidirectional,
-                text,
-                str(mode.get("lang_a") or ""),
-                str(mode.get("lang_b") or ""),
-            )
-
-            if translated:
-                await _answer_long(message, translated)
-            else:
-                await message.answer("Перевод не вышел.")
-            return
-
-        await _handle_text_core(message, text, event_type="voice")
+        text_message = message.model_copy(update={"text": text})
+        await vesya_handler(text_message)
 
     except Exception as e:
         print(f"[voice] handler failed: {type(e).__name__}: {e}", flush=True)
@@ -4877,8 +4915,15 @@ async def vesya_handler(message: Message) -> None:
         users.add(int(message.from_user.id))
         _save_private_users(users)
 
-    text = (message.text or "").strip()
+        text = (message.text or "").strip()
     orig_text = text
+
+    event_key = (int(message.chat.id), int(message.message_id))
+    incoming_event_type = "voice" if event_key in VOICE_TEXT_MSG_IDS else "text"
+
+    for kk, ts in list(VOICE_TEXT_MSG_IDS.items()):
+        if now - ts > 60:
+            VOICE_TEXT_MSG_IDS.pop(kk, None)
     print(
         "[TEXT_DEBUG] "
         f"chat_type={message.chat.type!r} "
@@ -5269,7 +5314,7 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
                     await _answer_long(message, dd.reply)
                     return
 
-            await _handle_text_core(message, text, event_type="text")
+            await _handle_text_core(message, text, event_type=incoming_event_type)
             return
 
         return
@@ -5862,13 +5907,13 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
     plain_dialog_followup = _looks_like_plain_dialog_followup(text)
 
     if is_reply_to_bot_content:
-        await _handle_text_core(message, f"Веся, {text}", event_type="text")
+        await _handle_text_core(message, f"Веся, {text}", event_type=incoming_event_type)
         return
 
     if plain_dialog_followup:
         dialog_text = text
 
-    await _handle_text_core(message, dialog_text, event_type="text")
+    await _handle_text_core(message, dialog_text, event_type=incoming_event_type)
     return
 
 # =====================
