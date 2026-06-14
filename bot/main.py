@@ -5251,8 +5251,17 @@ async def vesya_handler(message: Message) -> None:
                         flags=re.I,
                     ))
 
-                    if direct_info_question:
-                        pending_probe = {}
+                    current_without_name = _strip_vesya_prefix(text).strip()
+
+                    has_inline_object = bool(re.search(
+                        r"[:：]\s*\S.{20,}|"
+                        r"\n\s*\S.{20,}",
+                        current_without_name,
+                        flags=re.S,
+                    ))
+
+                    if direct_info_question or has_inline_object:
+                        pending_probe = {"wait_for_object": False}
                     else:
                         pending_probe = chatgpt_dialog.semantic_needs_next_object(
                             text,
