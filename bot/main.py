@@ -1861,6 +1861,30 @@ async def _try_universal_message_layer(
         or "Пойми и объясни это сообщение."
     )
 
+    verify_with_external_sources = bool(re.search(
+        r"\b(подтверди|проверь|проверить|фактчек|fact\s*check|достоверн|из\s+других\s+источников|по\s+другим\s+источникам)\b",
+        user_text,
+        flags=re.I,
+    ))
+
+    if verify_with_external_sources and object_text and not obj.get("photo_bytes") and not obj.get("document_text"):
+        fact_query = re.sub(
+            r"^\s*(веся|вися|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
+            "",
+            user_text,
+            flags=re.I,
+        ).strip()
+
+        fact_query = (
+            "Переведи на русский и проверь факты по независимым источникам. "
+            "Сначала дай перевод, потом укажи, какие утверждения подтверждены, какие не подтверждены. "
+            "Проверяемый текст: "
+            + object_text[:1800]
+        )
+
+        await _run_web_search_for_message(message, fact_query)
+        return True
+
     if obj.get("photo_bytes"):
         vision_prompt = (
             f"{instruction}\n\n"
