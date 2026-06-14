@@ -1738,12 +1738,217 @@ async def _build_message_object(message: Message, user_text: str) -> dict:
 
     return obj
 
-
 def _message_object_text(obj: dict) -> str:
     parts = obj.get("parts") or []
     if not isinstance(parts, list):
         return ""
     return "\n\n".join(str(x) for x in parts if str(x).strip()).strip()
+
+
+async def _run_translate_factcheck_for_message(message: Message, user_text: str, object_text: str) -> None:
+    """
+    Executor for semantic route translate_factcheck:
+    1) isolate checked text;
+    2) translate it;
+    3) extract factual claims;
+    4) search sources for claims;
+    5) answer with translation + verification.
+    """
+    raw_user = (user_text or "").strip()
+    raw_object = (object_text or "").strip()
+
+    check_text = _strip_vesya_prefix(raw_user)
+
+    if ":" in check_text:
+        tail = check_text.split(":", 1)[1].strip()
+        if len(tail) >= 20:
+            check_text = tail
+
+    if len(check_text) < 20:
+        check_text = re.sub(r"(?m)^--- .*? ---\s*", "", raw_object).strip()
+
+    if not check_text:
+        await message.answer("Текст для проверки не нашла.")
+        return
+
+    if not BRAVE_SEARCH_API_KEY:
+        await message.answer("Фактчек не подключён: нет BRAVE_SEARCH_API_KEY.")
+        return
+
+    if not (os.getenv("OPENAI_API_KEY") or "").strip():
+        await message.answer("Фактчек не подключён: нет OPENAI_API_KEY.")
+        return
+
+    try:
+        import requests
+        from openai import OpenAI
+
+        client = OpenAI()
+
+        translation = chatgpt_dialog.translate_to_ru(check_text)
+
+        claims_resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты claim-extractor.\n"
+                        "Извлеки из текста только проверяемые фактические утверждения.\n"
+                        "Не извлекай просьбы пользователя, команды 'переведи', 'проверь', служебные фразы.\n"
+                        "Для каждого claim дай короткий поисковый запрос без слов 'переведи' и 'проверь'.\n"
+                        "Верни строго JSON:\n"
+                        "{\"claims\":[{\"claim\":\"\",\"search_query\":\"\"}]}"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": check_text[:4000],
+                },
+            ],
+        )
+
+        raw_claims = (getattr(claims_resp, "output_text", "") or "").strip()
+        try:
+            m = re.search(r"\{.*\}", raw_claims, flags=re.S)
+            claims_data = json.loads(m.group(0) if m else raw_claims)
+        except Exception:
+            claims_data = {"claims": []}
+
+        claims = claims_data.get("claims") if isinstance(claims_data, dict) else []
+        if not isinstance(claims, list):
+            claims = []
+
+        claims = [
+            c for c in claims
+            if isinstance(c, dict)
+            and (c.get("claim") or "").strip()
+        ][:5]
+
+        if not claims:
+            await _answer_long(
+                message,
+                "Перевод:\n"
+                f"{translation}\n\n"
+                "Проверяемых фактических утверждений в тексте не выделила."
+            )
+            return
+
+        evidence = []
+
+        def _search(q: str) -> dict:
+            r = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers={
+                    "Accept": "application/json",
+                    "X-Subscription-Token": BRAVE_SEARCH_API_KEY,
+                },
+                params={
+                    "q": q,
+                    "count": 6,
+                    "search_lang": "ru",
+                    "country": "RU",
+                    "freshness": "pm",
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+            return r.json()
+
+        for c in claims:
+            q = (c.get("search_query") or c.get("claim") or "").strip()
+            q = re.sub(r"\b(переведи|проверь|подтверди|фактчек)\b", " ", q, flags=re.I)
+            q = re.sub(r"\s+", " ", q).strip()[:220]
+
+            if not q:
+                continue
+
+            try:
+                data = await asyncio.to_thread(_search, q)
+                results = (data.get("web") or {}).get("results") or []
+            except Exception as e:
+                print(f"[translate_factcheck] search failed: {type(e).__name__}: {e}", flush=True)
+                results = []
+
+            compact = []
+            seen = set()
+
+            for x in results[:6]:
+                url = (x.get("url") or "").strip()
+                if not url or url in seen:
+                    continue
+
+                seen.add(url)
+                item = {
+                    "title": (x.get("title") or "").strip(),
+                    "url": url,
+                    "description": (x.get("description") or "").strip(),
+                    "age": (x.get("age") or "").strip(),
+                    "page_age": (x.get("page_age") or "").strip(),
+                }
+
+                try:
+                    page_text = await asyncio.to_thread(_fetch_url_text, url)
+                    if page_text:
+                        item["page_text"] = page_text[:3500]
+                except Exception:
+                    pass
+
+                compact.append(item)
+
+            evidence.append({
+                "claim": c.get("claim"),
+                "search_query": q,
+                "results": compact,
+            })
+
+        verify_resp = client.responses.create(
+            model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты factcheck-executor Веси.\n"
+                        "Отвечай только по evidence. Не используй память и догадки.\n"
+                        "Нужно дать:\n"
+                        "1) перевод;\n"
+                        "2) список утверждений: подтверждено / не подтверждено / противоречит источникам;\n"
+                        "3) источники.\n"
+                        "Если источники не подтверждают claim — так и пиши, без вероятностного гадания.\n"
+                        "Не добавляй служебные строки вроде 'уверенность high/low'.\n"
+                        "Стиль: кратко, точно, без канцелярита."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Исходный текст:\n{check_text[:4000]}\n\n"
+                        f"Перевод:\n{translation[:4000]}\n\n"
+                        f"Evidence JSON:\n{json.dumps(evidence, ensure_ascii=False)[:45000]}"
+                    ),
+                },
+            ],
+        )
+
+        final_text = (getattr(verify_resp, "output_text", "") or "").strip()
+        if not final_text:
+            final_text = "Фактчек выполнился, но итоговый ответ не собрался."
+
+        _remember_topic(
+            int(message.chat.id),
+            int(message.from_user.id) if message.from_user else 0,
+            {
+                "type": "translate_factcheck",
+                "query": check_text[:500],
+                "summary": final_text[:1200],
+            },
+        )
+
+        await _answer_long(message, final_text)
+
+    except Exception as e:
+        print(f"[translate_factcheck] failed: {type(e).__name__}: {e}", flush=True)
+        await message.answer(f"фактчек сломался: {type(e).__name__}: {e}")
 
 
 def _should_use_universal_layer(message: Message, user_text: str, obj: dict) -> bool:
@@ -1852,6 +2057,10 @@ async def _try_universal_message_layer(
             await _answer_long(message, dd.reply)
             return True
 
+    if route == "translate_factcheck":
+        await _run_translate_factcheck_for_message(message, user_text, object_text)
+        return True
+
     if route != "object_analysis":
         return False
 
@@ -1861,30 +2070,7 @@ async def _try_universal_message_layer(
         or "Пойми и объясни это сообщение."
     )
 
-    verify_with_external_sources = bool(re.search(
-        r"\b(подтверди|проверь|проверить|фактчек|fact\s*check|достоверн|из\s+других\s+источников|по\s+другим\s+источникам)\b",
-        user_text,
-        flags=re.I,
-    ))
-
-    if verify_with_external_sources and object_text and not obj.get("photo_bytes") and not obj.get("document_text"):
-        fact_query = re.sub(
-            r"^\s*(веся|вися|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*",
-            "",
-            user_text,
-            flags=re.I,
-        ).strip()
-
-        fact_query = (
-            "Переведи на русский и проверь факты по независимым источникам. "
-            "Сначала дай перевод, потом укажи, какие утверждения подтверждены, какие не подтверждены. "
-            "Проверяемый текст: "
-            + object_text[:1800]
-        )
-
-        await _run_web_search_for_message(message, fact_query)
-        return True
-
+    
     if obj.get("photo_bytes"):
         vision_prompt = (
             f"{instruction}\n\n"
