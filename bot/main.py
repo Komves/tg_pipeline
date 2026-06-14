@@ -4930,14 +4930,15 @@ async def vesya_handler(message: Message) -> None:
 
     if not _chat_allowed(message):
         return
+
+    text = (message.text or "").strip()
+    orig_text = text
+
     # === SAVE PRIVATE USERS ===
     if message.chat.type == "private" and message.from_user:
         users = _load_private_users()
         users.add(int(message.from_user.id))
         _save_private_users(users)
-
-        text = (message.text or "").strip()
-    orig_text = text
 
     event_key = (int(message.chat.id), int(message.message_id))
     incoming_event_type = "voice" if event_key in VOICE_TEXT_MSG_IDS else "text"
