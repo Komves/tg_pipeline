@@ -179,6 +179,7 @@ TOPIC_TTL_SEC = int(os.getenv("V_TOPIC_TTL_SEC", str(7 * 24 * 3600)))
 TOPIC_PATH = DATA_DIR / "vesya_topics.json"
 
 TRANSLATOR_MODES_PATH = DATA_DIR / "vesya_translator_modes.json"
+SECRETARY_MODES_PATH = DATA_DIR / "vesya_secretary_modes.json"
 BLOCKED_USERS_PATH = DATA_DIR / "vesya_blocked_users.json"
 
 def _load_blocked_users() -> set[int]:
@@ -336,6 +337,51 @@ def _clear_translator_mode(chat_id: int, user_id: int) -> None:
     data = _load_translator_modes()
     data.pop(_translator_key(chat_id, user_id), None)
     _save_translator_modes(data)
+
+
+def _secretary_key(chat_id: int, user_id: int) -> str:
+    return f"{int(chat_id)}:{int(user_id)}"
+
+
+def _load_secretary_modes() -> dict:
+    try:
+        if SECRETARY_MODES_PATH.exists():
+            data = json.loads(SECRETARY_MODES_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_secretary_modes(data: dict) -> None:
+    try:
+        tmp = SECRETARY_MODES_PATH.with_suffix(SECRETARY_MODES_PATH.suffix + ".tmp")
+        tmp.write_text(json.dumps(data or {}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(SECRETARY_MODES_PATH)
+    except Exception:
+        pass
+
+
+def _is_secretary_mode_active(chat_id: int, user_id: int) -> bool:
+    data = _load_secretary_modes()
+    mode = data.get(_secretary_key(chat_id, user_id))
+    return bool(isinstance(mode, dict) and mode.get("enabled"))
+
+
+def _set_secretary_mode(chat_id: int, user_id: int) -> None:
+    data = _load_secretary_modes()
+    data[_secretary_key(chat_id, user_id)] = {
+        "enabled": True,
+        "created_at": time.time(),
+    }
+    _save_secretary_modes(data)
+
+
+def _clear_secretary_mode(chat_id: int, user_id: int) -> None:
+    data = _load_secretary_modes()
+    data.pop(_secretary_key(chat_id, user_id), None)
+    _save_secretary_modes(data)
 
 
 def _parse_translator_on_command(text: str) -> tuple[str, str] | None:
@@ -4822,6 +4868,35 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
         await message.answer("Я тут. Что нужно?")
         return
 
+    clean_action = addressed_body.lower()
+    clean_action = re.sub(r"\s+", " ", clean_action).strip(" ?!.,:;")
+
+    if re.search(r"^(?:включи|активируй|запусти)\s+(?:режим\s+)?секретар[ьяь]$", clean_action, flags=re.I):
+        _set_secretary_mode(chat_id, user_id)
+        await message.answer(
+            "Секретарь включён.\n\n"
+            "Теперь можно работать с почтой, клиентами, актами и отчетами.\n"
+            "Для выхода: Веся выключи секретаря."
+        )
+        return
+
+    if re.search(r"^(?:выключи|отключи|останови|заверши)\s+(?:режим\s+)?секретар[ьяь]$", clean_action, flags=re.I):
+        _clear_secretary_mode(chat_id, user_id)
+        await message.answer("Секретарь выключен. Возвращаюсь в обычный режим.")
+        return
+
+    if _is_secretary_mode_active(chat_id, user_id):
+        try:
+            from vesya_tools.secretary.handler import handle_secretary_message
+
+            if await handle_secretary_message(message, addressed_body):
+                return
+
+        except Exception as e:
+            print(f"[secretary] failed: {type(e).__name__}: {e}", flush=True)
+            await message.answer(f"Секретарь сломался: {type(e).__name__}: {e}")
+            return
+
     mode = _get_translator_mode(chat_id, user_id)
     if mode:
         translated = await asyncio.to_thread(
@@ -5272,14 +5347,31 @@ async def vesya_handler(message: Message) -> None:
             message,
             (
                 "Функции:\n\n"
-                "1. Переводчик — `Веся включи переводчика с русского на английский`\n"
-                "2. Напоминания — `Веся напомни завтра в 9 ...`\n"
-                "3. Новости — `Веся новости`\n"
-                "4. Поиск YouTube — `Веся дай что-нибудь из Offspring`\n"
-                "5. Поиск фото/информации — `Веся дай фото Козельска`\n"
-                "6. Аналитик — `Веся включи аналитика`\n"
-                "7. Документы/фото/скрины — пришли файл или фото с вопросом\n"
-                "8. Обычный диалог — просто спроси"
+                "1. Переводчик\n"
+                "   Включить: Веся включи переводчика с русского на английский\n"
+                "   Выключить: Веся выключи переводчика\n\n"
+
+                "2. Напоминания\n"
+                "   Пример: Веся напомни завтра в 9 утра позвонить Иванову\n\n"
+
+                "3. Новости\n"
+                "   Пример: Веся новости\n\n"
+
+                "4. Поиск YouTube\n"
+                "   Пример: Веся дай что-нибудь из Offspring\n\n"
+
+                "5. Поиск фото и информации\n"
+                "   Пример: Веся дай фото Козельска\n\n"
+
+                "6. Аналитик\n"
+                "   Включить: Веся включи аналитика\n"
+                "   Выключить: Веся выключи аналитика\n\n"
+
+                "7. Документы и изображения\n"
+                "   Просто пришли PDF, Word, Excel, фото или скриншот и задай вопрос\n\n"
+
+                "8. Обычный диалог\n"
+                "   Просто общайся обычным языком"
             ),
         )
         return
