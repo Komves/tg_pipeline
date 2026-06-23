@@ -16,3 +16,4 @@ elevenlabs>=1.0.0
 httpx[socks]
 socksio
 openpyxl
+python-docx
