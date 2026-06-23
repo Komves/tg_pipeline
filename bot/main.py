@@ -4931,10 +4931,12 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
         )
         return
 
-    clean_action = addressed_body.lower()
-    clean_action = re.sub(r"\s+", " ", clean_action).strip(" ?!.,:;")
+    clean_action_raw = addressed_body.lower()
+    clean_action = re.sub(r"\s+", " ", clean_action_raw)
 
-    if re.search(r"^(?:включи|активируй|запусти)\s+(?:режим\s+)?секретар[ьяь]$", clean_action, flags=re.I):
+    clean_action_stripped = clean_action.strip(" ?!.,:;")
+
+    if re.search(r"(включи|активируй|запусти).*(секретар)", clean_action, flags=re.I):
         _set_secretary_mode(chat_id, user_id)
         await message.answer(
             "Секретарь включён.\n\n"
@@ -4943,7 +4945,7 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
         )
         return
 
-    if re.search(r"^(?:выключи|отключи|останови|заверши)\s+(?:режим\s+)?секретар[ьяь]$", clean_action, flags=re.I):
+    if re.search(r"(выключи|отключи|останови|заверши).*(секретар)", clean_action, flags=re.I):
         _clear_secretary_mode(chat_id, user_id)
         await message.answer("Секретарь выключен. Возвращаюсь в обычный режим.")
         return
