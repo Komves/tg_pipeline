@@ -220,7 +220,7 @@ def _make_docx(results):
 # HANDLER
 # =========================
 
-async def handle_secretary_message(message, text: str) -> bool:
+async def handle_secretary_message(message, text: str, object_text=None) -> bool:
 
     if not isinstance(text, str):
         text = str(text)
