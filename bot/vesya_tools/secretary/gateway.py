@@ -12,7 +12,11 @@ async def handle_secretary_gateway(message, text, *, object_text=None):
             text,
             object_text=object_text
         )
+        if not isinstance(result, str) and result is not None:
+            result = str(result)
+
         return result
+        
 
     except Exception as e:
         print(f"[secretary_gateway] failed: {type(e).__name__}: {e}", flush=True)
