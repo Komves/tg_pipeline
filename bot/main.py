@@ -4918,6 +4918,15 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
     addressed_body = _strip_vesya_prefix(text).strip()
     addressed_body = re.sub(r"\s+", " ", addressed_body).strip(" ?!.,:;")
 
+    if _is_secretary_mode_active(chat_id, user_id):
+        result = await handle_secretary_gateway(message, addressed_body)
+
+        if result:
+            return
+
+        return
+
+
     if not addressed_body:
         await message.answer("Я тут. Что нужно?")
         return
