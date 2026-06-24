@@ -2099,8 +2099,7 @@ async def _try_universal_message_layer(
         route_topic = None
 
     semantic_ctx = chatgpt_dialog.semantic_context_route(
-        user_text,
-        object_text=object_text,
+        user_text,        
         topic=route_topic,
     )
 
