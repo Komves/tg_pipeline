@@ -222,7 +222,10 @@ def _make_docx(results):
 
 async def handle_secretary_message(message, text: str) -> bool:
 
-    raw = (text or "").strip().lower()
+    if not isinstance(text, str):
+        text = str(text)
+
+    raw = text.strip().lower()
     t = raw
 
     chat_id = message.chat.id

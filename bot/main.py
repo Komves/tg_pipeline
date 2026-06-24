@@ -5310,7 +5310,8 @@ async def on_voice(message: Message) -> None:
         await message.answer(f"голос сломался: {type(e).__name__}: {e}")
 
 @dp.message(F.text)
-async def vesya_handler(message: Message) -> None:
+async def vesya_handler(message: Message) -> None:\
+    print("[TYPE DEBUG]", type(message.text), message.text)
 
     trace("ENTER_HANDLER", message)
     # =========================
