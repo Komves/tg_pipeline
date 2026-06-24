@@ -9,8 +9,7 @@ async def handle_secretary_gateway(message, text, *, object_text=None):
     try:
         result = await handle_secretary_message(
             message,
-            text,
-            object_text=object_text,
+            text,            
         )
         return result
 
