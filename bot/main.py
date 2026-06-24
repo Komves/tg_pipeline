@@ -2029,6 +2029,21 @@ async def _try_universal_message_layer(
 
     obj = await _build_message_object(message, user_text)
 
+    chat_id = int(message.chat.id)
+    user_id = int(message.from_user.id) if message.from_user else 0
+
+    if _is_secretary_mode_active(chat_id, user_id):
+        from vesya_tools.secretary.handler import handle_secretary_message
+
+        try:
+            result = await handle_secretary_message(message, user_text, object_text)
+            if result:
+                await _answer_long(message, result)
+                return True
+        except Exception as e:
+            print(f"[secretary] failed: {type(e).__name__}: {e}", flush=True)
+            return True
+
     pending_object = None
     if obj.get("has_external_object"):
         pending_object = _pop_pending_message_object_request(chat_id, user_id)
@@ -4931,12 +4946,10 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
         )
         return
 
-    clean_action_raw = addressed_body.lower()
-    clean_action = re.sub(r"\s+", " ", clean_action_raw)
+    clean_action = addressed_body.lower()
+    clean_action = re.sub(r"\s+", " ", clean_action).strip(" ?!.,:;")
 
-    clean_action_stripped = clean_action.strip(" ?!.,:;")
-
-    if re.search(r"(включи|активируй|запусти).*(секретар)", clean_action, flags=re.I):
+    if re.search(r"^(?:включи|активируй|запусти)\s+(?:режим\s+)?секретар[ьяь]$", clean_action, flags=re.I):
         _set_secretary_mode(chat_id, user_id)
         await message.answer(
             "Секретарь включён.\n\n"
@@ -4945,7 +4958,7 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
         )
         return
 
-    if re.search(r"(выключи|отключи|останови|заверши).*(секретар)", clean_action, flags=re.I):
+    if re.search(r"^(?:выключи|отключи|останови|заверши)\s+(?:режим\s+)?секретар[ьяь]$", clean_action, flags=re.I):
         _clear_secretary_mode(chat_id, user_id)
         await message.answer("Секретарь выключен. Возвращаюсь в обычный режим.")
         return
@@ -5284,6 +5297,18 @@ async def vesya_handler(message: Message) -> None:
     text = (message.text or "").strip()
     orig_text = text
 
+    chat_id = int(message.chat.id)
+    user_id = int(message.from_user.id) if message.from_user else 0
+
+    # 🔥 SECRETARY EARLY ROUTE (ВАЖНО)
+    if _is_secretary_mode_active(chat_id, user_id):
+        from vesya_tools.secretary.handler import handle_secretary_message
+
+        result = await handle_secretary_message(message, text)
+
+        if result:
+            return
+
     # === SAVE PRIVATE USERS ===
     if message.chat.type == "private" and message.from_user:
         users = _load_private_users()
@@ -5335,8 +5360,9 @@ async def vesya_handler(message: Message) -> None:
     # ЖЁСТКИЙ GROUP GATE:
     # в группе Веся не влезает в чужие разговоры.
     # Отвечает только на /команду, прямое обращение или reply на её сообщение.
-    if not _group_message_addresses_vesya(message, text):
-        return
+    if message.chat.type in ("group", "supergroup"):
+        if not _group_message_addresses_vesya(message, text):
+            return
 
     addressed_body = _strip_vesya_prefix(text).strip()
     addressed_body = re.sub(r"\s+", " ", addressed_body).strip(" ?!.,:;")
@@ -6381,7 +6407,7 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
     if plain_dialog_followup:
         dialog_text = text
 
-    await _handle_normalized_text_pipeline(message, dialog_text, event_type=incoming_event_type)
+    await _handle_text_core(message, dialog_text, event_type=incoming_event_type)
     return
 
 # =====================
