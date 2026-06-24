@@ -4919,10 +4919,10 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
     addressed_body = re.sub(r"\s+", " ", addressed_body).strip(" ?!.,:;")
 
     if _is_secretary_mode_active(chat_id, user_id):
-        result = await handle_secretary_gateway(message, addressed_body)
+        result = await handle_secretary_gateway(message, text)
 
-        if result:
-            return
+        if result is not None:
+            return result
 
         return
 
