@@ -2072,8 +2072,7 @@ async def _try_universal_message_layer(
 
             result = await handle_secretary_gateway(
                 message,
-                user_text,
-                object_text=object_text,
+                user_text,                
             )
 
             if result:
