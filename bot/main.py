@@ -23,6 +23,25 @@ from ingest_runner import ingest_hours
 from meme_ranker import rank_memes
 
 import c_youtube_fetcher
+
+# =========================
+# 🧭 VESYA ROUTE TRACE
+# =========================
+def trace(step: str, message=None, extra=None):
+    try:
+        text = getattr(message, "text", None) if message else None
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None) if chat else None
+
+        print(
+            f"[TRACE] {step} | chat={chat_id} | text={text!r} | extra={extra}",
+            flush=True
+        )
+    except Exception:
+        print(f"[TRACE] {step}", flush=True)
+
+
+
 # deploy trigger
 RECENT_MSG_IDS = {}
 VOICE_TEXT_MSG_IDS = {}
@@ -2032,17 +2051,6 @@ async def _try_universal_message_layer(
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
-    if _is_secretary_mode_active(chat_id, user_id):
-        from vesya_tools.secretary.handler import handle_secretary_message
-
-        try:
-            result = await handle_secretary_message(message, user_text, object_text)
-            if result:
-                await _answer_long(message, result)
-                return True
-        except Exception as e:
-            print(f"[secretary] failed: {type(e).__name__}: {e}", flush=True)
-            return True
 
     pending_object = None
     if obj.get("has_external_object"):
@@ -2055,6 +2063,28 @@ async def _try_universal_message_layer(
             obj["user_text"] = user_text
             obj["has_pending_object_request"] = True
     object_text = _message_object_text(obj)
+
+    # SECRETARY MODE (FIXED GATE)
+
+    if _is_secretary_mode_active(chat_id, user_id):
+        try:
+            from vesya_tools.secretary.gateway import handle_secretary_gateway
+
+            result = await handle_secretary_gateway(
+                message,
+                user_text,
+                object_text=object_text,
+            )
+
+            if result:
+                await _answer_long(message, result)
+
+            return True
+
+        except Exception as e:
+            print(f"[secretary] failed: {type(e).__name__}: {e}", flush=True)
+            return True
+
 
     if not _should_use_universal_layer(message, user_text, obj):
         return False
@@ -2103,6 +2133,17 @@ async def _try_universal_message_layer(
             flags=re.I,
         ).strip()
 
+        try:
+            result = await handle_calendar_message(message, calendar_text)
+
+            if result:
+                await _answer_long(message, result)
+
+            return True
+
+        except Exception as e:
+            print(f"[calendar] failed: {type(e).__name__}: {e}", flush=True)
+            return True
         calendar_message = message.model_copy(update={"text": calendar_text})
 
         if await handle_calendar_message(calendar_message, CALENDAR_STORAGE):
@@ -4949,7 +4990,12 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
     clean_action = addressed_body.lower()
     clean_action = re.sub(r"\s+", " ", clean_action).strip(" ?!.,:;")
 
+    print("[DEBUG SECRETARY CHECK]:", clean_action)
+
+    trace("SECRETARY_CHECK", message, clean_action)
+
     if re.search(r"^(?:включи|активируй|запусти)\s+(?:режим\s+)?секретар[ьяь]$", clean_action, flags=re.I):
+        trace("SECRETARY_TRIGGERED", message)
         _set_secretary_mode(chat_id, user_id)
         await message.answer(
             "Секретарь включён.\n\n"
@@ -4963,17 +5009,6 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
         await message.answer("Секретарь выключен. Возвращаюсь в обычный режим.")
         return
 
-    if _is_secretary_mode_active(chat_id, user_id):
-        try:
-            from vesya_tools.secretary.handler import handle_secretary_message
-
-            if await handle_secretary_message(message, addressed_body):
-                return
-
-        except Exception as e:
-            print(f"[secretary] failed: {type(e).__name__}: {e}", flush=True)
-            await message.answer(f"Секретарь сломался: {type(e).__name__}: {e}")
-            return
 
     mode = _get_translator_mode(chat_id, user_id)
     if mode:
@@ -5278,6 +5313,16 @@ async def on_voice(message: Message) -> None:
 
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
+
+    trace("ENTER_HANDLER", message)
+    # =========================
+    # 🧪 FULL DEBUG LAYER (SAFE)
+    # =========================
+    print("\n[DEBUG RAW MESSAGE]")
+    print("text:", message.text)
+    print("chat_id:", message.chat.id)
+    print("user_id:", message.from_user.id if message.from_user else None)
+    print("chat_type:", message.chat.type)
     print(f"[DEBUG] msg_id={message.message_id} chat_id={message.chat.id} from={message.from_user.id if message.from_user else 0}", flush=True)
 
     now = time.time()
@@ -5295,19 +5340,12 @@ async def vesya_handler(message: Message) -> None:
         return
 
     text = (message.text or "").strip()
+    print("[DEBUG NORMALIZED TEXT]:", text)
     orig_text = text
 
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
-    # 🔥 SECRETARY EARLY ROUTE (ВАЖНО)
-    if _is_secretary_mode_active(chat_id, user_id):
-        from vesya_tools.secretary.handler import handle_secretary_message
-
-        result = await handle_secretary_message(message, text)
-
-        if result:
-            return
 
     # === SAVE PRIVATE USERS ===
     if message.chat.type == "private" and message.from_user:
@@ -5342,6 +5380,7 @@ async def vesya_handler(message: Message) -> None:
     user_id = int(message.from_user.id) if message.from_user else 0
 
     if message.chat.type in ("group", "supergroup"):
+        trace("GROUP_GATE_CHECK", message)
         addressed_to_vesya = _group_message_addresses_vesya(message, text)
 
         mute_seconds = _parse_group_mute_seconds(text)
@@ -5354,7 +5393,9 @@ async def vesya_handler(message: Message) -> None:
             if addressed_to_vesya and _is_group_unmute_command(text):
                 _clear_group_mute(chat_id)
                 await message.answer("Пауза снята.")
+                trace("GROUP_GATE_BLOCKED_MUTED", message)
                 return
+            trace("GROUP_GATE_EXIT", message)
             return
 
     # ЖЁСТКИЙ GROUP GATE:
