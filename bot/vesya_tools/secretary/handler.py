@@ -637,13 +637,27 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         ]
 
         cache["selected"] = selected_emails
-        cache["stage"] = "ready_to_analyze"
+        cache["stage"] = "analyzing"
 
         await message.answer(
             "Адресаты выбраны.\n\n"
-            "Напиши: анализируй\n"
-            "После этого я разберу переписку и соберу таблицу акта."
+            "Запускаю анализ переписки и собираю таблицу акта."
         )
+
+        tasks = _gpt_make_tasks(
+            cache["selected"],
+            cache.get("project", ""),
+            cache.get("period_text", "")
+        )
+
+        cache["tasks"] = tasks
+
+        file_path = _make_docx(tasks)
+
+        cache["stage"] = "done"
+        cache["doc"] = file_path
+
+        await message.answer(f"Готово. Акт сформирован: {file_path}")
         return True
 
     # -----------------------------
