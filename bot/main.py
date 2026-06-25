@@ -6460,7 +6460,7 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
     if plain_dialog_followup:
         dialog_text = text
 
-    await _handle_text_core(message, dialog_text, event_type=incoming_event_type)
+    await _handle_normalized_text_pipeline(message, dialog_text, event_type=incoming_event_type)
     return
 
 # =====================
