@@ -5760,7 +5760,13 @@ async def vesya_handler(message: Message) -> None:
         if message.chat.type == "private" or chatgpt_dialog.persona.is_addressed(text):
 
             try:
-                if is_analytics_active(chat_id, user_id):
+                secretary_direct_command = bool(re.search(
+                    r"^\s*(?:веся|веська|веслава|vesya|сергеевна)?\s*[,.:;!\-]?\s*составь\s+акт\s+по\s+.+$",
+                    text,
+                    flags=re.I,
+                ))
+
+                if is_analytics_active(chat_id, user_id) or secretary_direct_command:
                     pending_probe = {"wait_for_object": False}
                 else:
                     direct_info_question = bool(re.search(

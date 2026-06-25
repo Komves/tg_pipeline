@@ -472,6 +472,17 @@ BODY: {e.get('body','')[:1200]}
 async def handle_secretary_callback(cb) -> bool:
     data = cb.data or ""
 
+    if data == "sec:none":
+        await cb.answer()
+        return True
+
+    chat_id = cb.message.chat.id
+    cache = SECRETARY_CACHE.get(chat_id)
+
+    if cache is None:
+        await cb.answer("Сценарий секретаря не запущен")
+        return True
+
     if data.startswith("sec:status:"):
         parts = data.split(":")
         idx = int(parts[2])
@@ -520,17 +531,6 @@ async def handle_secretary_callback(cb) -> bool:
         await cb.answer()
         return True
 
-    if data == "sec:none":
-
-        await cb.answer()
-        return True
-
-    chat_id = cb.message.chat.id
-    cache = SECRETARY_CACHE.get(chat_id)
-
-    if cache is None:
-        await cb.answer("Сценарий секретаря не запущен")
-        return True
 
     if data.startswith("sec:cal:"):
         parts = data.split(":")
