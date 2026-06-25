@@ -4,10 +4,16 @@ import re
 import os
 import imaplib
 import email
+import tempfile
+import base64
+import quopri
+import json
+from pathlib import Path
 from email.header import decode_header
 from datetime import datetime, timedelta
 import openai
 from docx import Document
+from openpyxl import load_workbook
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 SECRETARY_CACHE = {}
@@ -121,6 +127,259 @@ def _fetch_mailru_headers(limit=50):
     return results
 
 
+def _imap_unquote(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+
+    value = str(value).strip()
+
+    if value.startswith('"') and value.endswith('"'):
+        value = value[1:-1]
+
+    return value
+
+
+def _decode_transfer_payload(raw_bytes, encoding):
+    encoding = (encoding or "").lower().strip()
+
+    if not raw_bytes:
+        return b""
+
+    if encoding == "base64":
+        return base64.b64decode(raw_bytes)
+
+    if encoding in ("quoted-printable", "quotedprintable"):
+        return quopri.decodestring(raw_bytes)
+
+    return raw_bytes
+
+
+def _extract_fetch_bytes(msg_data):
+    for item in msg_data or []:
+        if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
+            return bytes(item[1])
+    return b""
+
+
+def _tokenize_bodystructure(raw):
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="ignore")
+
+    tokens = []
+    i = 0
+
+    while i < len(raw):
+        c = raw[i]
+
+        if c.isspace():
+            i += 1
+            continue
+
+        if c in "()":
+            tokens.append(c)
+            i += 1
+            continue
+
+        if c == '"':
+            i += 1
+            buf = ""
+
+            while i < len(raw):
+                if raw[i] == "\\" and i + 1 < len(raw):
+                    buf += raw[i + 1]
+                    i += 2
+                    continue
+
+                if raw[i] == '"':
+                    i += 1
+                    break
+
+                buf += raw[i]
+                i += 1
+
+            tokens.append(buf)
+            continue
+
+        j = i
+        while j < len(raw) and not raw[j].isspace() and raw[j] not in "()":
+            j += 1
+
+        tokens.append(raw[i:j])
+        i = j
+
+    return tokens
+
+
+def _parse_bodystructure_tokens(tokens):
+    pos = 0
+
+    def parse():
+        nonlocal pos
+
+        if pos >= len(tokens):
+            return None
+
+        token = tokens[pos]
+
+        if token == "(":
+            pos += 1
+            arr = []
+
+            while pos < len(tokens) and tokens[pos] != ")":
+                arr.append(parse())
+
+            if pos < len(tokens) and tokens[pos] == ")":
+                pos += 1
+
+            return arr
+
+        pos += 1
+        return token
+
+    return parse()
+
+
+def _find_param_value(params, name):
+    if not isinstance(params, list):
+        return ""
+
+    name = (name or "").lower()
+
+    for i in range(0, len(params) - 1, 2):
+        if str(params[i]).lower() == name:
+            return _decode_mime(_imap_unquote(params[i + 1]))
+
+    return ""
+
+
+def _walk_bodystructure(node, prefix=""):
+    parts = []
+
+    if not isinstance(node, list) or not node:
+        return parts
+
+    if isinstance(node[0], list):
+        child_index = 1
+
+        for child in node:
+            if isinstance(child, list):
+                part_no = f"{prefix}.{child_index}" if prefix else str(child_index)
+                parts.extend(_walk_bodystructure(child, part_no))
+                child_index += 1
+
+        return parts
+
+    if len(node) < 7:
+        return parts
+
+    maintype = str(node[0] or "").lower()
+    subtype = str(node[1] or "").lower()
+    params = node[2] if len(node) > 2 else []
+    encoding = str(node[5] or "").lower() if len(node) > 5 else ""
+    size = node[6] if len(node) > 6 else ""
+
+    disposition = None
+    disposition_params = []
+
+    for item in node[7:]:
+        if isinstance(item, list) and item:
+            first = str(item[0] or "").lower()
+            if first in ("attachment", "inline"):
+                disposition = first
+                if len(item) > 1 and isinstance(item[1], list):
+                    disposition_params = item[1]
+
+    filename = (
+        _find_param_value(disposition_params, "filename")
+        or _find_param_value(params, "name")
+    )
+
+    parts.append({
+        "part_no": prefix or "1",
+        "maintype": maintype,
+        "subtype": subtype,
+        "content_type": f"{maintype}/{subtype}",
+        "encoding": encoding,
+        "size": str(size),
+        "disposition": disposition or "",
+        "filename": filename or "",
+    })
+
+    return parts
+
+
+def _fetch_bodystructure(imap, imap_id):
+    status, data = imap.fetch(str(imap_id).encode(), "(BODYSTRUCTURE)")
+
+    if status != "OK" or not data:
+        return []
+
+    raw = ""
+
+    for item in data:
+        if isinstance(item, tuple) and item:
+            raw = item[0].decode("utf-8", errors="ignore")
+            break
+
+    marker = "BODYSTRUCTURE "
+    if marker in raw:
+        raw = raw.split(marker, 1)[1].strip()
+
+    if raw.endswith(")"):
+        raw = raw[:-1].strip()
+
+    tokens = _tokenize_bodystructure(raw)
+    tree = _parse_bodystructure_tokens(tokens)
+
+    return _walk_bodystructure(tree)
+
+
+def _read_excel_preview(path, max_rows=20, max_cols=8):
+    out = []
+
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+
+        for ws in wb.worksheets[:3]:
+            out.append(f"Лист: {ws.title}")
+
+            rows_added = 0
+
+            for row in ws.iter_rows(max_row=max_rows, max_col=max_cols, values_only=True):
+                values = ["" if v is None else str(v) for v in row]
+
+                if any(v.strip() for v in values):
+                    out.append(" | ".join(values))
+                    rows_added += 1
+
+                if rows_added >= max_rows:
+                    break
+
+            out.append("")
+
+        wb.close()
+
+    except Exception as e:
+        out.append(f"Excel не удалось прочитать: {type(e).__name__}: {e}")
+
+    return "\n".join(out).strip()[:5000]
+
+
+def _fetch_part_bytes(imap, imap_id, part_no):
+    status, data = imap.fetch(
+        str(imap_id).encode(),
+        f"(BODY.PEEK[{part_no}])"
+    )
+
+    if status != "OK":
+        return b""
+
+    return _extract_fetch_bytes(data)
+
+
 def _fetch_mailru_full_messages(headers, max_messages=50):
     imap = _imap_connect()
     if imap is None:
@@ -139,45 +398,77 @@ def _fetch_mailru_full_messages(headers, max_messages=50):
             try:
                 imap.select(folder)
 
-                status, msg_data = imap.fetch(str(imap_id).encode(), "(RFC822)")
-                if status != "OK" or not msg_data or not msg_data[0]:
-                    continue
-
-                msg = email.message_from_bytes(msg_data[0][1])
+                parts = _fetch_bodystructure(imap, imap_id)
 
                 attachments = []
                 body = ""
+                excel_texts = []
 
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        filename = part.get_filename()
+                for part in parts:
+                    content_type = part.get("content_type", "")
+                    filename = part.get("filename", "")
+                    part_no = part.get("part_no", "")
+                    encoding = part.get("encoding", "")
 
-                        if filename:
-                            attachments.append({
-                                "filename": _decode_mime(filename),
-                                "content_type": part.get_content_type(),
-                            })
+                    if content_type == "text/plain" and not body and part_no:
+                        raw_part = _fetch_part_bytes(imap, imap_id, part_no)
+                        decoded = _decode_transfer_payload(raw_part, encoding)
+                        body = decoded.decode("utf-8", errors="ignore")[:4000]
 
-                        if part.get_content_type() == "text/plain" and not body:
+                    if filename:
+                        item = {
+                            "filename": filename,
+                            "content_type": content_type,
+                            "size": part.get("size", ""),
+                        }
+
+                        lower_name = filename.lower()
+
+                        if lower_name.endswith(".xlsx") and part_no:
+                            raw_part = _fetch_part_bytes(imap, imap_id, part_no)
+                            decoded = _decode_transfer_payload(raw_part, encoding)
+
+                            safe_name = re.sub(r"[^a-zA-Zа-яА-Я0-9_.-]+", "_", filename)
+                            tmp_path = Path(tempfile.gettempdir()) / f"sec_{imap_id}_{safe_name}"
+
+                            with open(tmp_path, "wb") as f:
+                                f.write(decoded)
+
+                            preview = _read_excel_preview(tmp_path)
+
+                            item["excel_preview"] = preview
+                            excel_texts.append(
+                                f"Файл: {filename}\n{preview}"
+                            )
+
                             try:
-                                payload = part.get_payload(decode=True)
-                                if payload:
-                                    body = payload.decode(errors="ignore")
+                                tmp_path.unlink()
                             except Exception:
                                 pass
-                else:
-                    try:
-                        payload = msg.get_payload(decode=True)
-                        if payload:
-                            body = payload.decode(errors="ignore")
-                    except Exception:
-                        body = ""
+
+                        elif lower_name.endswith(".xls"):
+                            item["excel_preview"] = "Формат .xls пока не читаю без xlrd. В акт пойдет имя вложения."
+
+                        attachments.append(item)
 
                 item = dict(h)
                 item["attachments"] = attachments
                 item["body"] = body[:4000]
 
+                if excel_texts:
+                    item["body"] = (
+                        item["body"]
+                        + "\n\nEXCEL PREVIEW:\n"
+                        + "\n\n".join(excel_texts)
+                    )[:9000]
+
                 results.append(item)
+
+                print(
+                    f"[secretary] full loaded folder={folder} id={imap_id} "
+                    f"attachments={len(attachments)} body_chars={len(item['body'])}",
+                    flush=True
+                )
 
             except Exception as e:
                 print(f"[secretary] full fetch failed folder={folder} id={imap_id}: {type(e).__name__}: {e}", flush=True)
@@ -464,7 +755,13 @@ DATE: {e.get('date')}
 FROM: {e.get('from')}
 TO: {e.get('to')}
 SUBJECT: {e.get('subject')}
-ATTACHMENTS: {", ".join([a.get("filename", "") for a in (e.get("attachments") or [])])}
+ATTACHMENTS: {", ".join([
+    (
+        a.get("filename", "")
+        + (f" ({a.get('content_type', '')}, size={a.get('size', '')})" if a.get("size") else "")
+    )
+    for a in (e.get("attachments") or [])
+])}
 BODY: {e.get('body','')[:2000]}
 ----------------------
 """
