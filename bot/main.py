@@ -4999,6 +4999,7 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
     if re.search(r"^(?:включи|активируй|запусти)\s+(?:режим\s+)?секретар[ьяь]$", clean_action, flags=re.I):
         trace("SECRETARY_TRIGGERED", message)
         _set_secretary_mode(chat_id, user_id)
+        print("[SECRETARY MODE SET CHECK]:", chat_id, user_id, _is_secretary_mode_active(chat_id, user_id), flush=True)
         await message.answer(
             "Секретарь включён.\n\n"
             "Теперь можно работать с почтой, клиентами, актами и отчетами.\n"
@@ -5011,7 +5012,10 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
         await message.answer("Секретарь выключен. Возвращаюсь в обычный режим.")
         return
 
+    print("[SECRETARY MODE ACTIVE CHECK]:", chat_id, user_id, _is_secretary_mode_active(chat_id, user_id), flush=True)
+
     if _is_secretary_mode_active(chat_id, user_id):
+        print("[SECRETARY GATEWAY CALL]", flush=True)
         result = await handle_secretary_gateway(message, text)
 
         if result is not None:
