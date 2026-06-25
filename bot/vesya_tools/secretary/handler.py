@@ -8,7 +8,7 @@ from email.header import decode_header
 from datetime import datetime, timedelta
 import openai
 from docx import Document
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 SECRETARY_CACHE = {}
 
@@ -202,34 +202,94 @@ BODY: {e.get('body','')[:800]}
 # DOCX ENGINE
 # =========================
 
-def _period_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Текущий месяц")],
-            [KeyboardButton(text="Прошлый месяц")],
-            [KeyboardButton(text="Ввести период вручную")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
+MONTH_NAMES_RU = {
+    1: "Январь",
+    2: "Февраль",
+    3: "Март",
+    4: "Апрель",
+    5: "Май",
+    6: "Июнь",
+    7: "Июль",
+    8: "Август",
+    9: "Сентябрь",
+    10: "Октябрь",
+    11: "Ноябрь",
+    12: "Декабрь",
+}
 
 
-def _parse_period(text: str):
-    t = (text or "").strip().lower()
-
+def _calendar_keyboard(kind: str, year: int | None = None, month: int | None = None):
     now = datetime.now()
 
-    if t == "текущий месяц":
-        start = datetime(now.year, now.month, 1)
-        end = now
-        return start, end, f"{start.strftime('%d.%m.%Y')}-{end.strftime('%d.%m.%Y')}"
+    year = int(year or now.year)
+    month = int(month or now.month)
 
-    if t == "прошлый месяц":
-        first_this = datetime(now.year, now.month, 1)
-        last_prev = first_this.replace(day=1) - timedelta(days=1)
-        start = datetime(last_prev.year, last_prev.month, 1)
-        end = last_prev
-        return start, end, f"{start.strftime('%d.%m.%Y')}-{end.strftime('%d.%m.%Y')}"
+    first = datetime(year, month, 1)
+
+    if month == 12:
+        next_month = datetime(year + 1, 1, 1)
+    else:
+        next_month = datetime(year, month + 1, 1)
+
+    days_count = (next_month - first).days
+
+    prev_month = month - 1
+    prev_year = year
+    if prev_month < 1:
+        prev_month = 12
+        prev_year -= 1
+
+    next_month_num = month + 1
+    next_year = year
+    if next_month_num > 12:
+        next_month_num = 1
+        next_year += 1
+
+    rows = []
+
+    rows.append([
+        InlineKeyboardButton(text="◀", callback_data=f"sec:cal:{kind}:{prev_year}:{prev_month}"),
+        InlineKeyboardButton(text=f"{MONTH_NAMES_RU.get(month, month)} {year}", callback_data="sec:none"),
+        InlineKeyboardButton(text="▶", callback_data=f"sec:cal:{kind}:{next_year}:{next_month_num}"),
+    ])
+
+    rows.append([
+        InlineKeyboardButton(text="Пн", callback_data="sec:none"),
+        InlineKeyboardButton(text="Вт", callback_data="sec:none"),
+        InlineKeyboardButton(text="Ср", callback_data="sec:none"),
+        InlineKeyboardButton(text="Чт", callback_data="sec:none"),
+        InlineKeyboardButton(text="Пт", callback_data="sec:none"),
+        InlineKeyboardButton(text="Сб", callback_data="sec:none"),
+        InlineKeyboardButton(text="Вс", callback_data="sec:none"),
+    ])
+
+    week = []
+    first_weekday = first.weekday()
+
+    for _ in range(first_weekday):
+        week.append(InlineKeyboardButton(text=" ", callback_data="sec:none"))
+
+    for day in range(1, days_count + 1):
+        week.append(
+            InlineKeyboardButton(
+                text=str(day),
+                callback_data=f"sec:date:{kind}:{year}-{month:02d}-{day:02d}",
+            )
+        )
+
+        if len(week) == 7:
+            rows.append(week)
+            week = []
+
+    if week:
+        while len(week) < 7:
+            week.append(InlineKeyboardButton(text=" ", callback_data="sec:none"))
+        rows.append(week)
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _actor_key(raw_from: str) -> str:
 
     m = re.search(r"(\d{2}\.\d{2}\.\d{4})\s*[-–—]\s*(\d{2}\.\d{2}\.\d{4})", t)
     if not m:
@@ -357,6 +417,101 @@ BODY: {e.get('body','')[:1200]}
     ]
 
 
+async def handle_secretary_callback(cb) -> bool:
+    data = cb.data or ""
+
+    if data == "sec:none":
+        await cb.answer()
+        return True
+
+    chat_id = cb.message.chat.id
+    cache = SECRETARY_CACHE.get(chat_id)
+
+    if cache is None:
+        await cb.answer("Сценарий секретаря не запущен")
+        return True
+
+    if data.startswith("sec:cal:"):
+        parts = data.split(":")
+        kind = parts[2]
+        year = int(parts[3])
+        month = int(parts[4])
+
+        title = "Выбери дату начала периода:" if kind == "start" else "Выбери дату окончания периода:"
+
+        await cb.message.edit_text(
+            title,
+            reply_markup=_calendar_keyboard(kind, year, month),
+        )
+        await cb.answer()
+        return True
+
+    if data.startswith("sec:date:"):
+        parts = data.split(":")
+        kind = parts[2]
+        date_value = parts[3]
+
+        selected_date = datetime.strptime(date_value, "%Y-%m-%d")
+
+        if kind == "start":
+            cache["period_start"] = selected_date
+            cache["stage"] = "wait_period_end"
+
+            await cb.message.edit_text(
+                f"Дата начала: {selected_date.strftime('%d.%m.%Y')}\n\n"
+                "Теперь выбери дату окончания периода:",
+                reply_markup=_calendar_keyboard("end", selected_date.year, selected_date.month),
+            )
+            await cb.answer()
+            return True
+
+        if kind == "end":
+            start = cache.get("period_start")
+            if not start:
+                await cb.answer("Сначала выбери дату начала")
+                return True
+
+            if selected_date < start:
+                await cb.answer("Дата окончания раньше даты начала")
+                return True
+
+            cache["period_end"] = selected_date
+            cache["period_text"] = f"{start.strftime('%d.%m.%Y')}-{selected_date.strftime('%d.%m.%Y')}"
+            cache["stage"] = "actor_select"
+
+            await cb.message.edit_text(
+                f"Период выбран: {cache['period_text']}\n\n"
+                "Читаю почту и собираю адресатов..."
+            )
+
+            emails = _fetch_mailru_emails(limit=200)
+            cache["emails"] = emails
+
+            actors = _collect_actors(emails)
+            cache["actors"] = actors
+
+            if not actors:
+                await cb.message.answer("Писем в ящике не нашла.")
+                cache["stage"] = "idle"
+                await cb.answer()
+                return True
+
+            await cb.message.answer(
+                "Выбери адресатов, которые относятся к проекту.\n"
+                "Пока без кнопок: напиши номера через запятую.\n\n" +
+                "\n".join([
+                    f"{i+1}. ☐ {a['name']} ({a['count']})"
+                    for i, a in enumerate(actors)
+                ])
+            )
+
+            await cb.answer()
+            return True
+
+    await cb.answer()
+    return True
+
+
 async def handle_secretary_message(message, text: str, object_text=None) -> bool:
 
     if not isinstance(text, str):
@@ -393,7 +548,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         cache.clear()
         cache.update({
-            "stage": "wait_period",
+            "stage": "wait_period_start",
             "project": project,
             "period_text": "",
             "period_start": None,
@@ -405,17 +560,19 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "tasks": []
         })
 
+        now = datetime.now()
+
         await message.answer(
             f"Ок. Составляем акт по {project}.\n\n"
-            "Выбери период:",
-            reply_markup=_period_keyboard(),
+            "Выбери дату начала периода:",
+            reply_markup=_calendar_keyboard("start", now.year, now.month),
         )
         return True
 
     # -----------------------------
     # PERIOD INPUT
     # -----------------------------
-    if cache.get("stage") == "wait_period":
+    if False and cache.get("stage") == "wait_period":
         period = _parse_period(raw)
 
         if not period:

@@ -169,7 +169,7 @@ import news_digest
 import memory as vesya_memory
 from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo, handle_analytics_callback, is_analytics_active
 from vesya_tools.secretary.gateway import handle_secretary_gateway
-from vesya_tools.secretary.handler import handle_secretary_message
+from vesya_tools.secretary.handler import handle_secretary_message, handle_secretary_callback
 
 from vesya_tools.calendar.handler import handle_calendar_message
 from vesya_tools.calendar.scheduler import calendar_loop
@@ -6931,6 +6931,12 @@ async def main() -> None:
     asyncio.create_task(gmail_poll_loop())
     asyncio.create_task(calendar_loop(bot, CALENDAR_STORAGE))
     await dp.start_polling(bot)
+
+@dp.callback_query(F.data.startswith("sec:"))
+async def on_secretary_callback(cb):
+    if await handle_secretary_callback(cb):
+        return
+
 
 @dp.callback_query(F.data.startswith("an:"))
 async def on_analytics_callback(cb):
