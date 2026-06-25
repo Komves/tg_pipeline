@@ -8,6 +8,7 @@ import tempfile
 import base64
 import quopri
 import json
+import html as html_lib
 from pathlib import Path
 from email.header import decode_header
 from datetime import datetime, timedelta
@@ -402,6 +403,7 @@ def _fetch_mailru_full_messages(headers, max_messages=50):
 
                 attachments = []
                 body = ""
+                html_body = ""
                 excel_texts = []
 
                 for part in parts:
@@ -414,6 +416,11 @@ def _fetch_mailru_full_messages(headers, max_messages=50):
                         raw_part = _fetch_part_bytes(imap, imap_id, part_no)
                         decoded = _decode_transfer_payload(raw_part, encoding)
                         body = decoded.decode("utf-8", errors="ignore")[:4000]
+
+                    if content_type == "text/html" and not html_body and part_no:
+                        raw_part = _fetch_part_bytes(imap, imap_id, part_no)
+                        decoded = _decode_transfer_payload(raw_part, encoding)
+                        html_body = decoded.decode("utf-8", errors="ignore")[:12000]
 
                     if filename:
                         item = {
@@ -450,6 +457,9 @@ def _fetch_mailru_full_messages(headers, max_messages=50):
                             item["excel_preview"] = "Формат .xls пока не читаю без xlrd. В акт пойдет имя вложения."
 
                         attachments.append(item)
+
+                if not body and html_body:
+                    body = _html_to_text(html_body)[:4000]
 
                 item = dict(h)
                 item["attachments"] = attachments
@@ -667,6 +677,48 @@ def _actor_key(raw_from: str) -> str:
     match = re.search(r'[\w\.-]+@[\w\.-]+', raw)
     return match.group(0).lower() if match else raw.lower().strip()
 
+def _norm_msg_id(value: str) -> str:
+    return (value or "").strip().lower().strip("<>")
+
+
+def _header_refs(header: dict) -> set[str]:
+    refs = set()
+
+    for field in ("message_id", "in_reply_to", "references"):
+        raw = str(header.get(field) or "")
+        for item in re.findall(r"<([^>]+)>", raw):
+            item = _norm_msg_id(item)
+            if item:
+                refs.add(item)
+
+    return refs
+
+
+def _expand_headers_by_threads(all_headers, seed_headers):
+    selected = list(seed_headers or [])
+    selected_ids = set()
+
+    for h in selected:
+        selected_ids.update(_header_refs(h))
+
+    changed = True
+
+    while changed:
+        changed = False
+
+        for h in all_headers:
+            if h in selected:
+                continue
+
+            refs = _header_refs(h)
+
+            if refs and selected_ids and refs.intersection(selected_ids):
+                selected.append(h)
+                selected_ids.update(refs)
+                changed = True
+
+    return selected
+
 
 def _collect_actors(emails):
     actors = {}
@@ -780,7 +832,10 @@ BODY: {e.get('body','')[:2000]}
                     "Одна задача может включать письма от разных отправителей, если они относятся к одному вопросу.\n"
                     "Один отправитель может иметь несколько разных задач, если темы разные.\n"
                     "Не придумывай факты. Используй только письма, темы, направления, даты и названия вложений.\n"
-                    "Финальный статус не определяй. Статус — только предварительная подсказка."
+                    "Финальный статус не определяй. Статус — только предварительная подсказка.\n"
+                    "Папка Sent означает исходящее письмо пользователя: это то, что было подготовлено/направлено пользователем.\n"
+                    "Папка INBOX означает входящее письмо: это то, что было получено от контрагента.\n"
+                    "В поле done обязательно разделяй: что получено и что направлено пользователем."
                 )
             },
             {
@@ -795,20 +850,23 @@ BODY: {e.get('body','')[:2000]}
 [
   {{
     "task": "короткое название смысловой задачи",
-    "done": "что фактически получено, подготовлено, отправлено или согласовано за период",
+    "done": "подробно в 2-4 предложениях: какой запрос/вопрос получен, какие документы или сведения были приложены, какой ответ/анализ/проект подготовлен и кому направлен",
     "status": "в работе",
     "emails": [1, 2, 3]
   }}
 ]
 
 Правила:
-1. НЕ пиши, что документ отправлен, если из письма видно, что документ получен.
-2. НЕ пиши, что заявление подано или отправлено, если переписка про анализ/ответ/защиту от такого заявления.
-3. Поле done должно быть фактическим: «получены документы», «подготовлен и направлен анализ», «направлена сводная таблица», «запрошены дополнительные сведения».
-4. Если задача похожа на завершённую, всё равно ставь status = "в работе". Пользователь потом сам поменяет статус.
-5. Не дроби одну задачу на несколько строк только из-за разных писем.
-6. Не склеивай разные задачи только из-за одного отправителя.
-7. В emails укажи номера писем EMAIL #, на которых основана задача.
+1. FOLDER=INBOX означает: пользователь получил письмо/документы/запрос.
+2. FOLDER=Sent означает: пользователь сам отправил ответ/анализ/проект/таблицу/документы.
+3. Поле done пиши не куцо, а содержательно: «получен запрос по вопросу ... с приложением ...; подготовлен и направлен ответ/анализ/проект ..., в котором отражено ...».
+4. НЕ пиши обезличенно «запрошены дополнительные сведения», если не можешь указать у кого и по какому вопросу.
+5. НЕ пиши, что заявление подано или отправлено пользователем, если переписка про анализ/ответ/защиту от такого заявления.
+6. Не дроби одну смысловую задачу на несколько строк только из-за разных писем.
+7. Не склеивай разные задачи только из-за одного отправителя.
+8. Если по письмам непонятно, что именно сделано, пиши в done: «требует ручной проверки: ...».
+9. Всегда указывай status = "в работе". Пользователь потом сам поменяет статус.
+10. В emails укажи номера писем EMAIL #, на которых основана задача.
 
 Переписка:
 {text}
@@ -871,10 +929,14 @@ async def handle_secretary_callback(cb) -> bool:
 
             cache["tasks"] = tasks
 
-            await cb.message.edit_text(
-                _tasks_review_text(tasks),
-                reply_markup=_tasks_review_keyboard(tasks),
-            )
+            try:
+                await cb.message.edit_text(
+                    _tasks_review_text(tasks),
+                    reply_markup=_tasks_review_keyboard(tasks),
+                )
+            except Exception as e:
+                if "message is not modified" not in str(e).lower():
+                    raise
 
         await cb.answer()
         return True
@@ -1105,8 +1167,16 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         selected_keys = {a["key"] for a in selected_actors}
         selected_headers = [
             e for e in cache["emails"]
-            if _actor_key(e.get("from", "")) in selected_keys
+            if (
+                _actor_key(e.get("from", "")) in selected_keys
+                or any(key in (e.get("to", "") or "").lower() for key in selected_keys)
+            )
         ]
+
+        selected_headers = _expand_headers_by_threads(
+            cache["emails"],
+            selected_headers,
+        )
 
         await message.answer(
             f"Выбрано писем: {len(selected_headers)}.\n"
