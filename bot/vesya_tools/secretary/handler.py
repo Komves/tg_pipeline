@@ -400,6 +400,11 @@ BODY: {e.get('body','')[:1200]}
 
     raw = resp.choices[0].message.content.strip()
 
+    with open("/tmp/gpt_answer.txt", "w", encoding="utf-8") as f:
+        f.write(raw)
+
+    print("GPT ANSWER SAVED: /tmp/gpt_answer.txt", flush=True)
+
     try:
         import json
         data = json.loads(raw)
@@ -644,6 +649,26 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "Запускаю анализ переписки и собираю таблицу акта."
         )
 
+        print("\n========== SECRETARY DEBUG ==========", flush=True)
+        print(f"Всего писем: {len(cache['emails'])}", flush=True)
+        print(f"Выбрано адресатов: {len(selected_actors)}", flush=True)
+        print(f"После фильтра осталось писем: {len(selected_emails)}", flush=True)
+
+        total_chars = sum(len(e.get("body", "")) for e in selected_emails)
+        print(f"Всего символов для GPT: {total_chars}", flush=True)
+
+        import json
+
+        with open("/tmp/raw_selected_emails.json", "w", encoding="utf-8") as f:
+            json.dump(
+                selected_emails,
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        print("DEBUG FILE: /tmp/raw_selected_emails.json", flush=True)
+
         tasks = _gpt_make_tasks(
             cache["selected"],
             cache.get("project", ""),
@@ -657,7 +682,15 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         cache["stage"] = "done"
         cache["doc"] = file_path
 
-        await message.answer(f"Готово. Акт сформирован: {file_path}")
+        from aiogram.types import FSInputFile
+
+        await message.answer("Готово. Акт сформирован.")
+
+        await message.answer_document(
+            FSInputFile(file_path),
+            caption="Проект акта выполненных работ"
+        )
+
         return True
 
     # -----------------------------
