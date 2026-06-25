@@ -5011,6 +5011,13 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
         await message.answer("Секретарь выключен. Возвращаюсь в обычный режим.")
         return
 
+    if _is_secretary_mode_active(chat_id, user_id):
+        result = await handle_secretary_gateway(message, text)
+
+        if result is not None:
+            return
+
+        return
 
     mode = _get_translator_mode(chat_id, user_id)
     if mode:
