@@ -168,6 +168,9 @@ import chatgpt_dialog
 import news_digest
 import memory as vesya_memory
 from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo, handle_analytics_callback, is_analytics_active
+from vesya_tools.secretary.gateway import handle_secretary_gateway
+from vesya_tools.secretary.handler import handle_secretary_message
+
 from vesya_tools.calendar.handler import handle_calendar_message
 from vesya_tools.calendar.scheduler import calendar_loop
 from vesya_tools.calendar.storage import CalendarStorage
@@ -4906,14 +4909,15 @@ async def _youtube_manual_search_for_message(message: Message, query: str) -> di
 
 async def _handle_normalized_text_pipeline(message: Message, text: str, *, event_type: str = "text") -> None:
     text = (text or "").strip()
-    if not text:
-        return
 
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
-
+    
+    # secretary must bypass group gate
+        
     if not _group_message_addresses_vesya(message, text):
         return
+
 
     addressed_body = _strip_vesya_prefix(text).strip()
     addressed_body = re.sub(r"\s+", " ", addressed_body).strip(" ?!.,:;")
