@@ -11,6 +11,7 @@ import json
 import html as html_lib
 from pathlib import Path
 from email.header import decode_header
+from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta
 import openai
 from docx import Document
@@ -70,13 +71,30 @@ def _imap_connect():
     imap.login(user, password)
     return imap
 
+def _parse_email_date(value):
+    try:
+        dt = parsedate_to_datetime(value or "")
+        if dt is None:
+            return None
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
 
-def _fetch_mailru_headers(limit=50):
+
+def _fetch_mailru_headers(limit=300, period_start=None, period_end=None):
     imap = _imap_connect()
     if imap is None:
         return []
 
     results = []
+
+    start_dt = period_start
+    end_dt = period_end
+
+    if end_dt:
+        end_dt = end_dt + timedelta(days=1)
 
     try:
         for folder in ["INBOX", "Sent"]:
@@ -101,10 +119,20 @@ def _fetch_mailru_headers(limit=50):
                     raw_headers = msg_data[0][1]
                     msg = email.message_from_bytes(raw_headers)
 
+                    date_raw = _decode_mime(msg.get("Date"))
+                    msg_dt = _parse_email_date(date_raw)
+
+                    if start_dt and msg_dt and msg_dt < start_dt:
+                        continue
+
+                    if end_dt and msg_dt and msg_dt >= end_dt:
+                        continue
+
                     results.append({
                         "folder": folder,
                         "imap_id": num.decode(errors="ignore"),
-                        "date": _decode_mime(msg.get("Date")),
+                        "date": date_raw,
+                        "date_iso": msg_dt.isoformat() if msg_dt else "",
                         "from": _decode_mime(msg.get("From")),
                         "to": _decode_mime(msg.get("To")),
                         "subject": _decode_mime(msg.get("Subject")),
@@ -720,6 +748,325 @@ def _expand_headers_by_threads(all_headers, seed_headers):
     return selected
 
 
+def _norm_subject(value: str) -> str:
+    s = (value or "").lower().strip()
+    s = re.sub(r"^\s*(re|fw|fwd|ответ|пересл):\s*", "", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _email_dt(e: dict) -> datetime:
+    iso = e.get("date_iso") or ""
+    try:
+        return datetime.fromisoformat(iso)
+    except Exception:
+        return datetime.min
+
+
+def _email_participants(e: dict) -> set[str]:
+    out = set()
+
+    for field in ("from", "to"):
+        raw = e.get(field) or ""
+        for m in re.findall(r'[\w\.-]+@[\w\.-]+', raw):
+            out.add(m.lower())
+
+    return out
+
+
+def _build_mail_threads(emails):
+    indexed = []
+
+    for i, e in enumerate(emails, start=1):
+        item = dict(e)
+        item["email_no"] = i
+        item["_msg_id"] = _norm_msg_id(item.get("message_id", ""))
+        item["_refs"] = _header_refs(item)
+        item["_subject_norm"] = _norm_subject(item.get("subject", ""))
+        item["_dt"] = _email_dt(item)
+        item["_participants"] = _email_participants(item)
+        indexed.append(item)
+
+    indexed.sort(key=lambda x: x["_dt"])
+
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(a, b):
+        ra = find(a)
+        rb = find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(len(indexed)):
+        parent[i] = i
+
+    msg_to_idx = {}
+    for i, e in enumerate(indexed):
+        if e["_msg_id"]:
+            msg_to_idx[e["_msg_id"]] = i
+
+    for i, e in enumerate(indexed):
+        for ref in e["_refs"]:
+            j = msg_to_idx.get(ref)
+            if j is not None:
+                union(i, j)
+
+    for i, a in enumerate(indexed):
+        for j in range(i + 1, len(indexed)):
+            b = indexed[j]
+
+            if not a["_subject_norm"] or not b["_subject_norm"]:
+                continue
+
+            if a["_subject_norm"] != b["_subject_norm"]:
+                continue
+
+            if not (a["_participants"] & b["_participants"]):
+                continue
+
+            dt_a = a["_dt"]
+            dt_b = b["_dt"]
+
+            if dt_a == datetime.min or dt_b == datetime.min:
+                continue
+
+            if abs((dt_b - dt_a).days) <= 14:
+                union(i, j)
+
+    groups = {}
+
+    for i, e in enumerate(indexed):
+        root = find(i)
+        groups.setdefault(root, []).append(e)
+
+    threads = []
+
+    for n, messages in enumerate(groups.values(), start=1):
+        messages.sort(key=lambda x: x["_dt"])
+
+        subjects = [m.get("_subject_norm", "") for m in messages if m.get("_subject_norm")]
+        subject = subjects[0] if subjects else ""
+
+        participants = set()
+        for m in messages:
+            participants.update(m.get("_participants") or set())
+
+        thread = {
+            "thread_no": n,
+            "subject": subject,
+            "participants": sorted(participants),
+            "messages": messages,
+            "inbox_count": sum(1 for m in messages if m.get("folder") == "INBOX"),
+            "sent_count": sum(1 for m in messages if m.get("folder") == "Sent"),
+        }
+
+        threads.append(thread)
+
+    threads.sort(
+        key=lambda t: _email_dt(t["messages"][0]) if t.get("messages") else datetime.min
+    )
+
+    for i, t in enumerate(threads, start=1):
+        t["thread_no"] = i
+
+    return threads
+
+
+def _thread_to_text(thread):
+    text = ""
+
+    for e in thread.get("messages") or []:
+        text += f"""
+EMAIL #{e.get('email_no')}
+THREAD #{thread.get('thread_no')}
+FOLDER: {e.get('folder')}
+DATE: {e.get('date')}
+FROM: {e.get('from')}
+TO: {e.get('to')}
+SUBJECT: {e.get('subject')}
+MESSAGE-ID: {e.get('message_id')}
+IN-REPLY-TO: {e.get('in_reply_to')}
+REFERENCES: {e.get('references')}
+ATTACHMENTS: {", ".join([
+    (
+        a.get("filename", "")
+        + (f" ({a.get('content_type', '')}, size={a.get('size', '')})" if a.get("size") else "")
+    )
+    for a in (e.get("attachments") or [])
+])}
+BODY: {e.get('body','')[:2500]}
+----------------------
+"""
+
+    return text.strip()
+
+
+def _safe_json_loads(raw):
+    raw = (raw or "").strip()
+
+    raw = re.sub(r"^```json\s*", "", raw, flags=re.I)
+    raw = re.sub(r"^```\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+
+    return json.loads(raw)
+
+
+def _gpt_analyze_thread(thread, project_name, period_text):
+    client = openai.OpenAI()
+
+    text = _thread_to_text(thread)
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты анализируешь одну готовую цепочку деловой переписки.\n"
+                    "Не группируй письма. Цепочка уже построена до тебя.\n"
+                    "Твоя задача — восстановить ход работы по этой цепочке.\n"
+                    "FOLDER=INBOX означает входящее письмо пользователю.\n"
+                    "FOLDER=Sent означает исходящее письмо пользователя.\n"
+                    "Особое внимание уделяй Sent: это работа, которую пользователь подготовил и направил.\n"
+                    "Не придумывай факты. Если непонятно — так и пиши."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"""
+Проект/группа: {project_name}
+Период: {period_text}
+
+Верни СТРОГО JSON-объект. Без markdown. Без пояснений.
+
+Формат:
+{{
+  "thread_no": {thread.get("thread_no")},
+  "task": "короткое название задачи",
+  "history": "краткая история вопроса по цепочке",
+  "received": "что поступило пользователю: запросы, документы, вопросы, уточнения",
+  "sent_by_user": "что пользователь подготовил и отправил: ответы, анализ, проекты, документы",
+  "done": "готовая формулировка для акта в 2-4 предложениях",
+  "status": "в работе",
+  "emails": [1, 2, 3],
+  "needs_manual_check": false
+}}
+
+Правила:
+1. Не объединяй эту цепочку с другими возможными задачами.
+2. Если в Sent есть большой ответ/доклад/проект — обязательно отрази это как выполненную работу.
+3. Не пиши просто «получен запрос», если после него есть исходящий ответ.
+4. Если цепочка содержит только входящее письмо без ответа — укажи, что требуется ручная проверка.
+5. emails заполни номерами EMAIL # из текста.
+
+Цепочка:
+{text}
+"""
+            }
+        ]
+    )
+
+    raw = resp.choices[0].message.content.strip()
+
+    try:
+        data = _safe_json_loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    return {
+        "thread_no": thread.get("thread_no"),
+        "task": thread.get("subject") or "Переписка",
+        "history": "",
+        "received": "",
+        "sent_by_user": "",
+        "done": raw,
+        "status": "в работе",
+        "emails": [e.get("email_no") for e in thread.get("messages") or []],
+        "needs_manual_check": True,
+    }
+
+
+def _gpt_make_tasks_from_threads(thread_summaries, project_name, period_text):
+    client = openai.OpenAI()
+
+    text = json.dumps(thread_summaries, ensure_ascii=False, indent=2)
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты собираешь проект акта из уже разобранных цепочек переписки.\n"
+                    "Не анализируй сырые письма. Используй только готовые thread summaries.\n"
+                    "Можно объединять несколько цепочек в одну задачу только если это явно один и тот же вопрос.\n"
+                    "Нельзя склеивать разные задачи только из-за одного отправителя."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"""
+Проект/группа: {project_name}
+Период: {period_text}
+
+Верни СТРОГО JSON-массив. Без markdown. Без пояснений.
+
+Формат:
+[
+  {{
+    "task": "короткое название задачи",
+    "done": "формулировка выполненной работы для акта",
+    "status": "в работе",
+    "emails": [1, 2, 3],
+    "threads": [1, 2]
+  }}
+]
+
+Правила:
+1. done должен отражать и входящий запрос, и исходящую работу пользователя.
+2. Если пользователь отправлял анализ/проект/доклад — это обязательно укажи.
+3. Не склеивай Федяеву с отделом кадров, Орешкину с Ровенской и другие разные темы без явной связи.
+4. Если задача требует ручной проверки — прямо напиши это в done.
+5. Всегда ставь status = "в работе".
+
+Thread summaries:
+{text}
+"""
+            }
+        ]
+    )
+
+    raw = resp.choices[0].message.content.strip()
+
+    with open("/tmp/gpt_threads_answer.txt", "w", encoding="utf-8") as f:
+        f.write(raw)
+
+    try:
+        data = _safe_json_loads(raw)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+
+    return [
+        {
+            "task": "Анализ переписки",
+            "done": raw,
+            "status": "требует проверки",
+            "emails": [],
+            "threads": [],
+        }
+    ]
+
+
 def _collect_actors(emails):
     actors = {}
 
@@ -740,9 +1087,13 @@ def _tasks_review_text(tasks):
     lines = ["GPT сгруппировал задачи. Проверь статусы:\n"]
 
     for i, task in enumerate(tasks, start=1):
+        emails = task.get("emails") or []
+        emails_text = ", ".join(str(x) for x in emails) if emails else "не указаны"
+
         lines.append(
             f"{i}. {task.get('task', '')}\n"
             f"   Что сделано: {task.get('done', '')}\n"
+            f"   Письма: {emails_text}\n"
             f"   Статус: {task.get('status', 'в работе')}\n"
         )
 
@@ -1018,7 +1369,11 @@ async def handle_secretary_callback(cb) -> bool:
                 "Читаю почту и собираю адресатов..."
             )
 
-            emails = _fetch_mailru_headers(limit=50)
+            emails = _fetch_mailru_headers(
+                limit=300,
+                period_start=cache.get("period_start"),
+                period_end=cache.get("period_end"),
+            )
             cache["emails"] = emails
 
             actors = _collect_actors(emails)
@@ -1216,8 +1571,23 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         print("DEBUG FILE: /tmp/raw_selected_emails.json", flush=True)
 
-        tasks = _gpt_make_tasks(
-            cache["selected"],
+        threads = _build_mail_threads(cache["selected"])
+        cache["threads"] = threads
+
+        thread_summaries = []
+
+        for thread in threads:
+            summary = _gpt_analyze_thread(
+                thread,
+                cache.get("project", ""),
+                cache.get("period_text", "")
+            )
+            thread_summaries.append(summary)
+
+        cache["thread_summaries"] = thread_summaries
+
+        tasks = _gpt_make_tasks_from_threads(
+            thread_summaries,
             cache.get("project", ""),
             cache.get("period_text", "")
         )
@@ -1240,8 +1610,43 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         await message.answer("Запускаю анализ переписки. Это может занять время.")
 
-        tasks = _gpt_make_tasks(
-            cache["selected"],
+        threads = _build_mail_threads(cache["selected"])
+        cache["threads"] = threads
+
+        with open("/tmp/secretary_threads.json", "w", encoding="utf-8") as f:
+            json.dump(
+                threads,
+                f,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+
+        print(f"Построено цепочек: {len(threads)}", flush=True)
+        print("DEBUG FILE: /tmp/secretary_threads.json", flush=True)
+
+        thread_summaries = []
+
+        for thread in threads:
+            summary = _gpt_analyze_thread(
+                thread,
+                cache.get("project", ""),
+                cache.get("period_text", "")
+            )
+            thread_summaries.append(summary)
+
+        cache["thread_summaries"] = thread_summaries
+
+        with open("/tmp/secretary_thread_summaries.json", "w", encoding="utf-8") as f:
+            json.dump(
+                thread_summaries,
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        tasks = _gpt_make_tasks_from_threads(
+            thread_summaries,
             cache.get("project", ""),
             cache.get("period_text", "")
         )
