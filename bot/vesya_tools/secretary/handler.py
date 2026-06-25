@@ -201,32 +201,141 @@ BODY: {e.get('body','')[:800]}
 # DOCX ENGINE
 # =========================
 
-def _make_docx(results):
+def _parse_period(text: str):
+    t = (text or "").strip()
+    m = re.search(r"(\d{2}\.\d{2}\.\d{4})\s*[-–—]\s*(\d{2}\.\d{2}\.\d{4})", t)
+    if not m:
+        return None
+
+    start = datetime.strptime(m.group(1), "%d.%m.%Y")
+    end = datetime.strptime(m.group(2), "%d.%m.%Y")
+    return start, end
+
+
+def _actor_key(raw_from: str) -> str:
+    raw = raw_from or "unknown"
+    match = re.search(r'[\w\.-]+@[\w\.-]+', raw)
+    return match.group(0).lower() if match else raw.lower().strip()
+
+
+def _collect_actors(emails):
+    actors = {}
+
+    for e in emails:
+        key = _actor_key(e.get("from", ""))
+        if key not in actors:
+            actors[key] = {
+                "key": key,
+                "name": e.get("from", key),
+                "count": 0
+            }
+        actors[key]["count"] += 1
+
+    return list(actors.values())
+
+
+def _make_docx(tasks):
     doc = Document()
 
-    doc.add_heading("Анализ переписки", level=1)
+    doc.add_heading("Акт выполненных работ", level=1)
 
-    for r in results:
-        doc.add_heading(r["actor"], level=2)
-        doc.add_paragraph(str(r["analysis"]))
+    table = doc.add_table(rows=1, cols=4)
+    table.style = "Table Grid"
 
-    path = "/mnt/data/secretary_report.docx"
+    hdr = table.rows[0].cells
+    hdr[0].text = "№"
+    hdr[1].text = "Задача / вопрос"
+    hdr[2].text = "Что сделано"
+    hdr[3].text = "Статус"
+
+    for i, task in enumerate(tasks, start=1):
+        row = table.add_row().cells
+        row[0].text = str(i)
+        row[1].text = str(task.get("task", ""))
+        row[2].text = str(task.get("done", ""))
+        row[3].text = str(task.get("status", ""))
+
+    path = "/mnt/data/secretary_act.docx"
     doc.save(path)
 
     return path
 
 
-# =========================
-# HANDLER
-# =========================
+def _gpt_make_tasks(emails, project_name, period_text):
+    text = ""
+
+    for e in emails:
+        text += f"""
+FROM: {e.get('from')}
+SUBJECT: {e.get('subject')}
+BODY: {e.get('body','')[:1200]}
+----------------------
+"""
+
+    client = openai.OpenAI()
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Ты юридический секретарь-аналитик. "
+                    "Твоя задача — по переписке выделить реальные рабочие задачи, "
+                    "кратко описать что было сделано и определить статус."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"""
+Проект/группа: {project_name}
+Период: {period_text}
+
+Проанализируй переписку и верни СТРОГО JSON-массив.
+Без markdown. Без пояснений.
+
+Формат:
+[
+  {{
+    "task": "краткое описание задачи или вопроса",
+    "done": "что сделано за период",
+    "status": "закрыто / в работе / требует продолжения"
+  }}
+]
+
+Переписка:
+{text}
+"""
+            }
+        ]
+    )
+
+    raw = resp.choices[0].message.content.strip()
+
+    try:
+        import json
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+
+    return [
+        {
+            "task": "Анализ переписки",
+            "done": raw,
+            "status": "требует проверки"
+        }
+    ]
+
 
 async def handle_secretary_message(message, text: str, object_text=None) -> bool:
 
     if not isinstance(text, str):
         text = str(text)
 
-    raw = text.strip().lower()
-    t = raw
+    raw = text.strip()
+    t = raw.lower()
 
     chat_id = message.chat.id
 
@@ -235,99 +344,151 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
     if cache is None:
         cache = SECRETARY_CACHE[chat_id] = {
             "stage": "idle",
+            "project": "",
+            "period_text": "",
+            "period_start": None,
+            "period_end": None,
             "emails": [],
-            "selected": [],
-            "cases": [],
             "actors": [],
-            "selected_actors": []
+            "selected_actors": [],
+            "selected": [],
+            "tasks": []
         }
 
     # -----------------------------
-    # MAIL SELECTION
+    # START ACT SCENARIO
     # -----------------------------
-    if cache.get("stage") == "mail_list" and "," in t:
+    m = re.search(r"составь\s+акт\s+по\s+(.+)$", t, flags=re.I)
+    if m:
+        project = (m.group(1) or "").strip()
+        project = project.upper() if project else "ПРОЕКТ"
 
-        nums = [int(x.strip()) for x in t.split(",") if x.strip().isdigit()]
-
-        selected = []
-        for n in nums:
-            idx = n - 1
-            if 0 <= idx < len(cache["emails"]):
-                selected.append(cache["emails"][idx])
-
-        cache["selected"] = selected
-        cache["stage"] = "selected"
-
-        await message.answer("Выбрано писем. Напиши: 'разбери'")
-        return True
-
-    # -----------------------------
-    # GROUPING → ACTORS
-    # -----------------------------
-    if cache.get("stage") == "selected" and ("разбери" in t or "дела" in t):
-
-        cases = _build_cases(cache["selected"])
-        cache["cases"] = cases
-
-        actors = set()
-        for c in cases:
-            for s in c["senders"]:
-                actors.add(s)
-
-        cache["actors"] = list(actors)
-        cache["stage"] = "entity_select"
+        cache.clear()
+        cache.update({
+            "stage": "wait_period",
+            "project": project,
+            "period_text": "",
+            "period_start": None,
+            "period_end": None,
+            "emails": [],
+            "actors": [],
+            "selected_actors": [],
+            "selected": [],
+            "tasks": []
+        })
 
         await message.answer(
-            "Выбери участников:\n" +
-            "\n".join([f"{i+1}. {a}" for i, a in enumerate(cache["actors"])])
+            f"Ок. Составляем акт по {project}.\n\n"
+            "Напиши период вручную в формате:\n"
+            "01.06.2026-30.06.2026"
         )
         return True
 
     # -----------------------------
-    # ENTITY SELECT
+    # PERIOD INPUT
     # -----------------------------
-    if cache.get("stage") == "entity_select" and "," in t:
+    if cache.get("stage") == "wait_period":
+        period = _parse_period(raw)
 
-        nums = [int(x.strip()) for x in t.split(",") if x.strip().isdigit()]
+        if not period:
+            await message.answer(
+                "Не поняла период. Напиши так:\n"
+                "01.06.2026-30.06.2026"
+            )
+            return True
 
-        selected = []
-        for n in nums:
-            idx = n - 1
-            if 0 <= idx < len(cache["actors"]):
-                selected.append(cache["actors"][idx])
+        start, end = period
 
-        cache["selected_actors"] = selected
-        cache["stage"] = "confirmed"
+        cache["period_start"] = start
+        cache["period_end"] = end
+        cache["period_text"] = raw
+        cache["stage"] = "actor_select"
 
-        await message.answer("Ок. Запускаю GPT анализ...")
+        emails = _fetch_mailru_emails(limit=200)
+        cache["emails"] = emails
+
+        actors = _collect_actors(emails)
+        cache["actors"] = actors
+
+        if not actors:
+            await message.answer("Писем в ящике не нашла.")
+            cache["stage"] = "idle"
+            return True
+
+        await message.answer(
+            "Выбери адресатов, которые относятся к проекту.\n"
+            "Пока без кнопок: напиши номера через запятую.\n\n" +
+            "\n".join([
+                f"{i+1}. ☐ {a['name']} ({a['count']})"
+                for i, a in enumerate(actors)
+            ])
+        )
         return True
 
     # -----------------------------
-    # GPT + DOCX
+    # ACTOR SELECTION
     # -----------------------------
-    if cache.get("stage") == "confirmed" and ("анализ" in t or "gpt" in t):
+    if cache.get("stage") == "actor_select":
 
-        results = []
+        nums = [int(x.strip()) for x in t.split(",") if x.strip().isdigit()]
 
-        for actor in cache["selected_actors"]:
-            chain = _build_chain(cache["selected"], actor)
-            analysis = _gpt_analyze_chain(chain, actor)
+        selected_actors = []
+        for n in nums:
+            idx = n - 1
+            if 0 <= idx < len(cache["actors"]):
+                selected_actors.append(cache["actors"][idx])
 
-            results.append({
-                "actor": actor,
-                "analysis": analysis
-            })
+        if not selected_actors:
+            await message.answer("Не выбраны адресаты. Напиши номера через запятую.")
+            return True
 
-        file_path = _make_docx(results)
+        cache["selected_actors"] = selected_actors
+
+        selected_keys = {a["key"] for a in selected_actors}
+        selected_emails = [
+            e for e in cache["emails"]
+            if _actor_key(e.get("from", "")) in selected_keys
+        ]
+
+        cache["selected"] = selected_emails
+        cache["stage"] = "ready_to_analyze"
+
+        await message.answer(
+            "Адресаты выбраны.\n\n"
+            "Напиши: анализируй\n"
+            "После этого я разберу переписку и соберу таблицу акта."
+        )
+        return True
+
+    # -----------------------------
+    # GPT ANALYSIS + DOCX ACT
+    # -----------------------------
+    if cache.get("stage") == "ready_to_analyze" and ("анализ" in t or "анализируй" in t or "делай" in t):
+
+        await message.answer("Запускаю анализ переписки. Это может занять время.")
+
+        tasks = _gpt_make_tasks(
+            cache["selected"],
+            cache.get("project", ""),
+            cache.get("period_text", "")
+        )
+
+        cache["tasks"] = tasks
+
+        file_path = _make_docx(tasks)
 
         cache["stage"] = "done"
         cache["doc"] = file_path
 
-        await message.answer(f"Готово. DOCX: {file_path}")
+        await message.answer(f"Готово. Акт сформирован: {file_path}")
         return True
 
     # -----------------------------
     # FALLBACK
     # -----------------------------
-    await message.answer("Команда не распознана")
+    await message.answer(
+        "Секретарь активен.\n\n"
+        "Команда для старта:\n"
+        "составь акт по РГП"
+    )
     return True
