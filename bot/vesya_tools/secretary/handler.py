@@ -52,49 +52,106 @@ def _decode_mime(text):
     return out
 
 
-def _fetch_mailru_emails(limit=30):
+def _imap_connect():
     user = os.getenv("MAILRU_EMAIL", "comves@list.ru")
     password = os.getenv("MAILRU_APP_PASSWORD")
 
     if not password:
-        return []
+        return None
 
     imap = imaplib.IMAP4_SSL("imap.mail.ru", 993)
     imap.login(user, password)
+    return imap
+
+
+def _fetch_mailru_headers(limit=50):
+    imap = _imap_connect()
+    if imap is None:
+        return []
 
     results = []
 
-    for folder in ["INBOX", "Sent"]:
-        try:
-            imap.select(folder)
-            status, data = imap.search(None, "ALL")
+    try:
+        for folder in ["INBOX", "Sent"]:
+            try:
+                imap.select(folder)
+                status, data = imap.search(None, "ALL")
 
-            if status != "OK":
+                if status != "OK" or not data or not data[0]:
+                    continue
+
+                ids = data[0].split()[-limit:]
+
+                for num in ids:
+                    status, msg_data = imap.fetch(
+                        num,
+                        "(BODY.PEEK[HEADER.FIELDS (DATE FROM TO SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES)])"
+                    )
+
+                    if status != "OK" or not msg_data or not msg_data[0]:
+                        continue
+
+                    raw_headers = msg_data[0][1]
+                    msg = email.message_from_bytes(raw_headers)
+
+                    results.append({
+                        "folder": folder,
+                        "imap_id": num.decode(errors="ignore"),
+                        "date": _decode_mime(msg.get("Date")),
+                        "from": _decode_mime(msg.get("From")),
+                        "to": _decode_mime(msg.get("To")),
+                        "subject": _decode_mime(msg.get("Subject")),
+                        "message_id": _decode_mime(msg.get("Message-ID")),
+                        "in_reply_to": _decode_mime(msg.get("In-Reply-To")),
+                        "references": _decode_mime(msg.get("References")),
+                        "attachments": [],
+                        "body": "",
+                    })
+
+            except Exception as e:
+                print(f"[secretary] header fetch folder failed {folder}: {type(e).__name__}: {e}", flush=True)
                 continue
 
-            ids = data[0].split()[-limit:]
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
 
-            for num in ids:
-                status, msg_data = imap.fetch(num, "(RFC822)")
-                if status != "OK":
+    return results
+
+
+def _fetch_mailru_full_messages(headers, max_messages=50):
+    imap = _imap_connect()
+    if imap is None:
+        return []
+
+    results = []
+
+    try:
+        for h in headers[:max_messages]:
+            folder = h.get("folder")
+            imap_id = h.get("imap_id")
+
+            if not folder or not imap_id:
+                continue
+
+            try:
+                imap.select(folder)
+
+                status, msg_data = imap.fetch(str(imap_id).encode(), "(RFC822)")
+                if status != "OK" or not msg_data or not msg_data[0]:
                     continue
 
                 msg = email.message_from_bytes(msg_data[0][1])
 
-                subject = _decode_mime(msg.get("Subject"))
-                from_ = _decode_mime(msg.get("From"))
-                to_ = _decode_mime(msg.get("To"))
-                date_ = _decode_mime(msg.get("Date"))
-                message_id = _decode_mime(msg.get("Message-ID"))
-                in_reply_to = _decode_mime(msg.get("In-Reply-To"))
-                references = _decode_mime(msg.get("References"))
-
                 attachments = []
-
                 body = ""
+
                 if msg.is_multipart():
                     for part in msg.walk():
                         filename = part.get_filename()
+
                         if filename:
                             attachments.append({
                                 "filename": _decode_mime(filename),
@@ -103,35 +160,36 @@ def _fetch_mailru_emails(limit=30):
 
                         if part.get_content_type() == "text/plain" and not body:
                             try:
-                                body = part.get_payload(decode=True).decode(errors="ignore")
+                                payload = part.get_payload(decode=True)
+                                if payload:
+                                    body = payload.decode(errors="ignore")
                             except Exception:
                                 pass
                 else:
                     try:
-                        body = msg.get_payload(decode=True).decode(errors="ignore")
+                        payload = msg.get_payload(decode=True)
+                        if payload:
+                            body = payload.decode(errors="ignore")
                     except Exception:
                         body = ""
 
-                
-                results.append({
-                    "folder": folder,
-                    "date": date_,
-                    "from": from_,
-                    "to": to_,
-                    "subject": subject,
-                    "message_id": message_id,
-                    "in_reply_to": in_reply_to,
-                    "references": references,
-                    "attachments": attachments,
-                    "body": body[:4000],
-                })
+                item = dict(h)
+                item["attachments"] = attachments
+                item["body"] = body[:4000]
 
+                results.append(item)
+
+            except Exception as e:
+                print(f"[secretary] full fetch failed folder={folder} id={imap_id}: {type(e).__name__}: {e}", flush=True)
+                continue
+
+    finally:
+        try:
+            imap.logout()
         except Exception:
-            continue
+            pass
 
-    imap.logout()
     return results
-
 
 # =========================
 # GROUPING
@@ -601,7 +659,7 @@ async def handle_secretary_callback(cb) -> bool:
                 "Читаю почту и собираю адресатов..."
             )
 
-            emails = _fetch_mailru_emails(limit=200)
+            emails = _fetch_mailru_headers(limit=50)
             cache["emails"] = emails
 
             actors = _collect_actors(emails)
@@ -707,7 +765,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         cache["period_text"] = period_text
         cache["stage"] = "actor_select"
 
-        emails = _fetch_mailru_emails(limit=200)
+        emails = _fetch_mailru_headers(limit=50)
         cache["emails"] = emails
 
         actors = _collect_actors(emails)
@@ -748,10 +806,20 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         cache["selected_actors"] = selected_actors
 
         selected_keys = {a["key"] for a in selected_actors}
-        selected_emails = [
+        selected_headers = [
             e for e in cache["emails"]
             if _actor_key(e.get("from", "")) in selected_keys
         ]
+
+        await message.answer(
+            f"Выбрано писем: {len(selected_headers)}.\n"
+            "Теперь читаю полные письма и вложения по выбранным адресатам..."
+        )
+
+        selected_emails = _fetch_mailru_full_messages(
+            selected_headers,
+            max_messages=50
+        )
 
         cache["selected"] = selected_emails
         cache["stage"] = "analyzing"
