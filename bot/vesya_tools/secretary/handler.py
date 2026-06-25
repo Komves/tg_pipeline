@@ -83,14 +83,27 @@ def _fetch_mailru_emails(limit=30):
 
                 subject = _decode_mime(msg.get("Subject"))
                 from_ = _decode_mime(msg.get("From"))
+                to_ = _decode_mime(msg.get("To"))
+                date_ = _decode_mime(msg.get("Date"))
+                message_id = _decode_mime(msg.get("Message-ID"))
+                in_reply_to = _decode_mime(msg.get("In-Reply-To"))
+                references = _decode_mime(msg.get("References"))
+
+                attachments = []
 
                 body = ""
                 if msg.is_multipart():
                     for part in msg.walk():
-                        if part.get_content_type() == "text/plain":
+                        filename = part.get_filename()
+                        if filename:
+                            attachments.append({
+                                "filename": _decode_mime(filename),
+                                "content_type": part.get_content_type(),
+                            })
+
+                        if part.get_content_type() == "text/plain" and not body:
                             try:
                                 body = part.get_payload(decode=True).decode(errors="ignore")
-                                break
                             except Exception:
                                 pass
                 else:
@@ -99,10 +112,18 @@ def _fetch_mailru_emails(limit=30):
                     except Exception:
                         body = ""
 
+                
                 results.append({
+                    "folder": folder,
+                    "date": date_,
                     "from": from_,
+                    "to": to_,
                     "subject": subject,
-                    "body": body[:2000],
+                    "message_id": message_id,
+                    "in_reply_to": in_reply_to,
+                    "references": references,
+                    "attachments": attachments,
+                    "body": body[:4000],
                 })
 
         except Exception:
@@ -160,9 +181,13 @@ def _gpt_analyze_chain(chain, actor):
 
     for e in chain:
         text += f"""
+FOLDER: {e.get('folder')}
+DATE: {e.get('date')}
 FROM: {e.get('from')}
+TO: {e.get('to')}
 SUBJECT: {e.get('subject')}
-BODY: {e.get('body','')[:800]}
+ATTACHMENTS: {", ".join([a.get("filename", "") for a in (e.get("attachments") or [])])}
+BODY: {e.get('body','')[:2000]}
 ----------------------
 """
 
