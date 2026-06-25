@@ -343,7 +343,7 @@ def _make_docx(tasks):
         row[2].text = str(task.get("done", ""))
         row[3].text = str(task.get("status", ""))
 
-    path = "/mnt/data/secretary_act.docx"
+    path = "/tmp/secretary_act.docx"
     doc.save(path)
 
     return path
