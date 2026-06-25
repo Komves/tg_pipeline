@@ -315,17 +315,6 @@ def _calendar_keyboard(kind: str, year: int | None = None, month: int | None = N
 
 
 def _actor_key(raw_from: str) -> str:
-
-    m = re.search(r"(\d{2}\.\d{2}\.\d{4})\s*[-–—]\s*(\d{2}\.\d{2}\.\d{4})", t)
-    if not m:
-        return None
-
-    start = datetime.strptime(m.group(1), "%d.%m.%Y")
-    end = datetime.strptime(m.group(2), "%d.%m.%Y")
-    return start, end, f"{start.strftime('%d.%m.%Y')}-{end.strftime('%d.%m.%Y')}"
-
-
-def _actor_key(raw_from: str) -> str:
     raw = raw_from or "unknown"
     match = re.search(r'[\w\.-]+@[\w\.-]+', raw)
     return match.group(0).lower() if match else raw.lower().strip()
@@ -346,6 +335,39 @@ def _collect_actors(emails):
 
     return list(actors.values())
 
+
+def _tasks_review_text(tasks):
+    lines = ["GPT сгруппировал задачи. Проверь статусы:\n"]
+
+    for i, task in enumerate(tasks, start=1):
+        lines.append(
+            f"{i}. {task.get('task', '')}\n"
+            f"   Что сделано: {task.get('done', '')}\n"
+            f"   Статус: {task.get('status', 'в работе')}\n"
+        )
+
+    lines.append("Когда статусы верные — нажми «Сформировать акт».")
+    return "\n".join(lines)
+
+
+def _tasks_review_keyboard(tasks):
+    rows = []
+
+    for i, task in enumerate(tasks):
+        n = i + 1
+        rows.append([
+            InlineKeyboardButton(text=f"{n}: закрыто", callback_data=f"sec:status:{i}:закрыто"),
+            InlineKeyboardButton(text=f"{n}: в работе", callback_data=f"sec:status:{i}:в работе"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text=f"{n}: убрать", callback_data=f"sec:status:{i}:убрать"),
+        ])
+
+    rows.append([
+        InlineKeyboardButton(text="Сформировать акт", callback_data="sec:act:make")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _make_docx(tasks):
     doc = Document()
@@ -450,7 +472,56 @@ BODY: {e.get('body','')[:1200]}
 async def handle_secretary_callback(cb) -> bool:
     data = cb.data or ""
 
+    if data.startswith("sec:status:"):
+        parts = data.split(":")
+        idx = int(parts[2])
+        status = parts[3]
+
+        tasks = cache.get("tasks") or []
+
+        if 0 <= idx < len(tasks):
+            if status == "убрать":
+                tasks[idx]["exclude"] = True
+                tasks[idx]["status"] = "убрать из акта"
+            else:
+                tasks[idx]["exclude"] = False
+                tasks[idx]["status"] = status
+
+            cache["tasks"] = tasks
+
+            await cb.message.edit_text(
+                _tasks_review_text(tasks),
+                reply_markup=_tasks_review_keyboard(tasks),
+            )
+
+        await cb.answer()
+        return True
+
+    if data == "sec:act:make":
+        tasks = [
+            t for t in (cache.get("tasks") or [])
+            if not t.get("exclude")
+        ]
+
+        file_path = _make_docx(tasks)
+
+        cache["stage"] = "done"
+        cache["doc"] = file_path
+
+        from aiogram.types import FSInputFile
+
+        await cb.message.answer("Готово. Акт сформирован.")
+
+        await cb.message.answer_document(
+            FSInputFile(file_path),
+            caption="Проект акта выполненных работ"
+        )
+
+        await cb.answer()
+        return True
+
     if data == "sec:none":
+
         await cb.answer()
         return True
 
@@ -702,18 +773,11 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         cache["tasks"] = tasks
 
-        file_path = _make_docx(tasks)
+        cache["stage"] = "review_tasks"
 
-        cache["stage"] = "done"
-        cache["doc"] = file_path
-
-        from aiogram.types import FSInputFile
-
-        await message.answer("Готово. Акт сформирован.")
-
-        await message.answer_document(
-            FSInputFile(file_path),
-            caption="Проект акта выполненных работ"
+        await message.answer(
+            _tasks_review_text(tasks),
+            reply_markup=_tasks_review_keyboard(tasks),
         )
 
         return True
