@@ -5,9 +5,10 @@ import os
 import imaplib
 import email
 from email.header import decode_header
-from datetime import datetime
+from datetime import datetime, timedelta
 import openai
 from docx import Document
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 SECRETARY_CACHE = {}
 
@@ -201,15 +202,42 @@ BODY: {e.get('body','')[:800]}
 # DOCX ENGINE
 # =========================
 
+def _period_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Текущий месяц")],
+            [KeyboardButton(text="Прошлый месяц")],
+            [KeyboardButton(text="Ввести период вручную")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
 def _parse_period(text: str):
-    t = (text or "").strip()
+    t = (text or "").strip().lower()
+
+    now = datetime.now()
+
+    if t == "текущий месяц":
+        start = datetime(now.year, now.month, 1)
+        end = now
+        return start, end, f"{start.strftime('%d.%m.%Y')}-{end.strftime('%d.%m.%Y')}"
+
+    if t == "прошлый месяц":
+        first_this = datetime(now.year, now.month, 1)
+        last_prev = first_this.replace(day=1) - timedelta(days=1)
+        start = datetime(last_prev.year, last_prev.month, 1)
+        end = last_prev
+        return start, end, f"{start.strftime('%d.%m.%Y')}-{end.strftime('%d.%m.%Y')}"
+
     m = re.search(r"(\d{2}\.\d{2}\.\d{4})\s*[-–—]\s*(\d{2}\.\d{2}\.\d{4})", t)
     if not m:
         return None
 
     start = datetime.strptime(m.group(1), "%d.%m.%Y")
     end = datetime.strptime(m.group(2), "%d.%m.%Y")
-    return start, end
+    return start, end, f"{start.strftime('%d.%m.%Y')}-{end.strftime('%d.%m.%Y')}"
 
 
 def _actor_key(raw_from: str) -> str:
@@ -379,8 +407,8 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         await message.answer(
             f"Ок. Составляем акт по {project}.\n\n"
-            "Напиши период вручную в формате:\n"
-            "01.06.2026-30.06.2026"
+            "Выбери период:",
+            reply_markup=_period_keyboard(),
         )
         return True
 
@@ -392,16 +420,17 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         if not period:
             await message.answer(
-                "Не поняла период. Напиши так:\n"
-                "01.06.2026-30.06.2026"
+                "Не поняла период. Выбери кнопку или напиши так:\n"
+                "01.06.2026-30.06.2026",
+                reply_markup=_period_keyboard(),
             )
             return True
 
-        start, end = period
+        start, end, period_text = period
 
         cache["period_start"] = start
         cache["period_end"] = end
-        cache["period_text"] = raw
+        cache["period_text"] = period_text
         cache["stage"] = "actor_select"
 
         emails = _fetch_mailru_emails(limit=200)
