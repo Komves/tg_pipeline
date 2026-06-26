@@ -914,108 +914,113 @@ def _email_participants(e: dict) -> set[str]:
 
 
 def _build_mail_threads(emails):
-    indexed = []
+    def norm_subject(s: str):
+        s = (s or "").lower().strip()
+        s = re.sub(r"^(re|fw|fwd|ответ|пересл):\s*", "", s)
+        s = re.sub(r"\s+", " ", s)
+        return s.strip()
 
+    def dt(e):
+        try:
+            return datetime.fromisoformat(e.get("date_iso") or "")
+        except Exception:
+            return datetime.min
+
+    def participants(e):
+        s = set()
+        for k in ("from", "to"):
+            raw = e.get(k) or ""
+            for m in re.findall(r'[\w\.-]+@[\w\.-]+', raw):
+                s.add(m.lower())
+        return s
+
+    indexed = []
     for i, e in enumerate(emails, start=1):
-        item = dict(e)
-        item["email_no"] = i
-        item["_msg_id"] = _norm_msg_id(item.get("message_id", ""))
-        item["_refs"] = _header_refs(item)
-        item["_subject_norm"] = _norm_subject(item.get("subject", ""))
-        item["_dt"] = _email_dt(item)
-        item["_participants"] = _email_participants(item)
-        indexed.append(item)
+        e = dict(e)
+        e["email_no"] = i
+        e["_msg"] = _norm_msg_id(e.get("message_id"))
+        e["_refs"] = _header_refs(e)
+        e["_sub"] = norm_subject(e.get("subject"))
+        e["_dt"] = dt(e)
+        e["_part"] = participants(e)
+        indexed.append(e)
 
     indexed.sort(key=lambda x: x["_dt"])
 
-    parent = {}
+    # --- UNION FIND ---
+    parent = list(range(len(indexed)))
 
     def find(x):
-        parent.setdefault(x, x)
-        if parent[x] != x:
-            parent[x] = find(parent[x])
-        return parent[x]
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
 
     def union(a, b):
-        ra = find(a)
-        rb = find(b)
+        ra, rb = find(a), find(b)
         if ra != rb:
             parent[rb] = ra
 
+    # 1) Message-ID linking
+    msg_map = {}
+    for i, e in enumerate(indexed):
+        if e["_msg"]:
+            msg_map[e["_msg"]] = i
+
+    for i, e in enumerate(indexed):
+        for r in e["_refs"]:
+            if r in msg_map:
+                union(i, msg_map[r])
+
+    # 2) Subject + participants + time window (NEW INTELLIGENCE LAYER)
     for i in range(len(indexed)):
-        parent[i] = i
-
-    msg_to_idx = {}
-    for i, e in enumerate(indexed):
-        if e["_msg_id"]:
-            msg_to_idx[e["_msg_id"]] = i
-
-    for i, e in enumerate(indexed):
-        for ref in e["_refs"]:
-            j = msg_to_idx.get(ref)
-            if j is not None:
-                union(i, j)
-
-    for i, a in enumerate(indexed):
         for j in range(i + 1, len(indexed)):
-            b = indexed[j]
 
-            if not a["_subject_norm"] or not b["_subject_norm"]:
+            a, b = indexed[i], indexed[j]
+
+            if not a["_sub"] or not b["_sub"]:
                 continue
 
-            if a["_subject_norm"] != b["_subject_norm"]:
+            # subject must match
+            if a["_sub"] != b["_sub"]:
                 continue
 
-            if not (a["_participants"] & b["_participants"]):
+            # at least one participant overlap
+            if not (a["_part"] & b["_part"]):
                 continue
 
-            dt_a = a["_dt"]
-            dt_b = b["_dt"]
-
-            if dt_a == datetime.min or dt_b == datetime.min:
+            # time window 21 days (important fix vs 14)
+            if a["_dt"] == datetime.min or b["_dt"] == datetime.min:
                 continue
 
-            if abs((dt_b - dt_a).days) <= 14:
+            if abs((b["_dt"] - a["_dt"]).days) <= 21:
                 union(i, j)
 
+    # --- BUILD THREADS ---
     groups = {}
-
-    for i, e in enumerate(indexed):
+    for i in range(len(indexed)):
         root = find(i)
-        groups.setdefault(root, []).append(e)
+        groups.setdefault(root, []).append(indexed[i])
 
     threads = []
+    for k, msgs in enumerate(groups.values(), start=1):
+        msgs.sort(key=lambda x: x["_dt"])
 
-    for n, messages in enumerate(groups.values(), start=1):
-        messages.sort(key=lambda x: x["_dt"])
+        threads.append({
+            "thread_no": k,
+            "subject": msgs[0].get("_sub", ""),
+            "participants": list({p for m in msgs for p in m["_part"]}),
+            "messages": msgs,
+            "inbox_count": sum(1 for m in msgs if m.get("folder") == "INBOX"),
+            "sent_count": sum(1 for m in msgs if m.get("folder") == "Sent"),
+        })
 
-        subjects = [m.get("_subject_norm", "") for m in messages if m.get("_subject_norm")]
-        subject = subjects[0] if subjects else ""
-
-        participants = set()
-        for m in messages:
-            participants.update(m.get("_participants") or set())
-
-        thread = {
-            "thread_no": n,
-            "subject": subject,
-            "participants": sorted(participants),
-            "messages": messages,
-            "inbox_count": sum(1 for m in messages if m.get("folder") == "INBOX"),
-            "sent_count": sum(1 for m in messages if m.get("folder") == "Sent"),
-        }
-
-        threads.append(thread)
-
-    threads.sort(
-        key=lambda t: _email_dt(t["messages"][0]) if t.get("messages") else datetime.min
-    )
+    threads.sort(key=lambda t: t["messages"][0]["_dt"] if t["messages"] else datetime.min)
 
     for i, t in enumerate(threads, start=1):
         t["thread_no"] = i
 
     return threads
-
 
 def _thread_to_text(thread):
     text = ""
@@ -1059,6 +1064,26 @@ def _safe_json_loads(raw):
 def _gpt_analyze_thread(thread, project_name, period_text):
     client = openai.OpenAI()
 
+    SYSTEM_PROMPT = """
+Ты анализируешь ОДНУ ЦЕПОЧКУ ДЕЛОВОЙ РАБОТЫ.
+
+Не пересказывай письма.
+Восстанавливай реальный процесс работы.
+
+Всегда выделяй:
+- кто инициировал запрос
+- что конкретно хотели
+- что сделал Марголин
+- что было отправлено или подготовлено
+- чем завершилось
+
+ВАЖНО:
+- FOLDER=INBOX = входящий запрос
+- FOLDER=Sent = действие пользователя (работа)
+
+Если есть Sent — это ОСНОВНОЙ результат работы, не игнорируй его.
+"""
+
     text = _thread_to_text(thread)
 
     resp = client.chat.completions.create(
@@ -1066,15 +1091,7 @@ def _gpt_analyze_thread(thread, project_name, period_text):
         messages=[
             {
                 "role": "system",
-                "content": (
-                    "Ты анализируешь одну готовую цепочку деловой переписки.\n"
-                    "Не группируй письма. Цепочка уже построена до тебя.\n"
-                    "Твоя задача — восстановить ход работы по этой цепочке.\n"
-                    "FOLDER=INBOX означает входящее письмо пользователю.\n"
-                    "FOLDER=Sent означает исходящее письмо пользователя.\n"
-                    "Особое внимание уделяй Sent: это работа, которую пользователь подготовил и направил.\n"
-                    "Не придумывай факты. Если непонятно — так и пиши."
-                )
+                "content": SYSTEM_PROMPT
             },
             {
                 "role": "user",
@@ -1082,27 +1099,20 @@ def _gpt_analyze_thread(thread, project_name, period_text):
 Проект/группа: {project_name}
 Период: {period_text}
 
-Верни СТРОГО JSON-объект. Без markdown. Без пояснений.
+Верни СТРОГО JSON-объект.
 
 Формат:
 {{
   "thread_no": {thread.get("thread_no")},
   "task": "короткое название задачи",
-  "history": "краткая история вопроса по цепочке",
-  "received": "что поступило пользователю: запросы, документы, вопросы, уточнения",
-  "sent_by_user": "что пользователь подготовил и отправил: ответы, анализ, проекты, документы",
-  "done": "готовая формулировка для акта в 2-4 предложениях",
+  "request_from": "",
+  "request_content": "",
+  "user_action": "",
+  "result": "",
   "status": "в работе",
-  "emails": [1, 2, 3],
+  "emails": [],
   "needs_manual_check": false
 }}
-
-Правила:
-1. Не объединяй эту цепочку с другими возможными задачами.
-2. Если в Sent есть большой ответ/доклад/проект — обязательно отрази это как выполненную работу.
-3. Не пиши просто «получен запрос», если после него есть исходящий ответ.
-4. Если цепочка содержит только входящее письмо без ответа — укажи, что требуется ручная проверка.
-5. emails заполни номерами EMAIL # из текста.
 
 Цепочка:
 {text}
@@ -1114,70 +1124,72 @@ def _gpt_analyze_thread(thread, project_name, period_text):
     raw = resp.choices[0].message.content.strip()
 
     try:
-        data = _safe_json_loads(raw)
-        if isinstance(data, dict):
-            return data
+        return json.loads(raw)
     except Exception:
-        pass
-
-    return {
-        "thread_no": thread.get("thread_no"),
-        "task": thread.get("subject") or "Переписка",
-        "history": "",
-        "received": "",
-        "sent_by_user": "",
-        "done": raw,
-        "status": "в работе",
-        "emails": [e.get("email_no") for e in thread.get("messages") or []],
-        "needs_manual_check": True,
-    }
+        return {
+            "thread_no": thread.get("thread_no"),
+            "task": "parse_error",
+            "raw": raw,
+            "needs_manual_check": True
+        }
 
 
 def _gpt_make_tasks_from_threads(thread_summaries, project_name, period_text):
     client = openai.OpenAI()
 
-    text = json.dumps(thread_summaries, ensure_ascii=False, indent=2)
+    SYSTEM_PROMPT = """
+Ты формируешь АКТ ВЫПОЛНЕННЫХ РАБОТ.
+
+Ты НЕ пересказываешь письма.
+Ты объединяешь уже разобранные цепочки в задачи.
+
+Каждая задача = реальный кейс работы:
+1. инициатор
+2. запрос
+3. действия Марголина
+4. результат
+5. итог
+
+Запрещено:
+- "получено письмо"
+- "требуется проверка" без содержания
+- общие формулировки
+"""
 
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
-                "content": (
-                    "Ты собираешь проект акта из уже разобранных цепочек переписки.\n"
-                    "Не анализируй сырые письма. Используй только готовые thread summaries.\n"
-                    "Можно объединять несколько цепочек в одну задачу только если это явно один и тот же вопрос.\n"
-                    "Нельзя склеивать разные задачи только из-за одного отправителя."
-                )
+                "content": SYSTEM_PROMPT
             },
             {
                 "role": "user",
                 "content": f"""
-Проект/группа: {project_name}
+Проект: {project_name}
 Период: {period_text}
 
-Верни СТРОГО JSON-массив. Без markdown. Без пояснений.
+Вот уже разобранные цепочки:
 
-Формат:
+{json.dumps(thread_summaries, ensure_ascii=False, indent=2)}
+
+Верни СТРОГО JSON-массив:
+
 [
   {{
-    "task": "короткое название задачи",
-    "done": "формулировка выполненной работы для акта",
+    "task": "название задачи",
+    "done": "инициатор → запрос → действия → результат → итог",
     "status": "в работе",
-    "emails": [1, 2, 3],
-    "threads": [1, 2]
+    "emails": [],
+    "threads": []
   }}
 ]
 
 Правила:
-1. done должен отражать и входящий запрос, и исходящую работу пользователя.
-2. Если пользователь отправлял анализ/проект/доклад — это обязательно укажи.
-3. Не склеивай Федяеву с отделом кадров, Орешкину с Ровенской и другие разные темы без явной связи.
-4. Если задача требует ручной проверки — прямо напиши это в done.
-5. Всегда ставь status = "в работе".
-
-Thread summaries:
-{text}
+- done минимум 3-5 предложений
+- обязательно инициатор
+- обязательно действие Марголина
+- обязательно результат
 """
             }
         ]
@@ -1185,25 +1197,17 @@ Thread summaries:
 
     raw = resp.choices[0].message.content.strip()
 
-    with open("/tmp/gpt_threads_answer.txt", "w", encoding="utf-8") as f:
-        f.write(raw)
-
     try:
-        data = _safe_json_loads(raw)
-        if isinstance(data, list):
-            return data
+        return json.loads(raw)
     except Exception:
-        pass
+        return [
+            {
+                "task": "parse_error",
+                "done": raw,
+                "status": "error"
+            }
+        ]
 
-    return [
-        {
-            "task": "Анализ переписки",
-            "done": raw,
-            "status": "требует проверки",
-            "emails": [],
-            "threads": [],
-        }
-    ]
 
 
 def _collect_actors(emails):
@@ -1224,6 +1228,7 @@ def _collect_actors(emails):
 
 def _tasks_review_text(tasks):
     lines = ["GPT сгруппировал задачи. Проверь статусы:\n"]
+    
 
     for i, task in enumerate(tasks, start=1):
         emails = task.get("emails") or []
@@ -1316,16 +1321,22 @@ BODY: {e.get('body','')[:2000]}
             {
                 "role": "system",
                 "content": (
-                    "Ты парсер деловой переписки.\n"
-                    "Твоя задача — НЕ давать юридическую оценку, а точно извлечь факты.\n"
-                    "Сгруппируй письма в смысловые рабочие задачи.\n"
-                    "Одна задача может включать письма от разных отправителей, если они относятся к одному вопросу.\n"
-                    "Один отправитель может иметь несколько разных задач, если темы разные.\n"
-                    "Не придумывай факты. Используй только письма, темы, направления, даты и названия вложений.\n"
-                    "Финальный статус не определяй. Статус — только предварительная подсказка.\n"
-                    "Папка Sent означает исходящее письмо пользователя: это то, что было подготовлено/направлено пользователем.\n"
-                    "Папка INBOX означает входящее письмо: это то, что было получено от контрагента.\n"
-                    "В поле done обязательно разделяй: что получено и что направлено пользователем."
+                    "Ты формируешь АКТ ВЫПОЛНЕННЫХ РАБОТ.\n"
+                    "\n"
+                    "НЕ пересказываешь письма.\n"
+                    "Описываешь реальные действия Марголина.\n"
+                    "\n"
+                    "Каждая задача = мини-кейс:\n"
+                    "1. инициатор\n"
+                    "2. что хотели\n"
+                    "3. что сделал Марголин\n"
+                    "4. что отправлено/подготовлено\n"
+                    "5. итог\n"
+                    "\n"
+                    "Запрещено:\n"
+                    "- 'получено письмо'\n"
+                    "- 'требуется проверка' без содержания\n"
+                    "- пустые формулировки\n"
                 )
             },
             {
@@ -1334,17 +1345,9 @@ BODY: {e.get('body','')[:2000]}
 Проект/группа: {project_name}
 Период: {period_text}
 
-Верни СТРОГО JSON-массив. Без markdown. Без пояснений.
+"Верни СТРОГО JSON-массив. Без markdown. Без пояснений."
 
 Формат:
-[
-  {{
-    "task": "короткое название смысловой задачи",
-    "done": "подробно в 2-4 предложениях: какой запрос/вопрос получен, какие документы или сведения были приложены, какой ответ/анализ/проект подготовлен и кому направлен",
-    "status": "в работе",
-    "emails": [1, 2, 3]
-  }}
-]
 
 Правила:
 1. FOLDER=INBOX означает: пользователь получил письмо/документы/запрос.
