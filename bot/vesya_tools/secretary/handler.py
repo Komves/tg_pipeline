@@ -409,6 +409,101 @@ def _fetch_part_bytes(imap, imap_id, part_no):
     return _extract_fetch_bytes(data)
 
 
+def _html_to_text(value):
+    text = value or ""
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", text)
+    text = re.sub(r"(?is)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?is)</p\s*>", "\n", text)
+    text = re.sub(r"(?is)<.*?>", " ", text)
+    text = html_lib.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
+    return text.strip()
+
+
+def _extract_message_text_and_attachments(msg, imap_id):
+    body = ""
+    html_body = ""
+    attachments = []
+    excel_texts = []
+
+    for part in msg.walk():
+        print(
+            "[MAIL PART]",
+            part.get_content_type(),
+            part.get_content_disposition(),
+            part.get_content_charset(),
+            bool(part.get_payload(decode=True)),
+            flush=True,
+        )
+        content_type = (part.get_content_type() or "").lower()
+        disposition = (part.get_content_disposition() or "").lower()
+        filename = _decode_mime(part.get_filename() or "")
+
+        payload = part.get_payload(decode=True)
+
+        charset = part.get_content_charset() or "utf-8"
+
+        if content_type == "text/plain" and not filename and not body:
+            try:
+                body = (payload or b"").decode(charset, errors="ignore")
+            except Exception:
+                body = (payload or b"").decode("utf-8", errors="ignore")
+
+        elif content_type == "text/html" and not filename and not html_body:
+            try:
+                html_body = (payload or b"").decode(charset, errors="ignore")
+            except Exception:
+                html_body = (payload or b"").decode("utf-8", errors="ignore")
+
+        if filename:
+            item = {
+                "filename": filename,
+                "content_type": content_type,
+                "size": str(len(payload or b"")),
+            }
+
+            lower_name = filename.lower()
+
+            if lower_name.endswith(".xlsx") and payload:
+                safe_name = re.sub(r"[^a-zA-Zа-яА-Я0-9_.-]+", "_", filename)
+                tmp_path = Path(tempfile.gettempdir()) / f"sec_{imap_id}_{safe_name}"
+
+                with open(tmp_path, "wb") as f:
+                    f.write(payload)
+
+                preview = _read_excel_preview(tmp_path)
+
+                item["excel_preview"] = preview
+                excel_texts.append(
+                    f"Файл: {filename}\n{preview}"
+                )
+
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+
+            elif lower_name.endswith(".xls"):
+                item["excel_preview"] = "Формат .xls пока не читаю без xlrd. В акт пойдет имя вложения."
+
+            attachments.append(item)
+
+    if not body and html_body:
+        body = _html_to_text(html_body)
+
+    body = (body or "").strip()
+
+    if excel_texts:
+        body = (
+            body
+            + "\n\nEXCEL PREVIEW:\n"
+            + "\n\n".join(excel_texts)
+        ).strip()
+
+    return body[:9000], attachments
+
+
 def _fetch_mailru_full_messages(headers, max_messages=50):
     imap = _imap_connect()
     if imap is None:
@@ -427,89 +522,45 @@ def _fetch_mailru_full_messages(headers, max_messages=50):
             try:
                 imap.select(folder)
 
-                parts = _fetch_bodystructure(imap, imap_id)
+                status, msg_data = imap.fetch(
+                    str(imap_id).encode(),
+                    "(RFC822)"
+                )
 
-                attachments = []
-                body = ""
-                html_body = ""
-                excel_texts = []
+                if status != "OK" or not msg_data:
+                    continue
 
-                for part in parts:
-                    content_type = part.get("content_type", "")
-                    filename = part.get("filename", "")
-                    part_no = part.get("part_no", "")
-                    encoding = part.get("encoding", "")
+                raw_bytes = _extract_fetch_bytes(msg_data)
 
-                    if content_type == "text/plain" and not body and part_no:
-                        raw_part = _fetch_part_bytes(imap, imap_id, part_no)
-                        decoded = _decode_transfer_payload(raw_part, encoding)
-                        body = decoded.decode("utf-8", errors="ignore")[:4000]
+                if not raw_bytes:
+                    print(
+                        f"[secretary] RFC822 empty folder={folder} id={imap_id}",
+                        flush=True
+                    )
+                    continue
 
-                    if content_type == "text/html" and not html_body and part_no:
-                        raw_part = _fetch_part_bytes(imap, imap_id, part_no)
-                        decoded = _decode_transfer_payload(raw_part, encoding)
-                        html_body = decoded.decode("utf-8", errors="ignore")[:12000]
+                msg = email.message_from_bytes(raw_bytes)
 
-                    if filename:
-                        item = {
-                            "filename": filename,
-                            "content_type": content_type,
-                            "size": part.get("size", ""),
-                        }
-
-                        lower_name = filename.lower()
-
-                        if lower_name.endswith(".xlsx") and part_no:
-                            raw_part = _fetch_part_bytes(imap, imap_id, part_no)
-                            decoded = _decode_transfer_payload(raw_part, encoding)
-
-                            safe_name = re.sub(r"[^a-zA-Zа-яА-Я0-9_.-]+", "_", filename)
-                            tmp_path = Path(tempfile.gettempdir()) / f"sec_{imap_id}_{safe_name}"
-
-                            with open(tmp_path, "wb") as f:
-                                f.write(decoded)
-
-                            preview = _read_excel_preview(tmp_path)
-
-                            item["excel_preview"] = preview
-                            excel_texts.append(
-                                f"Файл: {filename}\n{preview}"
-                            )
-
-                            try:
-                                tmp_path.unlink()
-                            except Exception:
-                                pass
-
-                        elif lower_name.endswith(".xls"):
-                            item["excel_preview"] = "Формат .xls пока не читаю без xlrd. В акт пойдет имя вложения."
-
-                        attachments.append(item)
-
-                if not body and html_body:
-                    body = _html_to_text(html_body)[:4000]
+                body, attachments = _extract_message_text_and_attachments(msg, imap_id)
 
                 item = dict(h)
+                item["body"] = body
                 item["attachments"] = attachments
-                item["body"] = body[:4000]
-
-                if excel_texts:
-                    item["body"] = (
-                        item["body"]
-                        + "\n\nEXCEL PREVIEW:\n"
-                        + "\n\n".join(excel_texts)
-                    )[:9000]
 
                 results.append(item)
 
                 print(
-                    f"[secretary] full loaded folder={folder} id={imap_id} "
-                    f"attachments={len(attachments)} body_chars={len(item['body'])}",
+                    f"[secretary] full loaded RFC822 folder={folder} id={imap_id} "
+                    f"attachments={len(attachments)} body_chars={len(body)}",
                     flush=True
                 )
 
             except Exception as e:
-                print(f"[secretary] full fetch failed folder={folder} id={imap_id}: {type(e).__name__}: {e}", flush=True)
+                print(
+                    f"[secretary] full fetch RFC822 failed folder={folder} id={imap_id}: "
+                    f"{type(e).__name__}: {e}",
+                    flush=True
+                )
                 continue
 
     finally:
@@ -519,7 +570,6 @@ def _fetch_mailru_full_messages(headers, max_messages=50):
             pass
 
     return results
-
 # =========================
 # GROUPING
 # =========================
