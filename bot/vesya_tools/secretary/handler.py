@@ -1026,6 +1026,12 @@ def _thread_to_text(thread):
     text = ""
 
     for e in thread.get("messages") or []:
+        body = (e.get("body") or "")
+        body = re.sub(r"\s+", " ", body)[:800]
+
+        attachments = e.get("attachments") or []
+        att_count = len(attachments)
+
         text += f"""
 EMAIL #{e.get('email_no')}
 THREAD #{thread.get('thread_no')}
@@ -1034,22 +1040,12 @@ DATE: {e.get('date')}
 FROM: {e.get('from')}
 TO: {e.get('to')}
 SUBJECT: {e.get('subject')}
-MESSAGE-ID: {e.get('message_id')}
-IN-REPLY-TO: {e.get('in_reply_to')}
-REFERENCES: {e.get('references')}
-ATTACHMENTS: {", ".join([
-    (
-        a.get("filename", "")
-        + (f" ({a.get('content_type', '')}, size={a.get('size', '')})" if a.get("size") else "")
-    )
-    for a in (e.get("attachments") or [])
-])}
-BODY: {e.get('body','')[:2500]}
+ATTACHMENTS: {att_count}
+BODY: {body}
 ----------------------
 """
 
-    return text.strip()
-
+    return text[:12000]
 
 def _safe_json_loads(raw):
     raw = (raw or "").strip()
@@ -1066,28 +1062,22 @@ def _gpt_analyze_thread(thread, project_name, period_text):
 
     text = _thread_to_text(thread)
 
-    system_prompt = (
-        "Ты анализируешь ОДНУ ЦЕПОЧКУ ДЕЛОВОЙ РАБОТЫ.\n"
-        "\n"
-        "Не пересказывай письма.\n"
-        "Восстанавливай реальный процесс работы.\n"
-        "\n"
-        "Всегда выделяй:\n"
-        "- инициатор\n"
-        "- что хотели\n"
-        "- что сделал Марголин\n"
-        "- результат\n"
-        "\n"
-        "INBOX = входящий запрос\n"
-        "Sent = действие пользователя\n"
-        "Sent ВСЕГДА важнее INBOX\n"
-    )
-
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"""
+            {
+                "role": "system",
+                "content": (
+                    "Ты анализируешь ОДНУ цепочку деловой переписки.\n"
+                    "Не пересказывай письма.\n"
+                    "Определи процесс: запрос → действия → результат.\n"
+                    "INBOX = запрос\n"
+                    "Sent = действие пользователя (важнее INBOX)\n"
+                )
+            },
+            {
+                "role": "user",
+                "content": f"""
 Проект: {project_name}
 Период: {period_text}
 
@@ -1105,11 +1095,16 @@ def _gpt_analyze_thread(thread, project_name, period_text):
 
 Цепочка:
 {text}
-"""}
+"""
+            }
         ]
     )
 
     raw = resp.choices[0].message.content.strip()
+
+    raw = re.sub(r"^```json", "", raw)
+    raw = re.sub(r"^```", "", raw)
+    raw = re.sub(r"```$", "", raw)
 
     try:
         return json.loads(raw)
@@ -1123,36 +1118,29 @@ def _gpt_analyze_thread(thread, project_name, period_text):
 def _gpt_make_tasks_from_threads(thread_summaries, project_name, period_text):
     client = openai.OpenAI()
 
-    system_prompt = (
-        "Ты формируешь АКТ ВЫПОЛНЕННЫХ РАБОТ.\n"
-        "\n"
-        "Ты НЕ пересказываешь письма.\n"
-        "Ты объединяешь цепочки в реальные рабочие задачи.\n"
-        "\n"
-        "Каждая задача должна описывать:\n"
-        "- кто обратился\n"
-        "- с чем\n"
-        "- что сделал Марголин\n"
-        "- чем закончилось\n"
-        "\n"
-        "НЕ используй фразы:\n"
-        "- 'получено письмо'\n"
-        "- 'требуется проверка'\n"
-    )
+    thread_summaries = thread_summaries[:20]  # ЖЁСТКИЙ ЛИМИТ
 
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"""
+            {
+                "role": "system",
+                "content": (
+                    "Ты формируешь акт выполненных работ.\n"
+                    "Каждый thread = одна задача.\n"
+                    "Не дроби и не объединяй разные threads.\n"
+                )
+            },
+            {
+                "role": "user",
+                "content": f"""
 Проект: {project_name}
 Период: {period_text}
 
-Цепочки:
+Threads:
 {json.dumps(thread_summaries, ensure_ascii=False, indent=2)}
 
 Верни JSON массив:
-
 [
   {{
     "task": "",
@@ -1162,16 +1150,16 @@ def _gpt_make_tasks_from_threads(thread_summaries, project_name, period_text):
     "threads": []
   }}
 ]
-
-Важно:
-- done = 3-5 предложений
-- обязательно действие Марголина
-- обязательно результат
-"""}
+"""
+            }
         ]
     )
 
     raw = resp.choices[0].message.content.strip()
+
+    raw = re.sub(r"^```json", "", raw)
+    raw = re.sub(r"^```", "", raw)
+    raw = re.sub(r"```$", "", raw)
 
     try:
         return json.loads(raw)
