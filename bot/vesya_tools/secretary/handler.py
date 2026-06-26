@@ -914,111 +914,48 @@ def _email_participants(e: dict) -> set[str]:
 
 
 def _build_mail_threads(emails):
-    def norm_subject(s: str):
-        s = (s or "").lower().strip()
-        s = re.sub(r"^(re|fw|fwd|ответ|пересл):\s*", "", s)
-        s = re.sub(r"\s+", " ", s)
-        return s.strip()
+    """
+    УПРОЩЁННАЯ ВЕРСИЯ:
+    без Message-ID графа, без union-find, без сложных связок
+    """
 
-    def dt(e):
-        try:
-            return datetime.fromisoformat(e.get("date_iso") or "")
-        except Exception:
-            return datetime.min
+    groups = {}
 
-    def participants(e):
-        s = set()
-        for k in ("from", "to"):
-            raw = e.get(k) or ""
-            for m in re.findall(r'[\w\.-]+@[\w\.-]+', raw):
-                s.add(m.lower())
-        return s
-
-    indexed = []
     for i, e in enumerate(emails, start=1):
+
         e = dict(e)
         e["email_no"] = i
-        e["_msg"] = _norm_msg_id(e.get("message_id"))
-        e["_refs"] = _header_refs(e)
-        e["_sub"] = norm_subject(e.get("subject"))
-        e["_dt"] = dt(e)
-        e["_part"] = participants(e)
-        indexed.append(e)
 
-    indexed.sort(key=lambda x: x["_dt"])
+        subject = (e.get("subject") or "").lower().strip()
+        subject = re.sub(r"^(re:|fw:|fwd:)\s*", "", subject)
+        subject = re.sub(r"\s+", " ", subject)
 
-    # --- UNION FIND ---
-    parent = list(range(len(indexed)))
+        sender = (e.get("from") or "").lower().strip()
 
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
+        # ключ = отправитель + тема (простая группировка)
+        key = f"{sender}||{subject}"
 
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
+        if key not in groups:
+            groups[key] = {
+                "thread_no": len(groups) + 1,
+                "subject": subject,
+                "participants": set(),
+                "messages": []
+            }
 
-    # 1) Message-ID linking
-    msg_map = {}
-    for i, e in enumerate(indexed):
-        if e["_msg"]:
-            msg_map[e["_msg"]] = i
+        groups[key]["messages"].append(e)
+        groups[key]["participants"].add(sender)
 
-    for i, e in enumerate(indexed):
-        for r in e["_refs"]:
-            if r in msg_map:
-                union(i, msg_map[r])
+    threads = list(groups.values())
 
-    # 2) Subject + participants + time window (NEW INTELLIGENCE LAYER)
-    for i in range(len(indexed)):
-        for j in range(i + 1, len(indexed)):
+    for t in threads:
+        t["participants"] = list(t["participants"])
 
-            a, b = indexed[i], indexed[j]
-
-            if not a["_sub"] or not b["_sub"]:
-                continue
-
-            # subject must match
-            if a["_sub"] != b["_sub"]:
-                continue
-
-            # at least one participant overlap
-            if not (a["_part"] & b["_part"]):
-                continue
-
-            # time window 21 days (important fix vs 14)
-            if a["_dt"] == datetime.min or b["_dt"] == datetime.min:
-                continue
-
-            if abs((b["_dt"] - a["_dt"]).days) <= 21:
-                union(i, j)
-
-    # --- BUILD THREADS ---
-    groups = {}
-    for i in range(len(indexed)):
-        root = find(i)
-        groups.setdefault(root, []).append(indexed[i])
-
-    threads = []
-    for k, msgs in enumerate(groups.values(), start=1):
-        msgs.sort(key=lambda x: x["_dt"])
-
-        threads.append({
-            "thread_no": k,
-            "subject": msgs[0].get("_sub", ""),
-            "participants": list({p for m in msgs for p in m["_part"]}),
-            "messages": msgs,
-            "inbox_count": sum(1 for m in msgs if m.get("folder") == "INBOX"),
-            "sent_count": sum(1 for m in msgs if m.get("folder") == "Sent"),
-        })
-
-    threads.sort(key=lambda t: t["messages"][0]["_dt"] if t["messages"] else datetime.min)
-
-    for i, t in enumerate(threads, start=1):
-        t["thread_no"] = i
+        # сортировка по дате
+        try:
+            t["messages"].sort(key=lambda x: x.get("date_iso") or "")
+        except Exception:
+            pass
 
     return threads
 
@@ -1026,21 +963,19 @@ def _thread_to_text(thread):
     text = ""
 
     for e in thread.get("messages") or []:
-        body = (e.get("body") or "")
-        body = re.sub(r"\s+", " ", body)[:800]
+
+        body = e.get("body") or ""
+        body = re.sub(r"\s+", " ", body)
+        body = body[:800]
 
         attachments = e.get("attachments") or []
-        att_count = len(attachments)
 
         text += f"""
 EMAIL #{e.get('email_no')}
-THREAD #{thread.get('thread_no')}
-FOLDER: {e.get('folder')}
-DATE: {e.get('date')}
 FROM: {e.get('from')}
 TO: {e.get('to')}
 SUBJECT: {e.get('subject')}
-ATTACHMENTS: {att_count}
+ATTACHMENTS: {len(attachments)}
 BODY: {body}
 ----------------------
 """
