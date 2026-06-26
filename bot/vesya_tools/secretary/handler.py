@@ -1064,60 +1064,48 @@ def _safe_json_loads(raw):
 def _gpt_analyze_thread(thread, project_name, period_text):
     client = openai.OpenAI()
 
-    SYSTEM_PROMPT = """
-Ты анализируешь ОДНУ ЦЕПОЧКУ ДЕЛОВОЙ РАБОТЫ.
-
-Не пересказывай письма.
-Восстанавливай реальный процесс работы.
-
-Всегда выделяй:
-- кто инициировал запрос
-- что конкретно хотели
-- что сделал Марголин
-- что было отправлено или подготовлено
-- чем завершилось
-
-ВАЖНО:
-- FOLDER=INBOX = входящий запрос
-- FOLDER=Sent = действие пользователя (работа)
-
-Если есть Sent — это ОСНОВНОЙ результат работы, не игнорируй его.
-"""
-
     text = _thread_to_text(thread)
+
+    system_prompt = (
+        "Ты анализируешь ОДНУ ЦЕПОЧКУ ДЕЛОВОЙ РАБОТЫ.\n"
+        "\n"
+        "Не пересказывай письма.\n"
+        "Восстанавливай реальный процесс работы.\n"
+        "\n"
+        "Всегда выделяй:\n"
+        "- инициатор\n"
+        "- что хотели\n"
+        "- что сделал Марголин\n"
+        "- результат\n"
+        "\n"
+        "INBOX = входящий запрос\n"
+        "Sent = действие пользователя\n"
+        "Sent ВСЕГДА важнее INBOX\n"
+    )
 
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": f"""
-Проект/группа: {project_name}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"""
+Проект: {project_name}
 Период: {period_text}
 
-Верни СТРОГО JSON-объект.
-
-Формат:
+Верни JSON:
 {{
   "thread_no": {thread.get("thread_no")},
-  "task": "короткое название задачи",
+  "task": "",
   "request_from": "",
-  "request_content": "",
-  "user_action": "",
+  "request": "",
+  "action": "",
   "result": "",
   "status": "в работе",
-  "emails": [],
-  "needs_manual_check": false
+  "emails": []
 }}
 
 Цепочка:
 {text}
-"""
-            }
+"""}
         ]
     )
 
@@ -1129,69 +1117,57 @@ def _gpt_analyze_thread(thread, project_name, period_text):
         return {
             "thread_no": thread.get("thread_no"),
             "task": "parse_error",
-            "raw": raw,
-            "needs_manual_check": True
+            "raw": raw
         }
-
 
 def _gpt_make_tasks_from_threads(thread_summaries, project_name, period_text):
     client = openai.OpenAI()
 
-    SYSTEM_PROMPT = """
-Ты формируешь АКТ ВЫПОЛНЕННЫХ РАБОТ.
-
-Ты НЕ пересказываешь письма.
-Ты объединяешь уже разобранные цепочки в задачи.
-
-Каждая задача = реальный кейс работы:
-1. инициатор
-2. запрос
-3. действия Марголина
-4. результат
-5. итог
-
-Запрещено:
-- "получено письмо"
-- "требуется проверка" без содержания
-- общие формулировки
-"""
+    system_prompt = (
+        "Ты формируешь АКТ ВЫПОЛНЕННЫХ РАБОТ.\n"
+        "\n"
+        "Ты НЕ пересказываешь письма.\n"
+        "Ты объединяешь цепочки в реальные рабочие задачи.\n"
+        "\n"
+        "Каждая задача должна описывать:\n"
+        "- кто обратился\n"
+        "- с чем\n"
+        "- что сделал Марголин\n"
+        "- чем закончилось\n"
+        "\n"
+        "НЕ используй фразы:\n"
+        "- 'получено письмо'\n"
+        "- 'требуется проверка'\n"
+    )
 
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": f"""
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"""
 Проект: {project_name}
 Период: {period_text}
 
-Вот уже разобранные цепочки:
-
+Цепочки:
 {json.dumps(thread_summaries, ensure_ascii=False, indent=2)}
 
-Верни СТРОГО JSON-массив:
+Верни JSON массив:
 
 [
   {{
-    "task": "название задачи",
-    "done": "инициатор → запрос → действия → результат → итог",
+    "task": "",
+    "done": "",
     "status": "в работе",
     "emails": [],
     "threads": []
   }}
 ]
 
-Правила:
-- done минимум 3-5 предложений
-- обязательно инициатор
+Важно:
+- done = 3-5 предложений
 - обязательно действие Марголина
 - обязательно результат
-"""
-            }
+"""}
         ]
     )
 
@@ -1207,7 +1183,6 @@ def _gpt_make_tasks_from_threads(thread_summaries, project_name, period_text):
                 "status": "error"
             }
         ]
-
 
 
 def _collect_actors(emails):
