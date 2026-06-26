@@ -60,6 +60,8 @@ def _decode_mime(text):
     return out
 
 
+
+
 def _imap_connect():
     user = os.getenv("MAILRU_EMAIL", "comves@list.ru")
     password = os.getenv("MAILRU_APP_PASSWORD")
@@ -70,6 +72,91 @@ def _imap_connect():
     imap = imaplib.IMAP4_SSL("imap.mail.ru", 993)
     imap.login(user, password)
     return imap
+
+def _imap_select_mailbox(imap, mailbox):
+    mailbox = str(mailbox or "INBOX")
+
+    for candidate in (mailbox, f'"{mailbox}"'):
+        try:
+            status, _ = imap.select(candidate)
+            if status == "OK":
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _parse_imap_list_name(raw_line):
+    if isinstance(raw_line, bytes):
+        line = raw_line.decode("utf-8", errors="ignore")
+    else:
+        line = str(raw_line)
+
+    m = re.search(r'\) "[^"]*" (.+)$', line)
+    if not m:
+        return ""
+
+    name = m.group(1).strip()
+
+    if name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+
+    return name.strip()
+
+
+def _mailru_target_folders(imap):
+    folders = [
+        {
+            "mailbox": "INBOX",
+            "folder": "INBOX",
+        }
+    ]
+
+    try:
+        status, data = imap.list()
+
+        if status == "OK":
+            for raw in data or []:
+                line = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else str(raw)
+                name = _parse_imap_list_name(line)
+
+                if not name:
+                    continue
+
+                low = line.lower()
+
+                print(f"[secretary] mailbox found: {line}", flush=True)
+
+                if (
+                    "\\sent" in low
+                    or "sent" in low
+                    or "отправ" in low
+                    or "&bb4" in low
+                ):
+                    folders.append({
+                        "mailbox": name,
+                        "folder": "Sent",
+                    })
+
+    except Exception as e:
+        print(f"[secretary] mailbox list failed: {type(e).__name__}: {e}", flush=True)
+
+    folders.append({
+        "mailbox": "Sent",
+        "folder": "Sent",
+    })
+
+    unique = []
+    seen = set()
+
+    for f in folders:
+        key = f"{f.get('mailbox')}|{f.get('folder')}"
+        if key not in seen:
+            unique.append(f)
+            seen.add(key)
+
+    return unique
 
 def _parse_email_date(value):
     try:
@@ -97,9 +184,14 @@ def _fetch_mailru_headers(limit=300, period_start=None, period_end=None):
         end_dt = end_dt + timedelta(days=1)
 
     try:
-        for folder in ["INBOX", "Sent"]:
+        for folder_info in _mailru_target_folders(imap):
             try:
-                imap.select(folder)
+                mailbox = folder_info["mailbox"]
+                folder = folder_info["folder"]
+
+                if not _imap_select_mailbox(imap, mailbox):
+                    print(f"[secretary] cannot select mailbox={mailbox}", flush=True)
+                    continue
                 status, data = imap.search(None, "ALL")
 
                 if status != "OK" or not data or not data[0]:
@@ -130,6 +222,7 @@ def _fetch_mailru_headers(limit=300, period_start=None, period_end=None):
 
                     results.append({
                         "folder": folder,
+                        "imap_folder": mailbox,
                         "imap_id": num.decode(errors="ignore"),
                         "date": date_raw,
                         "date_iso": msg_dt.isoformat() if msg_dt else "",
@@ -428,14 +521,7 @@ def _extract_message_text_and_attachments(msg, imap_id):
     excel_texts = []
 
     for part in msg.walk():
-        print(
-            "[MAIL PART]",
-            part.get_content_type(),
-            part.get_content_disposition(),
-            part.get_content_charset(),
-            bool(part.get_payload(decode=True)),
-            flush=True,
-        )
+        
         content_type = (part.get_content_type() or "").lower()
         disposition = (part.get_content_disposition() or "").lower()
         filename = _decode_mime(part.get_filename() or "")
@@ -514,13 +600,16 @@ def _fetch_mailru_full_messages(headers, max_messages=50):
     try:
         for h in headers[:max_messages]:
             folder = h.get("folder")
+            mailbox = h.get("imap_folder") or folder
             imap_id = h.get("imap_id")
 
-            if not folder or not imap_id:
+            if not folder or not mailbox or not imap_id:
                 continue
 
             try:
-                imap.select(folder)
+                if not _imap_select_mailbox(imap, mailbox):
+                    print(f"[secretary] cannot select mailbox={mailbox}", flush=True)
+                    continue
 
                 status, msg_data = imap.fetch(
                     str(imap_id).encode(),
