@@ -959,28 +959,100 @@ def _build_mail_threads(emails):
 
     return threads
 
+def _filter_noise_emails(emails):
+    """
+    Убирает мусор ДО GPT:
+    - уведомления
+    - системные письма
+    - пустые авто-алерты
+    - сервисные спамы
+    """
+
+    BAD_KEYWORDS = [
+        "no-reply",
+        "noreply",
+        "notification",
+        "уведомлен",
+        "alert",
+        "system",
+        "mailer-daemon",
+        "do not reply",
+        "password",
+        "код подтверждения",
+        "verification",
+        "security",
+        "robot",
+        "автоматичес"
+    ]
+
+    def is_noise(e):
+        text = " ".join([
+            str(e.get("subject", "")),
+            str(e.get("from", "")),
+            str(e.get("body", "")[:300])
+        ]).lower()
+
+        # 1. пустые письма
+        if not e.get("body") and not e.get("attachments"):
+            return True
+
+        # 2. слишком короткие авто-письма
+        if len(e.get("body") or "") < 20 and not e.get("attachments"):
+            return True
+
+        # 3. ключевые слова мусора
+        if any(k in text for k in BAD_KEYWORDS):
+            return True
+
+        return False
+
+    clean = [e for e in emails if not is_noise(e)]
+
+    return clean
+
 def _thread_to_text(thread):
-    text = ""
+    def clean_body(text):
+        text = text or ""
+
+        # убираем мусор цитат
+        text = re.sub(r">.*", "", text)
+        text = re.sub(r"-----Original Message-----.*", "", text, flags=re.S)
+
+        # схлопываем пробелы
+        text = re.sub(r"\s+", " ", text).strip()
+
+        return text
+
+    out = []
 
     for e in thread.get("messages") or []:
 
-        body = e.get("body") or ""
-        body = re.sub(r"\s+", " ", body)
-        body = body[:800]
+        body = clean_body(e.get("body"))
+
+        # ❗ ВАЖНО: оставляем только первые 2-3 смысловые строки
+        # режем не по символам, а по информации
+        body = body[:500]
 
         attachments = e.get("attachments") or []
 
-        text += f"""
-EMAIL #{e.get('email_no')}
-FROM: {e.get('from')}
-TO: {e.get('to')}
-SUBJECT: {e.get('subject')}
-ATTACHMENTS: {len(attachments)}
-BODY: {body}
-----------------------
-"""
+        # фильтр "пустых писем"
+        if not body and not attachments:
+            continue
 
-    return text[:12000]
+        out.append(
+            f"""
+FROM: {e.get('from')}
+SUBJECT: {e.get('subject')}
+FOLDER: {e.get('folder')}
+ATT: {len(attachments)}
+BODY: {body}
+"""
+        )
+
+    result = "\n---\n".join(out)
+
+    # жесткий потолок, но уже после очистки
+    return result[:9000]
 
 def _safe_json_loads(raw):
     raw = (raw or "").strip()
@@ -1611,27 +1683,36 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         print("DEBUG FILE: /tmp/raw_selected_emails.json", flush=True)
 
-        threads = _build_mail_threads(cache["selected"])
-        cache["threads"] = threads
+        selected_emails = _fetch_mailru_full_messages(
+            selected_headers,
+            max_messages=25
+        )
 
-        thread_summaries = []
+        # 🔥 фильтр мусора
+        selected_emails = _filter_noise_emails(selected_emails)
 
-        for thread in threads:
-            summary = _gpt_analyze_thread(
-                thread,
-                cache.get("project", ""),
-                cache.get("period_text", "")
-            )
-            thread_summaries.append(summary)
+        cache["selected"] = selected_emails
 
-        cache["thread_summaries"] = thread_summaries
+        await message.answer(
+            f"Выбрано писем: {len(selected_emails)}\n"
+            "Формирую акт..."
+        )
 
-        tasks = _gpt_make_tasks_from_threads(
-            thread_summaries,
+        tasks = _gpt_make_tasks(
+            selected_emails,
             cache.get("project", ""),
             cache.get("period_text", "")
         )
 
+        cache["tasks"] = tasks
+        cache["stage"] = "review_tasks"
+
+        await message.answer(
+            _tasks_review_text(tasks),
+            reply_markup=_tasks_review_keyboard(tasks),
+        )
+
+        return True
         cache["tasks"] = tasks
 
         cache["stage"] = "review_tasks"
