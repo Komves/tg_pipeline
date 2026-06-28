@@ -1335,11 +1335,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "Теперь читаю полные письма и вложения по выбранным адресатам..."
         )
 
-        selected_emails = _fetch_mailru_headers(
-            limit=50,
-            period_start=cache.get("period_start"),
-            period_end=cache.get("period_end")
-        )
+        selected_emails = selected_headers
 
         # фильтруем только нужные письма
         # временно НЕ фильтруем header-only письма
@@ -1348,13 +1344,8 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         for e in selected_emails:
             e["body"] = (e.get("body") or "")[:2000]
             e["attachments"] = e.get("attachments") or []
-        # ✔ ФИЛЬТРУЕМ ТОЛЬКО ПОСЛЕ ЗАПОЛНЕНИЯ BODY
-        # ✔ ВАЖНО: сначала наполняем body
-        for e in selected_emails:
-            e["body"] = (e.get("body") or "")[:2000]
-            e["attachments"] = e.get("attachments") or []
-
-        # ✔ ТЕПЕРЬ фильтруем (после наполнения)
+        
+        
         selected_emails = _filter_noise_emails(selected_emails)
         
 
