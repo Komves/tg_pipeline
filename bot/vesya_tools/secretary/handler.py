@@ -682,7 +682,7 @@ def _filter_noise_emails(emails):
             return True
 
         # 2. слишком короткие авто-письма
-        if len(e.get("body") or "") < 20 and not e.get("attachments"):
+        if len(e.get("subject") or "") < 2 and not e.get("attachments"):
             return True
 
         # 3. ключевые слова мусора
@@ -1362,7 +1362,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         print(f"Выбрано адресатов: {len(selected_actors)}", flush=True)
         print(f"После фильтра осталось писем: {len(selected_emails)}", flush=True)
 
-        total_chars = sum(len(e.get("body", "")) for e in selected_emails)
+        total_chars = sum(len(e.get("subject", "")) for e in selected_emails)
         print(f"Всего символов для GPT: {total_chars}", flush=True)
 
         import json
