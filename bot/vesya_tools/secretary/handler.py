@@ -390,16 +390,26 @@ def _gpt_analyze_chain(chain, actor):
     text = ""
 
     for e in chain:
+        imap_id = e.get("imap_id", "")
+        message_id = e.get("message_id", "")
+
         text += f"""
-FOLDER: {e.get('folder')}
-DATE: {e.get('date')}
-FROM: {e.get('from')}
-TO: {e.get('to')}
-SUBJECT: {e.get('subject')}
-ATTACHMENTS: {", ".join([a.get("filename", "") for a in (e.get("attachments") or [])])}
-BODY: {e.get('body','')[:2000]}
-----------------------
-"""
+        EMAIL #{i} | IMAP_ID={imap_id} | MSG_ID={message_id}
+        FOLDER: {e.get('folder')}
+        DATE: {e.get('date')}
+        FROM: {e.get('from')}
+        TO: {e.get('to')}
+        SUBJECT: {e.get('subject')}
+        ATTACHMENTS: {", ".join([
+            (
+                a.get("filename", "")
+                + (f" ({a.get('type', '')}, size={a.get('size', '')})" if a.get("size") else "")
+            )
+            for a in (e.get("attachments") or [])
+        ])}
+        BODY: {e.get('body','')[:2000]}
+        ----------------------
+        """
 
     client = openai.OpenAI()
 
@@ -887,7 +897,10 @@ def _tasks_review_text(tasks):
 
     for i, task in enumerate(tasks, start=1):
         emails = task.get("emails") or []
-        emails_text = ", ".join(str(x) for x in emails) if emails else "не указаны"
+        emails_text = ", ".join(
+            str(x.get("imap_id", x)) if isinstance(x, dict) else str(x)
+            for x in emails
+        )
 
         lines.append(
             f"{i}. {task.get('task', '')}\n"
@@ -977,6 +990,8 @@ BODY: {e.get('body','')[:2000]}
                 "role": "system",
                 "content": (
                     "Ты формируешь АКТ ВЫПОЛНЕННЫХ РАБОТ.\n"
+                    "ВАЖНО: EMAIL содержит IMAP_ID — используй его как основной идентификатор.\n"
+                    "Не придумывай EMAIL # как идентификатор.\n"
                     "\n"
                     "НЕ пересказываешь письма.\n"
                     "Описываешь реальные действия Марголина.\n"
