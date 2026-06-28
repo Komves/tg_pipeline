@@ -962,24 +962,21 @@ def _make_docx(tasks):
 def _gpt_make_tasks(emails, project_name, period_text):
     text = ""
 
-    for i, e in enumerate(emails, start=1):
-        text += f"""
-EMAIL #{i}
-FOLDER: {e.get('folder')}
-DATE: {e.get('date')}
-FROM: {e.get('from')}
-TO: {e.get('to')}
-SUBJECT: {e.get('subject')}
-ATTACHMENTS: {", ".join([
-    (
-        a.get("filename", "")
-        + (f" ({a.get('content_type', '')}, size={a.get('size', '')})" if a.get("size") else "")
-    )
-    for a in (e.get("attachments") or [])
-])}
-BODY: {e.get('body','')[:2000]}
-----------------------
-"""
+    imap_id = e.get("imap_id", "")
+    subject = e.get("subject", "")
+    sender = e.get("from", "")
+    date = e.get("date", "")
+
+    text += f"""
+    📩 {subject}
+    👤 {sender}
+    📅 {date}
+    🆔 IMAP_ID: {imap_id}
+
+    📝 {e.get('body','')[:2000]}
+
+    -------------------
+    """
 
     client = openai.OpenAI()
 
@@ -1361,7 +1358,15 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             e["attachments"] = e.get("attachments") or []
         
         
-        selected_emails = _filter_noise_emails(selected_emails)
+        selected_emails = selected_headers
+
+        # ✔ сначала обогащаем письма (НЕ индексы, а смысл)
+        for e in selected_emails:
+            e["body"] = (e.get("body") or "")[:2000]
+            e["attachments"] = e.get("attachments") or []
+
+        # ❌ ВАЖНО: фильтр больше НЕ используем здесь (он ломает смысловую структуру)
+        # selected_emails = _filter_noise_emails(selected_emails)
         
 
         cache["selected"] = selected_emails
