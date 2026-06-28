@@ -14,8 +14,6 @@ from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta
 import openai
-from docx import Document
-from openpyxl import load_workbook
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 SECRETARY_CACHE = {}
@@ -286,82 +284,6 @@ def _extract_fetch_bytes(msg_data):
     return b""
 
 
-def _tokenize_bodystructure(raw):
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", errors="ignore")
-
-    tokens = []
-    i = 0
-
-    while i < len(raw):
-        c = raw[i]
-
-        if c.isspace():
-            i += 1
-            continue
-
-        if c in "()":
-            tokens.append(c)
-            i += 1
-            continue
-
-        if c == '"':
-            i += 1
-            buf = ""
-
-            while i < len(raw):
-                if raw[i] == "\\" and i + 1 < len(raw):
-                    buf += raw[i + 1]
-                    i += 2
-                    continue
-
-                if raw[i] == '"':
-                    i += 1
-                    break
-
-                buf += raw[i]
-                i += 1
-
-            tokens.append(buf)
-            continue
-
-        j = i
-        while j < len(raw) and not raw[j].isspace() and raw[j] not in "()":
-            j += 1
-
-        tokens.append(raw[i:j])
-        i = j
-
-    return tokens
-
-
-def _parse_bodystructure_tokens(tokens):
-    pos = 0
-
-    def parse():
-        nonlocal pos
-
-        if pos >= len(tokens):
-            return None
-
-        token = tokens[pos]
-
-        if token == "(":
-            pos += 1
-            arr = []
-
-            while pos < len(tokens) and tokens[pos] != ")":
-                arr.append(parse())
-
-            if pos < len(tokens) and tokens[pos] == ")":
-                pos += 1
-
-            return arr
-
-        pos += 1
-        return token
-
-    return parse()
 
 
 def _find_param_value(params, name):
@@ -376,118 +298,40 @@ def _find_param_value(params, name):
 
     return ""
 
+def _extract_light_message(msg, imap_id: str):
+    """
+    УПРОЩЁННОЕ ИЗВЛЕЧЕНИЕ ПИСЬМА (ДЛЯ АКТА)
+    """
 
-def _walk_bodystructure(node, prefix=""):
-    parts = []
+    body = ""
+    attachments = []
 
-    if not isinstance(node, list) or not node:
-        return parts
+    for part in msg.walk():
+        content_type = (part.get_content_type() or "").lower()
+        filename = part.get_filename()
+        payload = part.get_payload(decode=True) or b""
 
-    if isinstance(node[0], list):
-        child_index = 1
+        # BODY
+        if content_type == "text/plain" and not filename and not body:
+            try:
+                body = payload.decode("utf-8", errors="ignore")
+            except Exception:
+                body = ""
 
-        for child in node:
-            if isinstance(child, list):
-                part_no = f"{prefix}.{child_index}" if prefix else str(child_index)
-                parts.extend(_walk_bodystructure(child, part_no))
-                child_index += 1
+        # ATTACHMENTS (ТОЛЬКО МЕТА)
+        if filename:
+            attachments.append({
+                "filename": filename,
+                "size": len(payload),
+                "type": content_type
+            })
 
-        return parts
+    # ЖЁСТКИЕ ЛИМИТЫ (ВАЖНО)
+    body = (body or "")[:3000]
+    attachments = attachments[:3]
 
-    if len(node) < 7:
-        return parts
+    return body, attachments
 
-    maintype = str(node[0] or "").lower()
-    subtype = str(node[1] or "").lower()
-    params = node[2] if len(node) > 2 else []
-    encoding = str(node[5] or "").lower() if len(node) > 5 else ""
-    size = node[6] if len(node) > 6 else ""
-
-    disposition = None
-    disposition_params = []
-
-    for item in node[7:]:
-        if isinstance(item, list) and item:
-            first = str(item[0] or "").lower()
-            if first in ("attachment", "inline"):
-                disposition = first
-                if len(item) > 1 and isinstance(item[1], list):
-                    disposition_params = item[1]
-
-    filename = (
-        _find_param_value(disposition_params, "filename")
-        or _find_param_value(params, "name")
-    )
-
-    parts.append({
-        "part_no": prefix or "1",
-        "maintype": maintype,
-        "subtype": subtype,
-        "content_type": f"{maintype}/{subtype}",
-        "encoding": encoding,
-        "size": str(size),
-        "disposition": disposition or "",
-        "filename": filename or "",
-    })
-
-    return parts
-
-
-def _fetch_bodystructure(imap, imap_id):
-    status, data = imap.fetch(str(imap_id).encode(), "(BODYSTRUCTURE)")
-
-    if status != "OK" or not data:
-        return []
-
-    raw = ""
-
-    for item in data:
-        if isinstance(item, tuple) and item:
-            raw = item[0].decode("utf-8", errors="ignore")
-            break
-
-    marker = "BODYSTRUCTURE "
-    if marker in raw:
-        raw = raw.split(marker, 1)[1].strip()
-
-    if raw.endswith(")"):
-        raw = raw[:-1].strip()
-
-    tokens = _tokenize_bodystructure(raw)
-    tree = _parse_bodystructure_tokens(tokens)
-
-    return _walk_bodystructure(tree)
-
-
-def _read_excel_preview(path, max_rows=20, max_cols=8):
-    out = []
-
-    try:
-        wb = load_workbook(path, read_only=True, data_only=True)
-
-        for ws in wb.worksheets[:3]:
-            out.append(f"Лист: {ws.title}")
-
-            rows_added = 0
-
-            for row in ws.iter_rows(max_row=max_rows, max_col=max_cols, values_only=True):
-                values = ["" if v is None else str(v) for v in row]
-
-                if any(v.strip() for v in values):
-                    out.append(" | ".join(values))
-                    rows_added += 1
-
-                if rows_added >= max_rows:
-                    break
-
-            out.append("")
-
-        wb.close()
-
-    except Exception as e:
-        out.append(f"Excel не удалось прочитать: {type(e).__name__}: {e}")
-
-    return "\n".join(out).strip()[:5000]
 
 
 def _fetch_part_bytes(imap, imap_id, part_no):
@@ -513,186 +357,26 @@ def _html_to_text(value):
     text = re.sub(r"\n\s*\n+", "\n\n", text)
     return text.strip()
 
-
-def _extract_message_text_and_attachments(msg, imap_id):
-    body = ""
-    html_body = ""
-    attachments = []
-    excel_texts = []
-
-    for part in msg.walk():
-        
-        content_type = (part.get_content_type() or "").lower()
-        disposition = (part.get_content_disposition() or "").lower()
-        filename = _decode_mime(part.get_filename() or "")
-
-        payload = part.get_payload(decode=True)
-
-        charset = part.get_content_charset() or "utf-8"
-
-        if content_type == "text/plain" and not filename and not body:
-            try:
-                body = (payload or b"").decode(charset, errors="ignore")
-            except Exception:
-                body = (payload or b"").decode("utf-8", errors="ignore")
-
-        elif content_type == "text/html" and not filename and not html_body:
-            try:
-                html_body = (payload or b"").decode(charset, errors="ignore")
-            except Exception:
-                html_body = (payload or b"").decode("utf-8", errors="ignore")
-
-        if filename:
-            item = {
-                "filename": filename,
-                "content_type": content_type,
-                "size": str(len(payload or b"")),
-            }
-
-            lower_name = filename.lower()
-
-            if lower_name.endswith(".xlsx") and payload:
-                safe_name = re.sub(r"[^a-zA-Zа-яА-Я0-9_.-]+", "_", filename)
-                tmp_path = Path(tempfile.gettempdir()) / f"sec_{imap_id}_{safe_name}"
-
-                with open(tmp_path, "wb") as f:
-                    f.write(payload)
-
-                preview = _read_excel_preview(tmp_path)
-
-                item["excel_preview"] = preview
-                excel_texts.append(
-                    f"Файл: {filename}\n{preview}"
-                )
-
-                try:
-                    tmp_path.unlink()
-                except Exception:
-                    pass
-
-            elif lower_name.endswith(".xls"):
-                item["excel_preview"] = "Формат .xls пока не читаю без xlrd. В акт пойдет имя вложения."
-
-            attachments.append(item)
-
-    if not body and html_body:
-        body = _html_to_text(html_body)
-
-    body = (body or "").strip()
-
-    if excel_texts:
-        body = (
-            body
-            + "\n\nEXCEL PREVIEW:\n"
-            + "\n\n".join(excel_texts)
-        ).strip()
-
-    return body[:9000], attachments
-
-
-def _fetch_mailru_full_messages(headers, max_messages=50):
-    imap = _imap_connect()
-    if imap is None:
-        return []
-
-    results = []
-
-    try:
-        for h in headers[:max_messages]:
-            folder = h.get("folder")
-            mailbox = h.get("imap_folder") or folder
-            imap_id = h.get("imap_id")
-
-            if not folder or not mailbox or not imap_id:
-                continue
-
-            try:
-                if not _imap_select_mailbox(imap, mailbox):
-                    print(f"[secretary] cannot select mailbox={mailbox}", flush=True)
-                    continue
-
-                status, msg_data = imap.fetch(
-                    str(imap_id).encode(),
-                    "(RFC822)"
-                )
-
-                if status != "OK" or not msg_data:
-                    continue
-
-                raw_bytes = _extract_fetch_bytes(msg_data)
-
-                if not raw_bytes:
-                    print(
-                        f"[secretary] RFC822 empty folder={folder} id={imap_id}",
-                        flush=True
-                    )
-                    continue
-
-                msg = email.message_from_bytes(raw_bytes)
-
-                body, attachments = _extract_message_text_and_attachments(msg, imap_id)
-
-                item = dict(h)
-                item["body"] = body
-                item["attachments"] = attachments
-
-                results.append(item)
-
-                print(
-                    f"[secretary] full loaded RFC822 folder={folder} id={imap_id} "
-                    f"attachments={len(attachments)} body_chars={len(body)}",
-                    flush=True
-                )
-
-            except Exception as e:
-                print(
-                    f"[secretary] full fetch RFC822 failed folder={folder} id={imap_id}: "
-                    f"{type(e).__name__}: {e}",
-                    flush=True
-                )
-                continue
-
-    finally:
-        try:
-            imap.logout()
-        except Exception:
-            pass
-
-    return results
-# =========================
-# GROUPING
-# =========================
-
 def _build_cases(emails):
     cases = {}
 
     for e in emails:
-        raw_from = e.get("from", "unknown")
+        sender = (e.get("from") or "unknown").lower().strip()
 
-        match = re.search(r'[\w\.-]+@[\w\.-]+', raw_from)
-        sender = match.group(0).lower() if match else raw_from.lower().strip()
-
-        subject = (e.get("subject") or "").lower().strip()
-        subject = re.sub(r"^(re:|fw:|fwd:)\s*", "", subject)
-        subject = re.sub(r"\s+", " ", subject)
-
-        key = sender
-
-        if key not in cases:
-            cases[key] = {
-                "emails": [],
-                "senders": set()
+        if sender not in cases:
+            cases[sender] = {
+                "emails": []
             }
 
-        cases[key]["emails"].append(e)
-        cases[key]["senders"].add(sender)
+        cases[sender]["emails"].append({
+            "subject": e.get("subject"),
+            "body": (e.get("body") or "")[:1500],
+            "attachments": e.get("attachments", []),
+            "date": e.get("date")
+        })
 
     return list(cases.values())
 
-
-# =========================
-# GPT ENGINE
-# =========================
 
 def _build_chain(selected_emails, actor):
     return [
@@ -1655,6 +1339,9 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             max_messages=50
         )
 
+        # 🔥 УПРОЩЕНИЕ: чистим мусор ДО GPT
+        selected_emails = _filter_noise_emails(selected_emails)
+
         cache["selected"] = selected_emails
         cache["stage"] = "analyzing"
 
@@ -1683,13 +1370,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         print("DEBUG FILE: /tmp/raw_selected_emails.json", flush=True)
 
-        selected_emails = _fetch_mailru_full_messages(
-            selected_headers,
-            max_messages=25
-        )
-
-        # 🔥 фильтр мусора
-        selected_emails = _filter_noise_emails(selected_emails)
+       
 
         cache["selected"] = selected_emails
 
@@ -1712,17 +1393,6 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             reply_markup=_tasks_review_keyboard(tasks),
         )
 
-        return True
-        cache["tasks"] = tasks
-
-        cache["stage"] = "review_tasks"
-
-        await message.answer(
-            _tasks_review_text(tasks),
-            reply_markup=_tasks_review_keyboard(tasks),
-        )
-
-        return True
 
     # -----------------------------
     # GPT ANALYSIS + DOCX ACT
