@@ -678,7 +678,7 @@ def _filter_noise_emails(emails):
         ]).lower()
 
         # 1. пустые письма
-        if not e.get("body") and not e.get("attachments"):
+        if not e.get("attachments") and not e.get("subject"):
             return True
 
         # 2. слишком короткие авто-письма
@@ -1349,6 +1349,12 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             e["body"] = (e.get("body") or "")[:2000]
             e["attachments"] = e.get("attachments") or []
         # ✔ ФИЛЬТРУЕМ ТОЛЬКО ПОСЛЕ ЗАПОЛНЕНИЯ BODY
+        # ✔ ВАЖНО: сначала наполняем body
+        for e in selected_emails:
+            e["body"] = (e.get("body") or "")[:2000]
+            e["attachments"] = e.get("attachments") or []
+
+        # ✔ ТЕПЕРЬ фильтруем (после наполнения)
         selected_emails = _filter_noise_emails(selected_emails)
         
 
