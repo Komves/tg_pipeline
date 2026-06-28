@@ -1334,10 +1334,18 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "Теперь читаю полные письма и вложения по выбранным адресатам..."
         )
 
-        selected_emails = _fetch_mailru_full_messages(
-            selected_headers,
-            max_messages=50
+        selected_emails = _fetch_mailru_headers(
+            limit=50,
+            period_start=cache.get("period_start"),
+            period_end=cache.get("period_end")
         )
+
+        # фильтруем только нужные письма
+        selected_emails = _filter_noise_emails(selected_emails)
+
+        for e in selected_emails:
+            e["body"] = (e.get("body") or "")[:2000]
+            e["attachments"] = e.get("attachments") or []
 
         # 🔥 УПРОЩЕНИЕ: чистим мусор ДО GPT
         selected_emails = _filter_noise_emails(selected_emails)
