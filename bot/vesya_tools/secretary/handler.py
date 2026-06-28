@@ -1358,7 +1358,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             e["attachments"] = e.get("attachments") or []
         
         
-        selected_emails = selected_headers
+
 
         # ✔ сначала обогащаем письма (НЕ индексы, а смысл)
         for e in selected_emails:
