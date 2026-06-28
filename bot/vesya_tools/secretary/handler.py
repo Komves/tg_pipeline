@@ -962,7 +962,22 @@ def _make_docx(tasks):
 def _gpt_make_tasks(emails, project_name, period_text):
     text = ""
 
-    imap_id = e.get("imap_id", "")
+    for e in emails:
+        imap_id = e.get("imap_id", "")
+        subject = e.get("subject", "")
+        sender = e.get("from", "")
+        date = e.get("date", "")
+
+        text += f"""
+📩 {subject}
+👤 {sender}
+📅 {date}
+🆔 IMAP_ID: {imap_id}
+
+📝 {e.get('body','')[:2000]}
+
+-------------------
+"""
     subject = e.get("subject", "")
     sender = e.get("from", "")
     date = e.get("date", "")
