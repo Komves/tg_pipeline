@@ -829,6 +829,14 @@ def _gpt_make_tasks_from_threads(thread_summaries, project_name, period_text):
                 "role": "system",
                 "content": (
                     "Ты формируешь акт выполненных работ.\n"
+                    "ЗАПРЕЩЕНО:\n"
+                    "- использовать нумерацию писем (EMAIL #, №, списки с цифрами)\n"
+                    "- выводить номера писем в виде 1,2,3...\n"
+                    "- использовать IMAP как список через запятую без пояснения\n"
+                    "\n"
+                    "Вместо этого:\n"
+                    "- описывай письма словами (тема, суть)\n"
+                    "- если нужны ссылки на письма — используй IMAP_ID только внутри JSON массива, не в тексте\n"
                     "Каждый thread = одна задача.\n"
                     "Не дроби и не объединяй разные threads.\n"
                 )
@@ -895,7 +903,7 @@ def _tasks_review_text(tasks):
     lines = ["GPT сгруппировал задачи. Проверь статусы:\n"]
     
 
-    for i, task in enumerate(tasks, start=1):
+    for task in tasks:
         emails = task.get("emails") or []
         emails_text = ", ".join(
             str(x.get("imap_id", x)) if isinstance(x, dict) else str(x)
@@ -903,7 +911,7 @@ def _tasks_review_text(tasks):
         )
 
         lines.append(
-            f"{i}. {task.get('task', '')}\n"
+            f"• {task.get('task', '')}\n"
             f"   Что сделано: {task.get('done', '')}\n"
             f"   Письма: {emails_text}\n"
             f"   Статус: {task.get('status', 'в работе')}\n"
