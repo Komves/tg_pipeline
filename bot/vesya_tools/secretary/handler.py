@@ -15,6 +15,7 @@ from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta
 import openai
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from docx import Document   
 
 SECRETARY_CACHE = {}
 
@@ -1341,14 +1342,15 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         )
 
         # фильтруем только нужные письма
-        selected_emails = _filter_noise_emails(selected_emails)
+        # временно НЕ фильтруем header-only письма
+        # фильтрация будет после наполнения body
 
         for e in selected_emails:
             e["body"] = (e.get("body") or "")[:2000]
             e["attachments"] = e.get("attachments") or []
-
-        # 🔥 УПРОЩЕНИЕ: чистим мусор ДО GPT
+        # ✔ ФИЛЬТРУЕМ ТОЛЬКО ПОСЛЕ ЗАПОЛНЕНИЯ BODY
         selected_emails = _filter_noise_emails(selected_emails)
+        
 
         cache["selected"] = selected_emails
         cache["stage"] = "analyzing"
