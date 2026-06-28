@@ -905,9 +905,10 @@ def _tasks_review_text(tasks):
 
     for task in tasks:
         emails = task.get("emails") or []
-        emails_text = ", ".join(
-            str(x.get("imap_id", x)) if isinstance(x, dict) else str(x)
+        emails_text = "\n".join(
+            f"• {x.get('subject','(без темы)')} — {x.get('from','')} — {x.get('date','')}"
             for x in emails
+            if isinstance(x, dict)
         )
 
         lines.append(
