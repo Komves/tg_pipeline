@@ -630,11 +630,16 @@ def _header_refs(header: dict) -> set[str]:
 
 
 def _expand_headers_by_threads(all_headers, seed_headers):
+    seed_actors = frozenset(
+        _actor_key(e.get("from", "")) for e in seed_headers
+    )
+
+    seed_senders = seed_actors
     selected = list(seed_headers or [])
 
-    seed_thread_ids = {
-        _header_refs(h) for h in seed_headers
-    }
+    seed_thread_ids = set()
+    for h in seed_headers:
+        seed_thread_ids.update(_header_refs(h))
 
     seed_ids_flat = set()
     for s in seed_thread_ids:
@@ -652,8 +657,7 @@ def _expand_headers_by_threads(all_headers, seed_headers):
 
         for h in all_headers:
             sender_actor = _actor_key(h.get("from", ""))
-            seed_actors = {_actor_key(e.get("from", "")) for e in seed_headers}
-
+            
             if sender_actor not in seed_actors:
                 continue
             if h in selected:
