@@ -984,7 +984,7 @@ def _tasks_review_text(tasks):
         request_from = task.get("request_from") or task.get("from") or task.get("initiator") or ""
         topic = task.get("topic") or task.get("task") or task.get("subject") or "Тема не определена"
         done = task.get("done") or task.get("action") or task.get("result") or "Описание не сформировано"
-        status = task.get("status") or "в работе"
+        status = task.get("status") or "требует проверки"   
 
         lines.append(
                 f"{i}. Получен запрос от: {request_from if request_from else 'не определено'}\n"
@@ -1552,15 +1552,21 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         selected_emails = _fetch_selected_full_emails(selected_headers)
 
+        threads = _build_mail_threads(selected_emails)
+        cache["threads"] = threads
+
         for e in selected_emails:
             e["body"] = (e.get("body") or "")[:3000]
             e["attachments"] = e.get("attachments") or []
 
         selected_emails = _filter_noise_emails(selected_emails)
-        selected_emails = _compress_emails(selected_emails)
+        # ВАЖНО: сохраняем thread-идентификацию для GPT
+        for e in selected_emails:
+            e["thread_key"] = f"{_norm_subject(e.get('subject'))}|{_actor_key(e.get('from'))}"
 
         # ❌ ВАЖНО: фильтр больше НЕ используем здесь (он ломает смысловую структуру)
-        # selected_emails = _filter_noise_emails(selected_emails)
+        # ВАЖНО: фильтрация перенесена ПОСЛЕ построения цепочек
+        clean_emails_for_threads = selected_emails
         
 
         cache["selected"] = selected_emails
@@ -1600,8 +1606,8 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "Формирую акт..."
         )
 
-        tasks = _gpt_make_tasks(
-            selected_emails,
+        tasks = _gpt_make_tasks_from_threads(
+            _build_mail_threads(selected_emails),
             cache.get("project", ""),
             cache.get("period_text", "")
         )
