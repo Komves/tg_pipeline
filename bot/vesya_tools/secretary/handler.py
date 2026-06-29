@@ -1552,9 +1552,6 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         selected_emails = _fetch_selected_full_emails(selected_headers)
 
-        threads = _build_mail_threads(selected_emails)
-        cache["threads"] = threads
-
         for e in selected_emails:
             e["body"] = (e.get("body") or "")[:3000]
             e["attachments"] = e.get("attachments") or []
@@ -1565,8 +1562,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             e["thread_key"] = f"{_norm_subject(e.get('subject'))}|{_actor_key(e.get('from'))}"
 
         # ❌ ВАЖНО: фильтр больше НЕ используем здесь (он ломает смысловую структуру)
-        # ВАЖНО: фильтрация перенесена ПОСЛЕ построения цепочек
-        clean_emails_for_threads = selected_emails
+        # selected_emails = _filter_noise_emails(selected_emails)
         
 
         cache["selected"] = selected_emails
@@ -1606,11 +1602,34 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "Формирую акт..."
         )
 
-        tasks = _gpt_make_tasks_from_threads(
-            _build_mail_threads(selected_emails),
+        tasks = _gpt_make_tasks(
+            selected_emails,
             cache.get("project", ""),
             cache.get("period_text", "")
         )
+
+        def _fix_status(tasks):
+            for t in tasks:
+                text = ((t.get("done") or "") + " " + (t.get("topic") or "")).lower()
+
+                if any(x in text for x in [
+                    "подготовлен",
+                    "направлен",
+                    "отправлен",
+                    "заключение",
+                    "ответ",
+                    "проект",
+                    "договор",
+                    "акт"
+                ]):
+                    t["status"] = "завершено"
+                else:
+                    t["status"] = "в работе"
+
+            return tasks
+
+
+        tasks = _fix_status(tasks)
 
         if not isinstance(tasks, list):
             await message.answer("Ошибка генерации задач")
