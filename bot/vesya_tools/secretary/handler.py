@@ -16,6 +16,9 @@ from datetime import datetime, timedelta
 import openai
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from docx import Document 
+import copy
+emails = copy.deepcopy(emails)
+
 
 def _compress_emails(emails):
     compressed = []
@@ -643,6 +646,15 @@ def _expand_headers_by_threads(all_headers, seed_headers):
                 continue
 
             refs = _header_refs(h)
+
+            sender = _actor_key(h.get("from", ""))
+
+            seed_senders = {
+                _actor_key(e.get("from", "")) for e in seed_headers
+            }
+
+            if sender not in seed_senders:
+                continue
 
             if refs and selected_ids and refs.intersection(selected_ids):
                 selected.append(h)
