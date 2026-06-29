@@ -965,11 +965,16 @@ def _tasks_review_text(tasks):
             if isinstance(x, dict)
         )
 
+        request_from = task.get("request_from") or task.get("from") or task.get("initiator") or ""
+        topic = task.get("task") or task.get("topic") or task.get("subject") or "Тема не определена"
+        done = task.get("done") or task.get("action") or task.get("result") or "Описание не сформировано"
+        status = task.get("status") or "в работе"
+
         lines.append(
-            f"• {task.get('task', '')}\n"
-            f"   Что сделано: {task.get('done', '')}\n"
-            f"   Письма: {emails_text}\n"
-            f"   Статус: {task.get('status', 'в работе')}\n"
+            f"Получен запрос от: {request_from if request_from else 'не определено'}\n"
+            f"Тема: {topic}\n"
+            f"Что сделано: {done}\n"
+            f"Статус задачи: {status}\n"
         )
 
     lines.append("Когда статусы верные — нажми «Сформировать акт».")
