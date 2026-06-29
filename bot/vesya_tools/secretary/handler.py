@@ -17,7 +17,7 @@ import openai
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from docx import Document 
 import copy
-emails = copy.deepcopy(emails)
+
 
 
 def _compress_emails(emails):
@@ -691,6 +691,8 @@ def _email_participants(e: dict) -> set[str]:
 
 
 def _build_mail_threads(emails):
+    emails = copy.deepcopy(emails)
+
     """
     УПРОЩЁННАЯ ВЕРСИЯ:
     без Message-ID графа, без union-find, без сложных связок
