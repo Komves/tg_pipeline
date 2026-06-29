@@ -248,6 +248,60 @@ def _fetch_mailru_headers(limit=300, period_start=None, period_end=None):
     return results
 
 
+def _fetch_selected_full_emails(headers):
+    imap = _imap_connect()
+    if imap is None:
+        return headers
+
+    out = []
+
+    try:
+        for h in headers:
+            try:
+                mailbox = h.get("imap_folder") or "INBOX"
+                imap_id = h.get("imap_id")
+
+                if not imap_id:
+                    continue
+
+                if not _imap_select_mailbox(imap, mailbox):
+                    continue
+
+                status, msg_data = imap.fetch(
+                    str(imap_id).encode(),
+                    "(RFC822)"
+                )
+
+                if status != "OK" or not msg_data or not msg_data[0]:
+                    continue
+
+                raw = _extract_fetch_bytes(msg_data)
+                if not raw:
+                    continue
+
+                msg = email.message_from_bytes(raw)
+                body, attachments = _extract_light_message(msg, str(imap_id))
+
+                item = dict(h)
+                item["body"] = body
+                item["attachments"] = attachments
+                out.append(item)
+
+            except Exception as e:
+                print(
+                    f"[secretary] full fetch failed imap_id={h.get('imap_id')}: {type(e).__name__}: {e}",
+                    flush=True,
+                )
+                out.append(h)
+
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+    return out
+
 def _imap_unquote(value):
     if value is None:
         return ""
@@ -1371,22 +1425,10 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "Теперь читаю полные письма и вложения по выбранным адресатам..."
         )
 
-        selected_emails = selected_headers
-
-        # фильтруем только нужные письма
-        # временно НЕ фильтруем header-only письма
-        # фильтрация будет после наполнения body
+        selected_emails = _fetch_selected_full_emails(selected_headers)
 
         for e in selected_emails:
-            e["body"] = (e.get("body") or "")[:2000]
-            e["attachments"] = e.get("attachments") or []
-        
-        
-
-
-        # ✔ сначала обогащаем письма (НЕ индексы, а смысл)
-        for e in selected_emails:
-            e["body"] = (e.get("body") or "")[:2000]
+            e["body"] = (e.get("body") or "")[:3000]
             e["attachments"] = e.get("attachments") or []
 
         # ❌ ВАЖНО: фильтр больше НЕ используем здесь (он ломает смысловую структуру)
