@@ -15,7 +15,21 @@ from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta
 import openai
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from docx import Document   
+from docx import Document 
+
+def _compress_emails(emails):
+    compressed = []
+
+    for e in emails:
+        compressed.append({
+            "from": e.get("from"),
+            "subject": e.get("subject"),
+            "date": e.get("date"),
+            "imap_id": e.get("imap_id"),
+            "body_short": (e.get("body") or "")[:800]
+        })
+
+    return compressed 
 
 SECRETARY_CACHE = {}
 
@@ -1525,6 +1539,9 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         for e in selected_emails:
             e["body"] = (e.get("body") or "")[:3000]
             e["attachments"] = e.get("attachments") or []
+
+        selected_emails = _filter_noise_emails(selected_emails)
+        selected_emails = _compress_emails(selected_emails)
 
         # ❌ ВАЖНО: фильтр больше НЕ используем здесь (он ломает смысловую структуру)
         # selected_emails = _filter_noise_emails(selected_emails)
