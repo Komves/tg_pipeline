@@ -23,13 +23,15 @@ def _compress_emails(emails):
     for e in emails:
         compressed.append({
             "from": e.get("from"),
+            "to": e.get("to"),
+            "folder": e.get("folder"),
             "subject": e.get("subject"),
             "date": e.get("date"),
-            "imap_id": e.get("imap_id"),
-            "body_short": (e.get("body") or "")[:800]
+            "attachments": e.get("attachments", [])[:2],
+            "body": (e.get("body") or "")[:1200],
         })
 
-    return compressed 
+    return compressed
 
 SECRETARY_CACHE = {}
 
