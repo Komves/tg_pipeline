@@ -1581,7 +1581,10 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         selected_keys = {a["key"] for a in selected_actors}
         selected_headers = [
             e for e in cache["emails"]
-            if _actor_key(e.get("from", "")) in selected_keys
+            if (
+                _actor_key(e.get("from", "")) in selected_keys
+                or _actor_key(e.get("to", "")) in selected_keys
+            )
         ]
 
         selected_headers = _expand_headers_by_threads(
