@@ -917,6 +917,28 @@ def _gpt_analyze_thread(thread, project_name, period_text):
             "raw": raw
         }
 
+def _build_cases_from_emails(emails):
+    cases = {}
+
+    for e in emails:
+        sender = _actor_key(e.get("from", "unknown"))
+        subject = _norm_subject(e.get("subject", ""))
+
+        # ключ кейса
+        key = f"{sender}::{subject}"
+
+        if key not in cases:
+            cases[key] = {
+                "actor": sender,
+                "subject": subject,
+                "emails": []
+            }
+
+        cases[key]["emails"].append(e)
+
+    return list(cases.values())
+
+
 def _gpt_make_tasks_from_threads(thread_summaries, project_name, period_text):
     client = openai.OpenAI()
 
@@ -1074,10 +1096,17 @@ def _make_docx(tasks):
     return path
 
 
-def _gpt_make_tasks(emails, project_name, period_text):
+def _gpt_make_tasks(cases, project_name, period_text):
     text = ""
 
-    for e in emails:
+    for c in cases:
+        emails = c["emails"]
+
+        text += f"""
+    CASE:
+    Actor: {c["actor"]}
+    Subject: {c["subject"]}
+    """
         imap_id = e.get("imap_id", "")
         subject = e.get("subject", "")
         sender = e.get("from", "")
@@ -1521,8 +1550,10 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "Формирую акт..."
         )
 
+        cases = _build_cases_from_emails(selected_emails)
+
         tasks = _gpt_make_tasks(
-            selected_emails,
+            cases,
             cache.get("project", ""),
             cache.get("period_text", "")
         )
