@@ -1275,10 +1275,8 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             )
         ]
 
-        selected_headers = _expand_headers_by_threads(
-            cache["emails"],
-            selected_headers,
-        )
+        # THREAD EXPANSION DISABLED (case-based pipeline)
+        selected_headers = selected_headers
 
         await message.answer(
             f"Выбрано писем: {len(selected_headers)}.\n"
