@@ -16,7 +16,6 @@ from datetime import datetime, timedelta
 import openai
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from docx import Document 
-import copy
 
 
 
@@ -701,58 +700,6 @@ def _email_participants(e: dict) -> set[str]:
     return out
 
 
-def _build_mail_threads(emails):
-    emails = copy.deepcopy(emails)
-
-    """
-    УПРОЩЁННАЯ ВЕРСИЯ:
-    без Message-ID графа, без union-find, без сложных связок
-    """
-
-    groups = {}
-
-    for i, e in enumerate(emails, start=1):
-
-        e = dict(e)
-        e["email_no"] = i
-
-        subject = (e.get("subject") or "").lower().strip()
-        subject = re.sub(r"^(re:|fw:|fwd:)\s*", "", subject)
-        subject = re.sub(r"\s+", " ", subject)
-
-        sender = (e.get("from") or "").lower().strip()
-
-        # ключ = отправитель + тема (простая группировка)
-        refs = _header_refs(e)
-
-        if refs:
-            key = f"msg::{sorted(list(refs))[0]}"
-        else:
-            key = f"{sender}||{subject}"
-
-        if key not in groups:
-            groups[key] = {
-                "thread_no": len(groups) + 1,
-                "subject": subject,
-                "participants": set(),
-                "messages": []
-            }
-
-        groups[key]["messages"].append(e)
-        groups[key]["participants"].add(sender)
-
-    threads = list(groups.values())
-
-    for t in threads:
-        t["participants"] = list(t["participants"])
-
-        # сортировка по дате
-        try:
-            t["messages"].sort(key=lambda x: x.get("date_iso") or "")
-        except Exception:
-            pass
-
-    return threads
 
 def _filter_noise_emails(emails):
     """
@@ -805,49 +752,6 @@ def _filter_noise_emails(emails):
 
     return clean
 
-def _thread_to_text(thread):
-    def clean_body(text):
-        text = text or ""
-
-        # убираем мусор цитат
-        text = re.sub(r">.*", "", text)
-        text = re.sub(r"-----Original Message-----.*", "", text, flags=re.S)
-
-        # схлопываем пробелы
-        text = re.sub(r"\s+", " ", text).strip()
-
-        return text
-
-    out = []
-
-    for e in thread.get("messages") or []:
-
-        body = clean_body(e.get("body"))
-
-        # ❗ ВАЖНО: оставляем только первые 2-3 смысловые строки
-        # режем не по символам, а по информации
-        body = body[:500]
-
-        attachments = e.get("attachments") or []
-
-        # фильтр "пустых писем"
-        if not body and not attachments:
-            continue
-
-        out.append(
-            f"""
-FROM: {e.get('from')}
-SUBJECT: {e.get('subject')}
-FOLDER: {e.get('folder')}
-ATT: {len(attachments)}
-BODY: {body}
-"""
-        )
-
-    result = "\n---\n".join(out)
-
-    # жесткий потолок, но уже после очистки
-    return result[:9000]
 
 def _safe_json_loads(raw):
     raw = (raw or "").strip()
@@ -859,63 +763,7 @@ def _safe_json_loads(raw):
     return json.loads(raw)
 
 
-def _gpt_analyze_thread(thread, project_name, period_text):
-    client = openai.OpenAI()
 
-    text = _thread_to_text(thread)
-
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Ты анализируешь ОДНУ цепочку деловой переписки.\n"
-                    "Не пересказывай письма.\n"
-                    "Определи процесс: запрос → действия → результат.\n"
-                    "INBOX = запрос\n"
-                    "Sent = действие пользователя (важнее INBOX)\n"
-                )
-            },
-            {
-                "role": "user",
-                "content": f"""
-Проект: {project_name}
-Период: {period_text}
-
-Верни JSON:
-{{
-  "thread_no": {thread.get("thread_no")},
-  "task": "",
-  "request_from": "",
-  "request": "",
-  "action": "",
-  "result": "",
-  "status": "в работе",
-  "emails": []
-}}
-
-Цепочка:
-{text}
-"""
-            }
-        ]
-    )
-
-    raw = resp.choices[0].message.content.strip()
-
-    raw = re.sub(r"^```json", "", raw)
-    raw = re.sub(r"^```", "", raw)
-    raw = re.sub(r"```$", "", raw)
-
-    try:
-        return json.loads(raw)
-    except Exception:
-        return {
-            "thread_no": thread.get("thread_no"),
-            "task": "parse_error",
-            "raw": raw
-        }
 
 def _build_cases_from_emails(emails):
     cases = {}
@@ -939,69 +787,6 @@ def _build_cases_from_emails(emails):
     return list(cases.values())
 
 
-def _gpt_make_tasks_from_threads(thread_summaries, project_name, period_text):
-    client = openai.OpenAI()
-
-    thread_summaries = thread_summaries[:20]  # ЖЁСТКИЙ ЛИМИТ
-
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Ты формируешь акт выполненных работ.\n"
-                    "ЗАПРЕЩЕНО:\n"
-                    "- использовать нумерацию писем (EMAIL #, №, списки с цифрами)\n"
-                    "- выводить номера писем в виде 1,2,3...\n"
-                    "- использовать IMAP как список через запятую без пояснения\n"
-                    "\n"
-                    "Вместо этого:\n"
-                    "- описывай письма словами (тема, суть)\n"
-                    "- если нужны ссылки на письма — используй IMAP_ID только внутри JSON массива, не в тексте\n"
-                    "Каждый thread = одна задача.\n"
-                    "Не дроби и не объединяй разные threads.\n"
-                )
-            },
-            {
-                "role": "user",
-                "content": f"""
-Проект: {project_name}
-Период: {period_text}
-
-Threads:
-{json.dumps(thread_summaries, ensure_ascii=False, indent=2)}
-
-Верни JSON массив:
-[
-  {{
-    "request_from": "",
-    "topic": "",
-    "done": "",
-    "status": "в работе"
-  }}
-]
-"""
-            }
-        ]
-    )
-
-    raw = resp.choices[0].message.content.strip()
-
-    raw = re.sub(r"^```json", "", raw)
-    raw = re.sub(r"^```", "", raw)
-    raw = re.sub(r"```$", "", raw)
-
-    try:
-        return json.loads(raw)
-    except Exception:
-        return [
-            {
-                "task": "parse_error",
-                "done": raw,
-                "status": "error"
-            }
-        ]
 
 
 def _collect_actors(emails):
