@@ -791,7 +791,8 @@ def _build_cases_from_emails(emails):
                 "actor": sender,
                 "subject": subject,
                 "reply_hint": reply_hint,
-                "emails": []
+                "emails": [],
+                "semantic_hint": semantic_hint
             }
 
         cases[key]["emails"].append(e)
@@ -964,27 +965,29 @@ def _gpt_make_tasks(cases, project_name, period_text):
 )
 
     raw = resp.choices[0].message.content.strip()
+    # =========================
+    # 🔥 JAIL FIX: GPT GUARD
+    # =========================
 
-    with open("/tmp/gpt_answer.txt", "w", encoding="utf-8") as f:
-        f.write(raw)
-
-    print("GPT ANSWER SAVED: /tmp/gpt_answer.txt", flush=True)
+    import json
 
     try:
-        import json
-        data = json.loads(raw)
-        if isinstance(data, list):
-            return data
+        data = _safe_json_loads(raw)
     except Exception:
-        pass
+        data = None
 
-    return [
-        {
-            "task": "Анализ переписки",
-            "done": raw,
-            "status": "требует проверки"
-        }
-    ]
+    if not isinstance(data, list) or len(data) == 0:
+        return [
+            {
+                "task": "Анализ переписки",
+                "done": "GPT не вернул корректную структуру",
+                "status": "ошибка"
+            }
+        ]
+
+    return data
+
+        
 
 async def handle_secretary_callback(cb) -> bool:
     data = cb.data or ""
