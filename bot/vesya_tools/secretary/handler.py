@@ -642,8 +642,6 @@ def _expand_headers_by_threads(all_headers, seed_headers):
         seed_thread_ids.update(_header_refs(h))
 
     seed_ids_flat = set()
-    for s in seed_thread_ids:
-        seed_ids_flat.update(s)
 
     selected_ids = set(seed_ids_flat)
 
@@ -656,28 +654,24 @@ def _expand_headers_by_threads(all_headers, seed_headers):
         changed = False
 
         for h in all_headers:
-            sender_actor = _actor_key(h.get("from", ""))
-            
-            if sender_actor not in seed_actors:
-                continue
-            if h in selected:
-                continue
-
             refs = _header_refs(h)
+                   
 
             sender = _actor_key(h.get("from", ""))
 
-            seed_senders = {
-                _actor_key(e.get("from", "")) for e in seed_headers
-            }
+            ref_match = bool(refs and refs.intersection(selected_ids))
+            actor_match = sender in seed_senders
 
-            if sender not in seed_senders:
+            if not (ref_match or actor_match):
                 continue
 
-            if refs and selected_ids and refs.intersection(selected_ids):
-                selected.append(h)
-                selected_ids.update(refs)
-                changed = True
+            if h in selected:
+                continue
+
+            selected.append(h)
+            selected_ids.update(refs)
+                
+            changed = True
 
     return selected
 
@@ -730,7 +724,12 @@ def _build_mail_threads(emails):
         sender = (e.get("from") or "").lower().strip()
 
         # ключ = отправитель + тема (простая группировка)
-        key = f"{sender}||{subject}"
+        refs = _header_refs(e)
+
+        if refs:
+            key = f"msg::{sorted(list(refs))[0]}"
+        else:
+            key = f"{sender}||{subject}"
 
         if key not in groups:
             groups[key] = {
@@ -1566,10 +1565,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         selected_keys = {a["key"] for a in selected_actors}
         selected_headers = [
             e for e in cache["emails"]
-            if (
-                _actor_key(e.get("from", "")) in selected_keys
-                or any(key in (e.get("to", "") or "").lower() for key in selected_keys)
-            )
+            if _actor_key(e.get("from", "")) in selected_keys
         ]
 
         selected_headers = _expand_headers_by_threads(
