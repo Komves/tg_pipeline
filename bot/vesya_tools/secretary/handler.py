@@ -1282,7 +1282,8 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             )
         ]
 
-        # THREAD EXPANSION DISABLED (case-based pipeline)
+
+        
         selected_headers = selected_headers
 
         await message.answer(
