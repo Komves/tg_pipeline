@@ -928,10 +928,20 @@ def _gpt_make_tasks(cases, project_name, period_text):
 
     client = openai.OpenAI()
 
+    print("=== 1. BEFORE GPT CALL ===", flush=True)
+    print("cases_count:", len(cases) if cases else None, flush=True)
+    print("project:", project_name, flush=True)
+    print("period:", period_text, flush=True)
+
+    print("=== 2. AFTER GPT CALL ===", flush=True)
+    print("resp exists:", resp is not None, flush=True)
+    print("choices len:", len(resp.choices) if resp and hasattr(resp, "choices") else None, flush=True)
+
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-    {
+        {
+    
         "role": "system",
         "content": (
             "Ты формируешь АКТ ВЫПОЛНЕННЫХ КОНСУЛЬТАЦИОННЫХ УСЛУГ.\n"
@@ -982,6 +992,10 @@ def _gpt_make_tasks(cases, project_name, period_text):
 
     try:
         data = _safe_json_loads(raw)
+        print("=== 3. AFTER JSON PARSE ===", flush=True)
+        print("raw length:", len(raw) if raw else None, flush=True)
+        print("data type:", type(data), flush=True)
+        print("data len:", len(data) if isinstance(data, list) else None, flush=True)
     except Exception:
         data = None
 
@@ -1002,6 +1016,9 @@ def _gpt_make_tasks(cases, project_name, period_text):
             "done": item.get("done") or "",
             "status": item.get("status") or "в работе"
         })
+    print("DEBUG data len:", len(data), flush=True)
+    print("DEBUG normalized len:", len(normalized), flush=True)
+
 
     return normalized
 
