@@ -641,7 +641,7 @@ def _expand_headers_by_threads(all_headers, seed_headers):
     for h in seed_headers:
         seed_thread_ids.update(_header_refs(h))
 
-    seed_ids_flat = set()
+    seed_ids_flat = set(seed_thread_ids)
 
     selected_ids = set(seed_ids_flat)
 
@@ -1584,14 +1584,12 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             e["body"] = (e.get("body") or "")[:3000]
             e["attachments"] = e.get("attachments") or []
 
-        selected_emails = _filter_noise_emails(selected_emails)
+        
         # ВАЖНО: сохраняем thread-идентификацию для GPT
         for e in selected_emails:
             e["thread_key"] = f"{_norm_subject(e.get('subject'))}|{_actor_key(e.get('from'))}"
 
-        # ❌ ВАЖНО: фильтр больше НЕ используем здесь (он ломает смысловую структуру)
-        # selected_emails = _filter_noise_emails(selected_emails)
-        
+                
 
         cache["selected"] = selected_emails
         cache["stage"] = "analyzing"
@@ -1675,65 +1673,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             reply_markup=_tasks_review_keyboard(tasks),
         )
 
-
-    # -----------------------------
-    # GPT ANALYSIS + DOCX ACT
-    # -----------------------------
-    if cache.get("stage") == "ready_to_analyze" and ("анализ" in t or "анализируй" in t or "делай" in t):
-
-        await message.answer("Запускаю анализ переписки. Это может занять время.")
-
-        threads = _build_mail_threads(cache["selected"])
-        cache["threads"] = threads
-
-        with open("/tmp/secretary_threads.json", "w", encoding="utf-8") as f:
-            json.dump(
-                threads,
-                f,
-                ensure_ascii=False,
-                indent=2,
-                default=str,
-            )
-
-        print(f"Построено цепочек: {len(threads)}", flush=True)
-        print("DEBUG FILE: /tmp/secretary_threads.json", flush=True)
-
-        thread_summaries = []
-
-        for thread in threads:
-            summary = _gpt_analyze_thread(
-                thread,
-                cache.get("project", ""),
-                cache.get("period_text", "")
-            )
-            thread_summaries.append(summary)
-
-        cache["thread_summaries"] = thread_summaries
-
-        with open("/tmp/secretary_thread_summaries.json", "w", encoding="utf-8") as f:
-            json.dump(
-                thread_summaries,
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
-
-        tasks = _gpt_make_tasks_from_threads(
-            thread_summaries,
-            cache.get("project", ""),
-            cache.get("period_text", "")
-        )
-
-        cache["tasks"] = tasks
-
-        file_path = _make_docx(tasks)
-
-        cache["stage"] = "done"
-        cache["doc"] = file_path
-
-        await message.answer(f"Готово. Акт сформирован: {file_path}")
-        return True
-
+    
     # -----------------------------
     # FALLBACK
     # -----------------------------
