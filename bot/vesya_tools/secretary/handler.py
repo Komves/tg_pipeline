@@ -770,7 +770,13 @@ def _build_cases_from_emails(emails):
 
     for e in emails:
         sender = _actor_key(e.get("from", "unknown"))
-        subject = _norm_subject(e.get("subject", ""))
+        raw_subject = e.get("subject", "") or ""
+        raw_body = e.get("body", "") or ""
+
+        subject = _norm_subject(raw_subject)
+
+        # 👉 добавляем семантический якорь
+        semantic_hint = (raw_subject + " " + raw_body[:300]).strip()
 
         # ключ кейса
         key = f"{sender}::{subject}"
@@ -779,7 +785,8 @@ def _build_cases_from_emails(emails):
             cases[key] = {
                 "actor": sender,
                 "subject": subject,
-                "emails": []
+                "emails": [],
+                "semantic_hint": semantic_hint,
             }
 
         cases[key]["emails"].append(e)
@@ -891,6 +898,7 @@ def _gpt_make_tasks(cases, project_name, period_text):
 CASE:
 Actor: {c["actor"]}
 Subject: {c["subject"]}
+Context: {c.get("semantic_hint","")[:800]}
 """
 
         for e in emails:
