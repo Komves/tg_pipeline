@@ -895,6 +895,15 @@ def _make_docx(tasks):
 
 
 def _gpt_make_tasks(cases, project_name, period_text):
+
+    print("=== GPT DEBUG START ===", flush=True)
+
+    raw = resp.choices[0].message.content
+
+    print("RAW TYPE:", type(raw), flush=True)
+    print("RAW VALUE:", raw, flush=True)
+
+    print("=== GPT DEBUG END ===", flush=True)
     text = ""
 
     for c in cases:
