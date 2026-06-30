@@ -895,11 +895,20 @@ def _gpt_make_tasks(cases, project_name, period_text):
         emails = c["emails"]
 
         text += f"""
-CASE:
-Actor: {c["actor"]}
-Subject: {c["subject"]}
-Context: {c.get("semantic_hint","")[:800]}
-"""
+    CASE:
+    Actor: {c["actor"]}
+    Subject: {c["subject"]}
+    Context: {c.get("semantic_hint","")[:800]}
+
+    EMAILS:
+    """
+        for e in emails:
+            text += f"""
+    - {e.get("subject","")}
+    {e.get("from","")}
+    {e.get("date","")}
+    {e.get("body","")[:800]}
+    """
 
         for e in emails:
             imap_id = e.get("imap_id", "")
@@ -918,18 +927,7 @@ Context: {c.get("semantic_hint","")[:800]}
 
 -------------------
 """
-
-        text += f"""
-📩 {subject}
-👤 {sender}
-📅 {date}
-🆔 IMAP_ID: {imap_id}
-
-📝 {e.get('body','')[:2000]}
-
--------------------
-"""
-    
+   
 
     client = openai.OpenAI()
 
