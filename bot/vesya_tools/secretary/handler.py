@@ -655,7 +655,6 @@ def _expand_headers_by_threads(all_headers, seed_headers):
 
         for h in all_headers:
             refs = _header_refs(h)
-                   
 
             sender = _actor_key(h.get("from", ""))
 
@@ -1442,6 +1441,23 @@ async def handle_secretary_callback(cb) -> bool:
 
     await cb.answer()
     return True
+
+def _classify_domain(e):
+    text = f"{e.get('subject','')} {e.get('body','')}".lower()
+
+    if "резюме" in text or "кадры" in text or "отдел кадров" in text:
+        return "hr"
+
+    if "койко" in text or "общежит" in text or "регистрац" in text:
+        return "housing"
+
+    if "прокурат" in text or "момвд" in text or "запрос" in text:
+        return "gov"
+
+    if "суд" in text or "дело" in text or "а40" in text:
+        return "court"
+
+    return "legal"
 
 
 async def handle_secretary_message(message, text: str, object_text=None) -> bool:
