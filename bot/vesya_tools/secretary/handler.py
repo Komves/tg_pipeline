@@ -985,7 +985,16 @@ def _gpt_make_tasks(cases, project_name, period_text):
             }
         ]
 
-    return data
+    normalized = []
+
+    for item in data:
+        normalized.append({
+            "task": item.get("task") or item.get("summary") or "без задачи",
+            "done": item.get("done") or "",
+            "status": item.get("status") or "в работе"
+        })
+
+    return normalized
 
         
 
