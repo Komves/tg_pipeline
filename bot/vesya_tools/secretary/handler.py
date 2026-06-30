@@ -775,6 +775,11 @@ def _build_cases_from_emails(emails):
 
         subject = _norm_subject(raw_subject)
 
+        reply_hint = "no"
+
+        if e.get("in_reply_to") or e.get("references"):
+            reply_hint = "reply"
+
         # 👉 добавляем семантический якорь
         semantic_hint = (raw_subject + " " + raw_body[:300]).strip()
 
@@ -785,8 +790,8 @@ def _build_cases_from_emails(emails):
             cases[key] = {
                 "actor": sender,
                 "subject": subject,
-                "emails": [],
-                "semantic_hint": semantic_hint,
+                "reply_hint": reply_hint,
+                "emails": []
             }
 
         cases[key]["emails"].append(e)
@@ -898,6 +903,7 @@ def _gpt_make_tasks(cases, project_name, period_text):
     CASE:
     Actor: {c["actor"]}
     Subject: {c["subject"]}
+        
     Context: {c.get("semantic_hint","")[:800]}
 
     EMAILS:
@@ -909,25 +915,6 @@ def _gpt_make_tasks(cases, project_name, period_text):
     {e.get("date","")}
     {e.get("body","")[:800]}
     """
-
-        for e in emails:
-            imap_id = e.get("imap_id", "")
-            subject = e.get("subject", "")
-            sender = e.get("from", "")
-            date = e.get("date", "")
-            body = e.get("body", "")
-
-            text += f"""
-📩 {subject}
-👤 {sender}
-📅 {date}
-🆔 IMAP_ID: {imap_id}
-
-📝 {body[:2000]}
-
--------------------
-"""
-   
 
     client = openai.OpenAI()
 
