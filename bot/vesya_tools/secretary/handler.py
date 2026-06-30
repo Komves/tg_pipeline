@@ -888,14 +888,28 @@ def _gpt_make_tasks(cases, project_name, period_text):
         emails = c["emails"]
 
         text += f"""
-    CASE:
-    Actor: {c["actor"]}
-    Subject: {c["subject"]}
-    """
-        imap_id = e.get("imap_id", "")
-        subject = e.get("subject", "")
-        sender = e.get("from", "")
-        date = e.get("date", "")
+CASE:
+Actor: {c["actor"]}
+Subject: {c["subject"]}
+"""
+
+        for e in emails:
+            imap_id = e.get("imap_id", "")
+            subject = e.get("subject", "")
+            sender = e.get("from", "")
+            date = e.get("date", "")
+            body = e.get("body", "")
+
+            text += f"""
+📩 {subject}
+👤 {sender}
+📅 {date}
+🆔 IMAP_ID: {imap_id}
+
+📝 {body[:2000]}
+
+-------------------
+"""
 
         text += f"""
 📩 {subject}
