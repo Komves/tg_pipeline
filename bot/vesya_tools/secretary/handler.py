@@ -1377,7 +1377,11 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         )
         
         print("\n[SECRETARY][STEP 3] RAW GPT RESPONSE:\n", tasks_raw, flush=True)
-        
+
+        # ================================
+        # 🔥 ACT GENERATION FIX (INSERT HERE)
+        # ================================
+
         if isinstance(tasks_raw, dict) and "tasks" in tasks_raw:
             tasks = tasks_raw["tasks"]
         elif isinstance(tasks_raw, list):
@@ -1385,10 +1389,6 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         else:
             tasks = []
 
-            print("\n[SECRETARY][STEP 4] PARSED TASKS TYPE:", type(tasks), flush=True)
-            print("[SECRETARY][STEP 4] TASKS COUNT:", len(tasks) if tasks else 0, flush=True)
-
-        # нормализация
         if not tasks:
             tasks = [
                 {
@@ -1399,7 +1399,30 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
                     "emails": cache.get("selected", [])[:10]
                 }
             ]
-            
+
+        print("\n[SECRETARY][STEP 4] TASKS COUNT:", len(tasks), flush=True)
+
+        # ================================
+        # 📄 DOCX GENERATION (CRITICAL MISSING PART)
+        # ================================
+
+        file_path = _make_docx(tasks)
+
+        cache["stage"] = "done"
+        cache["doc"] = file_path
+
+        from aiogram.types import FSInputFile
+
+        await message.answer("Акт сформирован.")
+
+        await message.answer_document(
+            FSInputFile(file_path),
+            caption="Акт выполненных работ"
+        )
+
+        return True
+        # ================================
+        
        
     
     # -----------------------------
