@@ -1032,9 +1032,17 @@ async def handle_secretary_callback(cb) -> bool:
     print("[SECRETARY] stage:", cache.get("stage"))
     print("[SECRETARY] selected emails:", len(selected_emails))
 
-    if len(selected_emails) == 0:
-        await cb.message.answer("Нет выбранных писем (selected пуст)")
-        return True
+    stage = cache.get("stage")
+
+    # календарь всегда разрешён
+    if data.startswith("sec:cal:") or data.startswith("sec:date:"):
+        pass
+
+    # акт — только после писем
+    elif data == "sec:act:make":
+        if not cache.get("selected"):
+            await cb.answer("Сначала выбери письма", show_alert=True)
+            return True
 
     if cache is None:
         await cb.answer("Сценарий секретаря не запущен")
