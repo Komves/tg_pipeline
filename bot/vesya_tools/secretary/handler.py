@@ -772,39 +772,38 @@ def _safe_json_loads(raw):
 
 
 def _build_cases_from_emails(emails):
-    cases = {}
+    """
+    THREAD-BASED CHAINS (реальные переписки)
+    """
+
+    chains = {}
 
     for e in emails:
-        sender = e.get("from", "")
-        raw_subject = e.get("subject", "") or ""
-        raw_body = e.get("body", "") or ""
+        # 1. Пытаемся найти thread id (главное)
+        thread_id = e.get("thread_id")
 
-        subject = _norm_subject(raw_subject)
+        # 2. fallback если нет thread_id
+        if not thread_id:
+            thread_id = e.get("in_reply_to") or e.get("message_id")
 
-        reply_hint = "no"
+        # 3. нормализуем ключ
+        key = str(thread_id)
 
-        if e.get("in_reply_to") or e.get("references"):
-            reply_hint = "reply"
-
-        # 👉 добавляем семантический якорь
-        semantic_hint = (raw_subject + " " + raw_body[:300]).strip()
-
-        # ключ кейса
-        key = f"{sender}::{subject}"
-
-        if key not in cases:
-            cases[key] = {
-                "actor": sender,
-                "subject": subject,
-                "reply_hint": reply_hint,
+        if key not in chains:
+            chains[key] = {
+                "id": key,
+                "subject": e.get("subject", "Без темы"),
                 "emails": [],
-                "semantic_hint": semantic_hint
+                "status": "new"
             }
 
-        cases[key]["emails"].append(e)
+        chains[key]["emails"].append(e)
 
-    return list(cases.values())
+    # сортируем внутри цепочек по времени (если есть)
+    for c in chains.values():
+        c["emails"].sort(key=lambda x: x.get("date", 0))
 
+    return list(chains.values())
 
 
 
