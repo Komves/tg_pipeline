@@ -918,6 +918,7 @@ def _gpt_make_tasks(emails, project_name, period_text):
 
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
+        response_format={"type": "json_object"},
         messages=[
             {
                 "role": "system",
@@ -932,9 +933,16 @@ def _gpt_make_tasks(emails, project_name, period_text):
 
     raw = resp.choices[0].message.content.strip()
 
+    raw = raw.replace("```json", "")
+    raw = raw.replace("```", "")
+
     print("RAW GPT:", raw[:2000], flush=True)
 
-    return _safe_json_loads(raw)
+    try:
+        return json.loads(raw)
+    except Exception:
+        print("BROKEN GPT OUTPUT:", raw[:2000])
+        raise
         
 
 async def handle_secretary_callback(cb) -> bool:
