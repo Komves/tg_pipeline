@@ -1414,7 +1414,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         cases = _build_cases_from_emails(selected_emails)
 
-        from your_project import client
+        client = openai.AsyncOpenAI()
         semantic_cases = await gpt_summarize_chains(client, cases)
 
         cache["cases"] = semantic_cases
