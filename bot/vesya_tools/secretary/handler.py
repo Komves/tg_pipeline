@@ -760,7 +760,13 @@ def _safe_json_loads(raw):
     raw = re.sub(r"^```\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
-    return json.loads(raw)
+    data = json.loads(raw)
+
+    # нормализация формата
+    if isinstance(data, dict) and "tasks" in data:
+        return data["tasks"]
+
+    return data
 
 
 
@@ -922,7 +928,11 @@ def _gpt_make_tasks(emails, project_name, period_text):
         messages=[
             {
                 "role": "system",
-                "content": "Ты анализируешь email-переписку и формируешь акт. Нельзя выдумывать."
+                "content": (
+                   "Ты анализируешь email-переписку и формируешь JSON-ответ для акта. "
+                    "Строго не выдумывай данные. Верни ТОЛЬКО валидный JSON без текста. "
+                    "Формат ответа: {\"tasks\": [ ... ] }"
+                )
             },
             {
                 "role": "user",
