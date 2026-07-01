@@ -873,7 +873,12 @@ def _tasks_review_keyboard(tasks):
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
 def _make_docx(tasks):
+    print("\n==============================")
+    print("[E2E TEST] ABOUT TO GENERATE ACT")
+    print("TASKS FINAL:", tasks)
+    print("==============================\n")
     doc = Document()
 
     doc.add_heading("Акт выполненных работ", level=1)
@@ -896,6 +901,11 @@ def _make_docx(tasks):
 
     path = "/tmp/secretary_act.docx"
     doc.save(path)
+
+    print("\n==============================")
+    print("[E2E TEST] ACT GENERATED")
+    print("FILE:", file_path)
+    print("==============================\n")
 
     return path
 
@@ -1166,6 +1176,10 @@ def _classify_domain(e):
 
 
 async def handle_secretary_message(message, text: str, object_text=None) -> bool:
+    print("\n==============================")
+    print("[E2E TEST] START SECRETARY FLOW")    
+    print("emails count:", len(selected_emails))
+    print("==============================\n")
 
     if not isinstance(text, str):
         text = str(text)
@@ -1375,6 +1389,10 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             cache.get("project", ""),
             cache.get("period_text", "")
         )
+        print("\n==============================")
+        print("[E2E TEST] RAW GPT OUTPUT:")
+        print(tasks_raw)
+        print("==============================\n")
         
         print("\n[SECRETARY][STEP 3] RAW GPT RESPONSE:\n", tasks_raw, flush=True)
 
@@ -1384,6 +1402,11 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         if isinstance(tasks_raw, dict) and "tasks" in tasks_raw:
             tasks = tasks_raw["tasks"]
+            print("\n==============================")
+            print("[E2E TEST] PARSED TASKS COUNT:", len(tasks))
+            for i, t in enumerate(tasks):
+                print(f"{i+1}. {t}")
+            print("==============================\n")
         elif isinstance(tasks_raw, list):
             tasks = tasks_raw
         else:
