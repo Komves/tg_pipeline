@@ -898,6 +898,27 @@ def _gpt_make_tasks(cases, project_name, period_text):
 
     print("=== GPT DEBUG START ===", flush=True)
 
+    client = openai.OpenAI()
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",   
+                "content": "Ты формируешь АКТ ВЫПОЛНЕННЫХ КОНСУЛЬТАЦИОННЫХ УСЛУГ."
+            },
+            {
+                "role": "user",
+                "content": f"""
+    Проект/группа: {project_name}
+    Период: {period_text}
+
+    Верни СТРОГО JSON-массив.
+    """
+            }
+        ]
+    )
+
     raw = resp.choices[0].message.content
 
     print("RAW TYPE:", type(raw), flush=True)
