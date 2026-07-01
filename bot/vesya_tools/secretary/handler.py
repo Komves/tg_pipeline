@@ -892,12 +892,22 @@ def _make_docx(tasks):
     hdr[2].text = "Что сделано"
     hdr[3].text = "Статус"
 
+    
+
     for i, task in enumerate(tasks, start=1):
         row = table.add_row().cells
+
         row[0].text = str(i)
-        row[1].text = str(task.get("task", ""))
-        row[2].text = str(task.get("done", ""))
-        row[3].text = str(task.get("status", ""))
+
+        row[1].text = str(
+            task.get("task")
+            or task.get("topic")
+            or ""
+        )
+
+        row[2].text = str(task.get("done") or "")
+
+        row[3].text = str(task.get("status") or "")
 
     path = "/tmp/secretary_act.docx"
     doc.save(path)
@@ -1002,6 +1012,33 @@ def _gpt_make_tasks(emails, project_name, period_text):
         
 
 async def handle_secretary_callback(cb) -> bool:
+    if data.startswith("sec:chain:"):
+        parts = data.split(":")
+        action = parts[2]
+        idx = int(parts[3])
+
+        cases = cache.get("cases", [])
+
+        if idx < 0 or idx >= len(cases):
+            await cb.answer("Ошибка индекса")
+            return True
+
+        if action == "done":
+            cases[idx]["status"] = "done"
+            await cb.message.answer(f"Цепочка {idx+1}: завершено")
+
+        elif action == "work":
+            cases[idx]["status"] = "work"
+            await cb.message.answer(f"Цепочка {idx+1}: в работе")
+
+        elif action == "del":
+            cases[idx]["status"] = "removed"
+            await cb.message.answer(f"Цепочка {idx+1}: удалена")
+
+        cache["cases"] = cases
+
+        return True
+
     def reply(text, **kwargs):
         return cb.message.answer(text, **kwargs)
     data = cb.data or ""
@@ -1083,10 +1120,21 @@ async def handle_secretary_callback(cb) -> bool:
         return True
 
     if data == "sec:act:make":
-        tasks = [
-            t for t in (cache.get("tasks") or [])
-            if not t.get("exclude")
-        ]
+        cases = cache.get("cases", [])
+
+        final_cases = [c for c in cases if c.get("status") != "removed"]
+
+        tasks = []
+
+        for i, c in enumerate(final_cases, start=1):
+            emails = c.get("emails", [])
+
+            tasks.append({
+                "task": c.get("subject", "Без темы"),
+                "done": f"{len(emails)} писем обработано",
+                "status": c.get("status", "new"),
+                "emails": emails
+            })
 
         file_path = _make_docx(tasks)
 
@@ -1095,17 +1143,16 @@ async def handle_secretary_callback(cb) -> bool:
 
         from aiogram.types import FSInputFile
 
-        await cb.message.answer("Готово. Акт сформирован.")
+        await cb.message.answer("Акт сформирован из цепочек")
 
         await cb.message.answer_document(
             FSInputFile(file_path),
-            caption="Проект акта выполненных работ"
+            caption="Акт выполненных работ"
         )
 
         await cb.answer()
         return True
-
-
+        
     if data.startswith("sec:cal:"):
         parts = data.split(":")
         kind = parts[2]
@@ -1364,6 +1411,27 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         selected_emails = _fetch_selected_full_emails(selected_headers)
 
+        cases = _build_cases_from_emails(selected_emails)
+        cache["cases"] = cases
+
+        text = "📨 Цепочки переписки:\n\n"
+
+        for i, c in enumerate(cases):
+            text += f"{i+1}. {c.get('subject','Без темы')} ({len(c.get('emails',[]))})\n"
+
+        await message.answer(text)
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[])
+
+        for i in range(len(cases)):
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(text=f"✔ {i+1}", callback_data=f"sec:chain:done:{i}"),
+                InlineKeyboardButton(text=f"⚙ {i+1}", callback_data=f"sec:chain:work:{i}"),
+                InlineKeyboardButton(text=f"❌ {i+1}", callback_data=f"sec:chain:del:{i}")
+            ])
+
+        await message.answer("Управление цепочками:", reply_markup=kb)
+
         print("\n[SECRETARY][STEP 1] selected_emails:", len(selected_emails))
         print("[SECRETARY][STEP 1 SAMPLE]:", selected_emails[:1], flush=True)
 
@@ -1479,7 +1547,21 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         # 📄 DOCX GENERATION (CRITICAL MISSING PART)
         # ================================
 
-        file_path = _make_docx(tasks)
+        cache["tasks"] = tasks
+
+        await message.answer(
+            "Я сформировала задачи. Проверь их и нажми 'Сформировать акт'."
+        )
+
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Сформировать акт", callback_data="sec:act:make")
+        ]])
+
+        await message.answer("Подтверждение:", reply_markup=kb)
+
+        return True
 
         cache["stage"] = "done"
         cache["doc"] = file_path
@@ -1509,3 +1591,5 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         "составь акт по РГП"
     )
     return True
+
+    
