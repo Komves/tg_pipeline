@@ -466,7 +466,7 @@ def _gpt_analyze_chain(chain, actor):
         message_id = e.get("message_id", "")
 
         text += f"""
-        EMAIL #{i} | IMAP_ID={imap_id} | MSG_ID={message_id}
+        for i, e in enumerate(chain, start=1): | IMAP_ID={imap_id} | MSG_ID={message_id}
         FOLDER: {e.get('folder')}
         DATE: {e.get('date')}
         FROM: {e.get('from')}
@@ -904,7 +904,7 @@ def _make_docx(tasks):
 
     print("\n==============================")
     print("[E2E TEST] ACT GENERATED")
-    print("FILE:", file_path)
+    print("FILE:", path)
     print("==============================\n")
 
     return path
@@ -1002,6 +1002,8 @@ def _gpt_make_tasks(emails, project_name, period_text):
         
 
 async def handle_secretary_callback(cb) -> bool:
+    def reply(text, **kwargs):
+        return cb.message.answer(text, **kwargs)
     data = cb.data or ""
 
     if data == "sec:none":
@@ -1031,7 +1033,7 @@ async def handle_secretary_callback(cb) -> bool:
     print("[SECRETARY] selected emails:", len(selected_emails))
 
     if len(selected_emails) == 0:
-        await message.answer("Нет выбранных писем (selected пуст)")
+        await cb.message.answer("Нет выбранных писем (selected пуст)")
         return True
 
     if cache is None:
@@ -1209,6 +1211,20 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
     chat_id = message.chat.id
 
     cache = SECRETARY_CACHE.get(chat_id)
+
+    if cache is None:
+        cache = SECRETARY_CACHE[chat_id] = {
+            "stage": "idle",
+            "project": "",
+            "period_text": "",
+            "period_start": None,
+            "period_end": None,
+            "emails": [],
+            "actors": [],
+            "selected_actors": [],
+            "selected": [],
+            "tasks": []
+        }
 
     selected_emails = cache.get("selected", [])
     print("[SECRETARY] cached emails:", len(selected_emails))
