@@ -987,8 +987,13 @@ async def handle_secretary_callback(cb) -> bool:
             cache["tasks"] = tasks
 
             try:
+                text = _tasks_review_text(tasks)
+
+                if len(text) > 3800:
+                    text = text[:3800] + "\n\n... (обрезано из-за лимита Telegram)"
+
                 await cb.message.edit_text(
-                    _tasks_review_text(tasks),
+                    text,
                     reply_markup=_tasks_review_keyboard(tasks),
                 )
             except Exception as e:
