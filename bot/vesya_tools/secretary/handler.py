@@ -1224,13 +1224,16 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         cache["selected_actors"] = selected_actors
 
-        selected_keys = {a["key"] for a in selected_actors}
+        selected_keys = {
+            _actor_key(a["name"])
+            for a in selected_actors
+        }
+
         selected_headers = [
             e for e in cache["emails"]
-            if e.get("from", "") in selected_keys
-            or e.get("to", "") in selected_keys
+            if any(k in e.get("from","").lower() for k in selected_keys)
+            or any(k in e.get("to","").lower() for k in selected_keys)
         ]
-
 
         
         selected_headers = selected_headers
@@ -1243,7 +1246,7 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         selected_emails = _fetch_selected_full_emails(selected_headers)
 
         for e in selected_emails:
-            e["body"] = (e.get("body") or "")[:3000]
+            e["body"] = (e.get("body") or "")[:3000]    
             e["attachments"] = e.get("attachments") or []
 
         
