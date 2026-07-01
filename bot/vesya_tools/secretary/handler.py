@@ -1633,6 +1633,27 @@ async def gpt_summarize_chains(client, chains):
         temperature=0.2
     )
 
-    return json.loads(resp.choices[0].message.content)
+    return safe_json_parse(resp.choices[0].message.content)
+
+    import json
+import re
+
+def safe_json_parse(text):
+    if not text:
+        return []
+
+    try:
+        return json.loads(text)
+    except:
+        pass
+
+    match = re.search(r"\[.*\]|\{.*\}", text, re.S)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except:
+            pass
+
+    return []
 
     
