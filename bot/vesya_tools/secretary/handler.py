@@ -900,8 +900,8 @@ def _gpt_make_tasks(emails, project_name, period_text):
     client = openai.OpenAI()
 
     payload = {
-        "project": cache.get("project", ""),
-        "period": cache.get("period_text", ""),
+        "project": project_name,
+        "period": period_text,
         "emails": [
             {
                 "from": e.get("from", ""),
