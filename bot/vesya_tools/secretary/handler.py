@@ -1012,6 +1012,29 @@ async def handle_secretary_callback(cb) -> bool:
     cache = SECRETARY_CACHE.get(chat_id)
 
     if cache is None:
+        cache = SECRETARY_CACHE[chat_id] = {
+            "stage": "idle",
+            "project": "",
+            "period_text": "",
+            "period_start": None,
+            "period_end": None,
+            "emails": [],
+            "actors": [],
+            "selected_actors": [],
+            "selected": [],
+            "tasks": []
+        }
+
+    selected_emails = cache.get("selected", [])
+
+    print("[SECRETARY] stage:", cache.get("stage"))
+    print("[SECRETARY] selected emails:", len(selected_emails))
+
+    if len(selected_emails) == 0:
+        await message.answer("Нет выбранных писем (selected пуст)")
+        return True
+
+    if cache is None:
         await cb.answer("Сценарий секретаря не запущен")
         return True
 
@@ -1176,11 +1199,7 @@ def _classify_domain(e):
 
 
 async def handle_secretary_message(message, text: str, object_text=None) -> bool:
-    print("\n==============================")
-    print("[E2E TEST] START SECRETARY FLOW")    
-    print("emails count:", len(selected_emails))
-    print("==============================\n")
-
+    
     if not isinstance(text, str):
         text = str(text)
 
@@ -1190,6 +1209,9 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
     chat_id = message.chat.id
 
     cache = SECRETARY_CACHE.get(chat_id)
+
+    selected_emails = cache.get("selected", [])
+    print("[SECRETARY] cached emails:", len(selected_emails))
 
     if cache is None:
         cache = SECRETARY_CACHE[chat_id] = {
@@ -1383,6 +1405,10 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
 
         print("\n[SECRETARY][STEP 2] sending to GPT emails:", len(selected_emails), flush=True)
+
+        if not selected_emails:
+            await message.answer("Нет писем для анализа")
+            return True
 
         tasks_raw = _gpt_make_tasks(
             selected_emails,
