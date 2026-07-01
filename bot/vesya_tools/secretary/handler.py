@@ -931,6 +931,20 @@ def _gpt_make_tasks(cases, project_name, period_text):
         emails = c["emails"]
 
         text += f"""
+    debug_payload = {
+        "project": project_name,
+        "period": period_text,
+        "cases_count": len(cases),
+        "raw_cases": cases[:2],   # чтобы не раздувать
+        "final_prompt": text
+    }
+
+    import json
+    with open("/tmp/gpt_input_debug.json", "w", encoding="utf-8") as f:
+        json.dump(debug_payload, f, ensure_ascii=False, indent=2)
+
+    print("DEBUG GPT INPUT SAVED: /tmp/gpt_input_debug.json", flush=True)
+
     CASE:
     Actor: {c["actor"]}
     Subject: {c["subject"]}
