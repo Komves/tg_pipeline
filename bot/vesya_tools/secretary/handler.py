@@ -1413,7 +1413,10 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         selected_emails = _fetch_selected_full_emails(selected_headers)
 
         cases = _build_cases_from_emails(selected_emails)
-        cache["cases"] = cases
+
+        semantic_cases = await gpt_summarize_chains(client, cases)
+
+        cache["cases"] = semantic_cases
 
         text = "📨 Цепочки переписки:\n\n"
 
@@ -1592,5 +1595,43 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         "составь акт по РГП"
     )
     return True
+
+import json
+
+async def gpt_summarize_chains(client, chains):
+    prompt = f"""
+Ты анализируешь email цепочки.
+
+Сделай:
+1. Пойми смысл переписки
+2. Объедини Fwd/Re в одну задачу
+3. Дай человеческий заголовок
+4. Кратко опиши результат
+
+ВАЖНО:
+- даже если нет темы — пойми смысл
+- не копируй subject
+- думай как бизнес-аналитик
+
+ФОРМАТ JSON:
+[
+  {{
+    "title": "краткое название",
+    "summary": "что происходит",
+    "emails_count": 3
+  }}
+]
+
+ЦЕПОЧКИ:
+{json.dumps(chains, ensure_ascii=False, default=str)}
+"""
+
+    resp = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2
+    )
+
+    return json.loads(resp.choices[0].message.content)
 
     
