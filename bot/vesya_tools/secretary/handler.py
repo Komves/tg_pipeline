@@ -769,7 +769,7 @@ def _build_cases_from_emails(emails):
     cases = {}
 
     for e in emails:
-        sender = _actor_key(e.get("from", "unknown"))
+        sender = e.get("from", "")
         raw_subject = e.get("subject", "") or ""
         raw_body = e.get("body", "") or ""
 
@@ -894,185 +894,47 @@ def _make_docx(tasks):
     return path
 
 
-def _gpt_make_tasks(cases, project_name, period_text):
+def _gpt_make_tasks(emails, project_name, period_text):
 
-    print("=== GPT DEBUG START ===", flush=True)
-
+    import json
     client = openai.OpenAI()
+
+    payload = {
+        "project": cache.get("project", ""),
+        "period": cache.get("period_text", ""),
+        "emails": [
+            {
+                "from": e.get("from", ""),
+                "subject": e.get("subject", ""),
+                "body": e.get("body", "")[:2000],
+                "date": e.get("date", ""),
+                "message_id": e.get("message_id", "")
+            }
+            for e in emails
+        ]
+    }
+
+    print("=== GPT INPUT ===", json.dumps(payload, ensure_ascii=False)[:2000], flush=True)
 
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
-                "role": "system",   
-                "content": "Ты формируешь АКТ ВЫПОЛНЕННЫХ КОНСУЛЬТАЦИОННЫХ УСЛУГ."
+                "role": "system",
+                "content": "Ты анализируешь email-переписку и формируешь акт. Нельзя выдумывать."
             },
             {
                 "role": "user",
-                "content": f"""
-    Проект/группа: {project_name}
-    Период: {period_text}
-
-    Верни СТРОГО JSON-массив.
-    """
+                "content": json.dumps(payload, ensure_ascii=False)
             }
         ]
     )
 
-    raw = resp.choices[0].message.content
-
-    print("RAW TYPE:", type(raw), flush=True)
-    print("RAW VALUE:", raw, flush=True)
-
-    print("=== GPT DEBUG END ===", flush=True)
-    text = ""
-
-    for c in cases:
-        emails = c["emails"]
-
-        text += f"""
-    debug_payload = {
-        "project": project_name,
-        "period": period_text,
-        "cases_count": len(cases),
-        "raw_cases": cases[:2],   # чтобы не раздувать
-        "final_prompt": text
-    }
-
-    import json
-    with open("/tmp/gpt_input_debug.json", "w", encoding="utf-8") as f:
-        json.dump(debug_payload, f, ensure_ascii=False, indent=2)
-
-    print("DEBUG GPT INPUT SAVED: /tmp/gpt_input_debug.json", flush=True)
-
-    CASE:
-    Actor: {c["actor"]}
-    Subject: {c["subject"]}
-        
-    Context: {c.get("semantic_hint","")[:800]}
-
-    EMAILS:
-    """
-        for e in emails:
-            text += f"""
-    - {e.get("subject","")}
-    {e.get("from","")}
-    {e.get("date","")}
-    {e.get("body","")[:800]}
-    """
-
-    client = openai.OpenAI()
-
-    print("=== 1. BEFORE GPT CALL ===", flush=True)
-    print("cases_count:", len(cases) if cases else None, flush=True)
-    print("project:", project_name, flush=True)
-    print("period:", period_text, flush=True)
-
-    print("=== 2. AFTER GPT CALL ===", flush=True)
-    print("resp exists:", resp is not None, flush=True)
-    print("choices len:", len(resp.choices) if resp and hasattr(resp, "choices") else None, flush=True)
-
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-        {
-    
-        "role": "system",
-        "content": (
-            "Ты формируешь АКТ ВЫПОЛНЕННЫХ КОНСУЛЬТАЦИОННЫХ УСЛУГ.\n"
-            "\n"
-            "КРИТИЧЕСКОЕ ОГРАНИЧЕНИЕ:\n"
-            "- НЕ объединяй письма в кейсы\n"
-            "- НЕ дроби письма\n"
-            "- НЕ создавай логические цепочки между письмами\n"
-            "- НЕ интерпретируй переписку как единый процесс\n"
-            "\n"
-            "ПРИНЦИП РАБОТЫ:\n"
-            "- каждое письмо — это отдельный входной факт\n"
-            "- ты НЕ определяешь структуру переписки\n"
-            "- ты НЕ группируешь письма\n"
-            "\n"
-            "ТВОЯ РОЛЬ:\n"
-            "- понять смысл каждого письма\n"
-            "- описать результат консультационной работы\n"
-            "- оформить деловым юридическим языком\n"
-            "\n"
-            "ЗАПРЕЩЕНО:\n"
-            "- склейка писем\n"
-            "- восстановление кейсов\n"
-            "- построение цепочек событий\n"
-        )
-    },
-    {
-        "role": "user",
-        "content": f"""
-    Ты формируешь список задач для акта выполненных работ.
-
-    ВАЖНО:
-    Верни ТОЛЬКО JSON массив задач.
-
-    СТРУКТУРА КАЖДОЙ ЗАДАЧИ:
-    {{
-    "task": "краткое описание действия",
-    "done": "что фактически сделано",
-    "status": "в работе | завершено"
-    }}
-
-    ПРИМЕР:
-    [
-    {{    
-        "task": "Консультация по документам",
-        "done": "Разъяснены требования и порядок действий",
-        "status": "завершено"
-    }}
-    ]
-
-    ПРОЕКТ: {project_name}
-    ПЕРИОД: {period_text}
-    """
-        }
-    ]
-)
-
     raw = resp.choices[0].message.content.strip()
-    # =========================
-    # 🔥 JAIL FIX: GPT GUARD
-    # =========================
 
-    import json
+    print("RAW GPT:", raw[:2000], flush=True)
 
-    try:
-        data = _safe_json_loads(raw)
-        print("=== 3. AFTER JSON PARSE ===", flush=True)
-        print("raw length:", len(raw) if raw else None, flush=True)
-        print("data type:", type(data), flush=True)
-        print("data len:", len(data) if isinstance(data, list) else None, flush=True)
-    except Exception:
-        data = None
-
-    if not isinstance(data, list) or len(data) == 0:
-        return [
-            {
-                "task": "Анализ переписки",
-                "done": "GPT не вернул корректную структуру",
-                "status": "ошибка"
-            }
-        ]
-
-    normalized = []
-
-    for item in data:
-        normalized.append({
-            "task": item.get("task") or item.get("summary") or "без задачи",
-            "done": item.get("done") or "",
-            "status": item.get("status") or "в работе"
-        })
-    print("DEBUG data len:", len(data), flush=True)
-    print("DEBUG normalized len:", len(normalized), flush=True)
-
-
-    return normalized
-
+    return _safe_json_loads(raw)
         
 
 async def handle_secretary_callback(cb) -> bool:
@@ -1365,10 +1227,8 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         selected_keys = {a["key"] for a in selected_actors}
         selected_headers = [
             e for e in cache["emails"]
-            if (
-                _actor_key(e.get("from", "")) in selected_keys
-                or _actor_key(e.get("to", "")) in selected_keys
-            )
+            if e.get("from", "") in selected_keys
+            or e.get("to", "") in selected_keys
         ]
 
 
@@ -1389,11 +1249,23 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         
         # ВАЖНО: сохраняем thread-идентификацию для GPT
         for e in selected_emails:
-            e["thread_key"] = f"{_norm_subject(e.get('subject'))}|{_actor_key(e.get('from'))}"
+            e["thread_key"] = e.get("message_id", "") or e.get("imap_id", "")
 
                 
 
         cache["selected"] = selected_emails
+        import json
+
+        gpt_input = {
+            "project": cache.get("project", ""),
+            "period": cache.get("period_text", ""),
+            "emails": selected_emails
+        }
+
+        with open("/tmp/gpt_input_debug.json", "w", encoding="utf-8") as f:
+            json.dump(gpt_input, f, ensure_ascii=False, indent=2)
+
+        print("DEBUG GPT INPUT SAVED -> /tmp/gpt_input_debug.json", flush=True)
         cache["stage"] = "analyzing"
 
         await message.answer(
@@ -1430,36 +1302,16 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "Формирую акт..."
         )
 
-        cases = _build_cases_from_emails(selected_emails)
+        
 
         tasks = _gpt_make_tasks(
-            cases,
+            selected_emails,
             cache.get("project", ""),
             cache.get("period_text", "")
         )
 
-        def _fix_status(tasks):
-            for t in tasks:
-                text = ((t.get("done") or "") + " " + (t.get("topic") or "")).lower()
-
-                if any(x in text for x in [
-                    "подготовлен",
-                    "направлен",
-                    "отправлен",
-                    "заключение",
-                    "ответ",
-                    "проект",
-                    "договор",
-                    "акт"
-                ]):
-                    t["status"] = "завершено"
-                else:
-                    t["status"] = "в работе"
-
-            return tasks
-
-
-        tasks = _fix_status(tasks)
+       
+       
 
         if not isinstance(tasks, list):
             await message.answer("Ошибка генерации задач")
