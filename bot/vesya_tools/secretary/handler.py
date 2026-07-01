@@ -1323,20 +1323,21 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             "Формирую акт..."
         )
 
-        
 
-        tasks = _gpt_make_tasks(
+        tasks_raw = _gpt_make_tasks(
             selected_emails,
             cache.get("project", ""),
             cache.get("period_text", "")
         )
 
-       
-       
-
-        if not isinstance(tasks, list):
-            await message.answer("Ошибка генерации задач")
+        if isinstance(tasks_raw, dict) and "tasks" in tasks_raw:
+            tasks = tasks_raw["tasks"]
+        elif isinstance(tasks_raw, list):
+            tasks = tasks_raw
+        else:
+            await message.answer("Ошибка генерации задач: неверный формат JSON")
             return True
+            
 
         # 🔥 СТАБИЛИЗАЦИЯ ID ЗАДАЧ (ВАЖНО ДЛЯ РЕДАКТИРОВАНИЯ)
         for i, t in enumerate(tasks):
