@@ -1304,6 +1304,9 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
 
         selected_emails = _fetch_selected_full_emails(selected_headers)
 
+        print("\n[SECRETARY][STEP 1] selected_emails:", len(selected_emails))
+        print("[SECRETARY][STEP 1 SAMPLE]:", selected_emails[:1], flush=True)
+
         for e in selected_emails:
             e["body"] = (e.get("body") or "")[:3000]    
             e["attachments"] = e.get("attachments") or []
@@ -1365,18 +1368,25 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
         )
 
 
+        print("\n[SECRETARY][STEP 2] sending to GPT emails:", len(selected_emails), flush=True)
+
         tasks_raw = _gpt_make_tasks(
             selected_emails,
             cache.get("project", ""),
             cache.get("period_text", "")
         )
-
+        
+        print("\n[SECRETARY][STEP 3] RAW GPT RESPONSE:\n", tasks_raw, flush=True)
+        
         if isinstance(tasks_raw, dict) and "tasks" in tasks_raw:
             tasks = tasks_raw["tasks"]
         elif isinstance(tasks_raw, list):
             tasks = tasks_raw
         else:
             tasks = []
+
+            print("\n[SECRETARY][STEP 4] PARSED TASKS TYPE:", type(tasks), flush=True)
+            print("[SECRETARY][STEP 4] TASKS COUNT:", len(tasks) if tasks else 0, flush=True)
 
         # нормализация
         if not tasks:
@@ -1395,6 +1405,8 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
     # -----------------------------
     # FALLBACK
     # -----------------------------
+
+    print("\n[SECRETARY][STEP 5] FINAL TASKS:", tasks, flush=True)
     await message.answer(
         "Секретарь активен.\n\n"
         "Команда для старта:\n"
