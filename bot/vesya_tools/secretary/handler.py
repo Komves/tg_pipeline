@@ -929,9 +929,12 @@ def _gpt_make_tasks(emails, project_name, period_text):
             {
                 "role": "system",
                 "content": (
-                   "Ты анализируешь email-переписку и формируешь JSON-ответ для акта. "
-                    "Строго не выдумывай данные. Верни ТОЛЬКО валидный JSON без текста. "
-                    "Формат ответа: {\"tasks\": [ ... ] }"
+                    "Ты анализируешь email-переписку и ОБЯЗАТЕЛЬНО извлекаешь задачи.\n"
+                    "Каждое значимое письмо = минимум одна задача.\n"
+                    "Никогда не возвращай пустой список, если есть письма.\n"
+                    "Если нет явных задач — группируй письма по смыслу в задачи.\n"
+                    "Верни ТОЛЬКО JSON строго формата:\n"
+                    "{ \"tasks\": [ { \"task_id\": 1, \"topic\": \"\", \"done\": \"\", \"status\": \"\", \"emails\": [] } ] }"
                 )
             },
             {
@@ -1339,23 +1342,17 @@ async def handle_secretary_message(message, text: str, object_text=None) -> bool
             tasks = tasks_raw["tasks"]
         elif isinstance(tasks_raw, list):
             tasks = tasks_raw
+        if not tasks:
+            await message.answer(
+                "GPT не нашёл задач в переписке.\n"
+                "Попробуй выбрать больше писем или расширить период."
+            )
+            return True
         else:
             await message.answer("Ошибка генерации задач: неверный формат JSON")
             return True
             
-
-        # 🔥 СТАБИЛИЗАЦИЯ ID ЗАДАЧ (ВАЖНО ДЛЯ РЕДАКТИРОВАНИЯ)
-        for i, t in enumerate(tasks):
-            t["task_id"] = i + 1
-
-        cache["tasks"] = tasks
-        cache["stage"] = "review_tasks"
-
-        await message.answer(
-            _tasks_review_text(tasks),
-            reply_markup=_tasks_review_keyboard(tasks),
-        )
-
+       
     
     # -----------------------------
     # FALLBACK
