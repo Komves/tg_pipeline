@@ -952,10 +952,43 @@ def _gpt_make_tasks(emails, project_name, period_text):
     print("RAW GPT:", raw[:2000], flush=True)
 
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except Exception:
         print("BROKEN GPT OUTPUT:", raw[:2000])
-        raise
+
+        return {
+            "tasks": [
+                {
+                    "task_id": 1,
+                    "topic": "Ошибка парсинга GPT ответа",
+                    "done": "GPT вернул невалидный JSON",
+                    "status": "ошибка",
+                    "emails": []
+                }
+            ]
+        }
+
+    # нормализация
+    if isinstance(data, dict) and "tasks" in data:
+        tasks = data["tasks"]
+    else:
+        tasks = data
+
+    # 🔥 ВАЖНО: защита от пустого результата
+    if not tasks:
+        return {
+            "tasks": [
+                {
+                    "task_id": 1,
+                    "topic": "Нет извлечённых задач",
+                    "done": "GPT вернул пустой результат",
+                    "status": "нет данных",
+                    "emails": []
+                }
+            ]
+        }
+
+    return {"tasks": tasks}
         
 
 async def handle_secretary_callback(cb) -> bool:
