@@ -1012,6 +1012,8 @@ def _gpt_make_tasks(emails, project_name, period_text):
         
 
 async def handle_secretary_callback(cb) -> bool:
+    data = cb.data or ""
+
     if data.startswith("sec:chain:"):
         parts = data.split(":")
         action = parts[2]
