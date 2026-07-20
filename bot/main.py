@@ -4913,9 +4913,11 @@ async def _handle_normalized_text_pipeline(message: Message, text: str, *, event
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
     
-    # secretary must bypass group gate
-        
-    if not _group_message_addresses_vesya(message, text):
+    # Group gate проверяет исходный текст Telegram,
+    # а не нормализованное тело, из которого уже удалено обращение к Весе.
+    gate_text = (getattr(message, "text", None) or text or "").strip()
+
+    if not _group_message_addresses_vesya(message, gate_text):
         return
 
 
