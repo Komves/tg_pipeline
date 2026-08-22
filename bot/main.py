@@ -1428,7 +1428,7 @@ def _is_direct_group_address(text: str) -> bool:
         return False
 
     return bool(re.match(
-        r"^\s*(веся|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s+",
+        r"^\s*(веся|вися|веська|веслава|vesya|сергеевна)\s*[,.:;!\-]?\s*(?:$|\s+)",
         t,
         flags=re.I,
     ))
