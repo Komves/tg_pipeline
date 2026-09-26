@@ -3024,19 +3024,28 @@ def classify_beauty_video(
                 "image_url": f"data:image/jpeg;base64,{b64}",
             })
 
-        resp = client.responses.create(
-            model=VISION_MODEL,
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Отвечай только валидным JSON. "
-                        "Не добавляй пояснений вне JSON."
-                    ),
-                },
-                {"role": "user", "content": content},
-            ],
-        )
+        try:
+            resp = client.responses.create(
+                model=VISION_MODEL,
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Отвечай только валидным JSON. "
+                            "Не добавляй пояснений вне JSON."
+                        ),
+                    },
+                    {"role": "user", "content": content},
+                ],
+            )
+        finally:
+            # Base64 image payloads can hold several MB. Release them immediately
+            # after the request instead of waiting for function exit / GC.
+            content.clear()
+            try:
+                client.close()
+            except Exception:
+                pass
 
         raw = _extract_text(resp).strip()
 
