@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import json
 import os
@@ -39,6 +40,8 @@ API_HASH = os.environ["TG_API_HASH"]
 
 MAX_SCAN_PER_CHANNEL = int(os.getenv("BEAUTY_MAX_SCAN_PER_CHANNEL", "80"))
 MAX_CLASSIFY_PER_RUN = int(os.getenv("BEAUTY_MAX_CLASSIFY_PER_RUN", "20"))
+MAX_VIDEO_BYTES = int(os.getenv("BEAUTY_MAX_VIDEO_MB", "70")) * 1024 * 1024
+FRAME_MAX_WIDTH = int(os.getenv("BEAUTY_FRAME_MAX_WIDTH", "768"))
 
 
 def log(msg: str) -> None:
@@ -222,24 +225,35 @@ async def download_video(client: TelegramClient, src: str, msg, channel_dir: Pat
         return None
 
 
-def extract_video_audio_mp3(video_bytes: bytes) -> bytes:
-    if not video_bytes:
+def _rss_mb() -> float:
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                parts = line.split()
+                return round(int(parts[1]) / 1024.0, 1)
+    except Exception:
+        pass
+    return -1.0
+
+
+def extract_video_audio_mp3(video_path: Path) -> bytes:
+    if not video_path or not video_path.exists():
         return b""
 
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
-        video_path = d / "input.mp4"
         audio_path = d / "audio.mp3"
-        video_path.write_bytes(video_bytes)
 
         cmd = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel", "error",
+            "-threads", "1",
             "-i", str(video_path),
             "-vn",
             "-ac", "1",
             "-ar", "16000",
+            "-b:a", "48k",
             "-t", "120",
             "-f", "mp3",
             str(audio_path),
@@ -257,27 +271,30 @@ def extract_video_audio_mp3(video_bytes: bytes) -> bytes:
     return b""
 
 
-def extract_video_frames(video_bytes: bytes, n: int = 5) -> List[bytes]:
+def extract_video_frames(video_path: Path, n: int = 5) -> List[bytes]:
     frames: List[bytes] = []
 
-    if not video_bytes:
+    if not video_path or not video_path.exists():
         return frames
 
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
-        video_path = d / "input.mp4"
         out_pattern = d / "frame_%03d.jpg"
 
-        video_path.write_bytes(video_bytes)
+        scale_filter = (
+            f"fps=0.25,"
+            f"scale='min({FRAME_MAX_WIDTH},iw)':-2:force_original_aspect_ratio=decrease"
+        )
 
         cmd = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel", "error",
+            "-threads", "1",
             "-i", str(video_path),
-            "-vf", "fps=0.25",
+            "-vf", scale_filter,
             "-frames:v", str(int(n)),
-            "-q:v", "3",
+            "-q:v", "4",
             str(out_pattern),
         ]
 
@@ -297,16 +314,37 @@ def extract_video_frames(video_bytes: bytes, n: int = 5) -> List[bytes]:
 
 
 def classify_file(media_path: Path, caption: str = "") -> Dict[str, Any]:
-    video_bytes = media_path.read_bytes()
+    if not media_path.exists():
+        raise FileNotFoundError(media_path)
 
-    frames = extract_video_frames(video_bytes, 5)
-    audio_mp3 = extract_video_audio_mp3(video_bytes)
+    file_size = media_path.stat().st_size
 
-    return chatgpt_dialog.classify_beauty_video(
-        caption or "",
-        frames,
-        audio_mp3,
-    )
+    if file_size > MAX_VIDEO_BYTES:
+        return {
+            "accept": False,
+            "reason": f"video_too_large:{file_size}",
+            "beauty_score": 0.0,
+            "erotic_score": 0.0,
+            "has_music": False,
+            "has_speech": False,
+            "is_ad": False,
+            "_skipped_oversize": True,
+        }
+
+    # Never read the whole video into Python memory. ffmpeg reads directly from disk.
+    frames = extract_video_frames(media_path, 5)
+    audio_mp3 = extract_video_audio_mp3(media_path)
+
+    try:
+        return chatgpt_dialog.classify_beauty_video(
+            caption or "",
+            frames,
+            audio_mp3,
+        )
+    finally:
+        frames.clear()
+        del audio_mp3
+        gc.collect()
 
 
 async def collect_beauty_hours(hours: int = 24) -> Dict[str, int]:
@@ -394,10 +432,43 @@ async def collect_beauty_hours(hours: int = 24) -> Dict[str, int]:
 
                     caption = str(getattr(msg, "message", "") or "").strip()
 
+                    file_size_mb = media_path.stat().st_size / (1024 * 1024)
+                    rss_before = _rss_mb()
+                    log(
+                        f"CLASSIFY_START msg_id={msg_id} "
+                        f"file_mb={file_size_mb:.1f} rss_mb={rss_before}"
+                    )
+
                     try:
                         verdict = classify_file(media_path, caption)
+
+                        if verdict.get("_skipped_oversize"):
+                            stats["rejected"] += 1
+                            classified_this_run += 1
+                            mark_seen(
+                                clip_id,
+                                {
+                                    "accepted": False,
+                                    "reason": str(verdict.get("reason") or "video_too_large"),
+                                    "src": src,
+                                    "msg_id": int(msg_id),
+                                    "path": str(media_path),
+                                },
+                            )
+                            log(
+                                f"SKIP_OVERSIZE msg_id={msg_id} "
+                                f"file_mb={file_size_mb:.1f} "
+                                f"limit_mb={MAX_VIDEO_BYTES / (1024 * 1024):.0f} "
+                                f"rss_mb={_rss_mb()}"
+                            )
+                            continue
+
                         stats["classified"] += 1
                         classified_this_run += 1
+                        log(
+                            f"CLASSIFY_DONE msg_id={msg_id} "
+                            f"file_mb={file_size_mb:.1f} rss_mb={_rss_mb()}"
+                        )
 
                     except Exception as e:
                         stats["errors"] += 1
