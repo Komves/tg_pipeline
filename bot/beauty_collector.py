@@ -444,7 +444,6 @@ async def collect_beauty_hours(hours: int = 24) -> Dict[str, int]:
 
                         if verdict.get("_skipped_oversize"):
                             stats["rejected"] += 1
-                            classified_this_run += 1
                             mark_seen(
                                 clip_id,
                                 {
