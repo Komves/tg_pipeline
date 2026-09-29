@@ -11,6 +11,7 @@ import html
 import base64
 import clip_embedder
 import re
+import requests
 from pathlib import Path
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatAction
