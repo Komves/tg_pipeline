@@ -798,6 +798,17 @@ if _ADMIN_USER_IDS_ENV:
     except Exception:
         ADMIN_USER_IDS = []
 
+PARUS_API_URL = (
+    os.getenv("PARUS_API_URL", "https://parus-web.onrender.com").strip().rstrip("/")
+)
+PARUS_API_TOKEN = (os.getenv("PARUS_API_TOKEN") or "").strip()
+PARUS_CONTACT_POLL_SEC = max(
+    15,
+    int(os.getenv("PARUS_CONTACT_POLL_SEC", "30")),
+)
+PARUS_ACTIVE_CONTACT: dict[int, int] = {}
+PARUS_SEND_CONFIRM: dict[int, int] = {}
+
 MAIN_GROUP_ID = -1002356524398
 
 # one-shot relay mode: (chat_id, user_id) -> True
@@ -813,6 +824,294 @@ BEAUTY_DIALOG_TTL_SEC = 300
 def _is_admin_user(message: Message) -> bool:
     uid = int(message.from_user.id) if message.from_user else 0
     return bool(uid and uid in ADMIN_USER_IDS)
+
+
+def _parus_target_chat_id() -> int | None:
+    explicit = (os.getenv("PARUS_TG_CHAT_ID") or "").strip()
+    if explicit:
+        try:
+            return int(explicit)
+        except Exception:
+            pass
+    if ALLOWED_CHAT_ID is not None:
+        return int(ALLOWED_CHAT_ID)
+    if ADMIN_USER_IDS:
+        return int(ADMIN_USER_IDS[0])
+    return None
+
+
+def _parus_headers() -> dict[str, str]:
+    return {
+        "X-Parus-Vesya-Token": PARUS_API_TOKEN,
+        "Content-Type": "application/json",
+    }
+
+
+def _parus_request(
+    method: str,
+    path: str,
+    *,
+    payload: dict | None = None,
+    timeout: int = 45,
+) -> dict:
+    if not PARUS_API_TOKEN:
+        raise RuntimeError("PARUS_API_TOKEN is empty")
+    response = requests.request(
+        method.upper(),
+        f"{PARUS_API_URL}{path}",
+        headers=_parus_headers(),
+        json=payload,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data if isinstance(data, dict) else {}
+
+
+def _parus_list_contacts(*, unnotified_only: bool) -> list[dict]:
+    data = _parus_request(
+        "GET",
+        (
+            "/internal/vesya/contacts"
+            f"?limit=10&unnotified_only={'true' if unnotified_only else 'false'}"
+        ),
+        timeout=30,
+    )
+    items = data.get("items") or []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _parus_build_draft(contact_id: int, instruction: str = "") -> str:
+    data = _parus_request(
+        "POST",
+        f"/internal/vesya/contacts/{int(contact_id)}/draft",
+        payload={"instruction": str(instruction or "").strip()},
+        timeout=90,
+    )
+    return str(data.get("draft_text") or "").strip()
+
+
+def _parus_mark_notified(contact_id: int) -> None:
+    _parus_request(
+        "POST",
+        f"/internal/vesya/contacts/{int(contact_id)}/notified",
+        payload={},
+        timeout=20,
+    )
+
+
+def _parus_send_contact(contact_id: int) -> dict:
+    return _parus_request(
+        "POST",
+        f"/internal/vesya/contacts/{int(contact_id)}/send",
+        payload={},
+        timeout=45,
+    )
+
+
+def _parus_contact_keyboard(contact_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Отправить",
+                    callback_data=f"parus_send:{int(contact_id)}",
+                ),
+                InlineKeyboardButton(
+                    text="Другой вариант",
+                    callback_data=f"parus_redraft:{int(contact_id)}",
+                ),
+            ]
+        ]
+    )
+
+
+def _parus_contact_text(item: dict, draft: str) -> str:
+    account = (
+        f"user_id={item.get('user_id')}"
+        if item.get("user_id")
+        else "не авторизован"
+    )
+    return (
+        "⚓ Новое обращение ПАРУС\n\n"
+        f"От: {item.get('email') or '—'}\n"
+        f"Тема: {item.get('topic_label') or item.get('topic') or '—'}\n"
+        f"Аккаунт: {account}\n\n"
+        f"Сообщение:\n{item.get('message') or '—'}\n\n"
+        "Предлагаемый ответ:\n"
+        f"{draft or 'Черновик пока не сформирован.'}"
+    )
+
+
+async def _parus_show_contact(
+    chat_id: int,
+    item: dict,
+    *,
+    mark_notified: bool,
+) -> None:
+    contact_id = int(item.get("id") or 0)
+    if contact_id <= 0:
+        return
+
+    draft = str(item.get("draft_text") or "").strip()
+    if not draft:
+        draft = await asyncio.to_thread(
+            _parus_build_draft,
+            contact_id,
+            "",
+        )
+
+    PARUS_ACTIVE_CONTACT[int(chat_id)] = contact_id
+    PARUS_SEND_CONFIRM.pop(int(chat_id), None)
+
+    await bot.send_message(
+        chat_id=int(chat_id),
+        text=_parus_contact_text(item, draft),
+        reply_markup=_parus_contact_keyboard(contact_id),
+    )
+
+    if mark_notified:
+        await asyncio.to_thread(_parus_mark_notified, contact_id)
+
+
+async def parus_contact_loop() -> None:
+    while True:
+        try:
+            chat_id = _parus_target_chat_id()
+            if PARUS_API_TOKEN and chat_id is not None:
+                items = await asyncio.to_thread(
+                    _parus_list_contacts,
+                    unnotified_only=True,
+                )
+                for item in items[:5]:
+                    try:
+                        await _parus_show_contact(
+                            int(chat_id),
+                            item,
+                            mark_notified=True,
+                        )
+                    except Exception as exc:
+                        print(
+                            "[parus-contact] notify failed "
+                            f"id={item.get('id')}: "
+                            f"{type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
+        except Exception as exc:
+            print(
+                f"[parus-contact] poll failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+        await asyncio.sleep(PARUS_CONTACT_POLL_SEC)
+
+
+async def _handle_parus_contact_command(
+    message: Message,
+    text: str,
+) -> bool:
+    if not _is_admin_user(message):
+        return False
+
+    user_id = int(message.from_user.id) if message.from_user else 0
+    body = _strip_vesya_prefix(text or "").strip()
+    normalized = re.sub(r"\s+", " ", body.lower()).strip(" ?!.,:;")
+
+    if re.search(
+        r"\b(обращения|обращение)\b.*\b(парус|паруса)\b|"
+        r"\b(парус|паруса)\b.*\b(обращения|обращение)\b",
+        normalized,
+        flags=re.I,
+    ):
+        items = await asyncio.to_thread(
+            _parus_list_contacts,
+            unnotified_only=False,
+        )
+        if not items:
+            await message.answer("В Парусе нет обращений, ожидающих ответа.")
+            return True
+        for item in items[:5]:
+            await _parus_show_contact(
+                int(message.chat.id),
+                item,
+                mark_notified=False,
+            )
+        return True
+
+    contact_id = PARUS_ACTIVE_CONTACT.get(user_id) or PARUS_ACTIVE_CONTACT.get(
+        int(message.chat.id)
+    )
+    if not contact_id:
+        return False
+
+    if normalized in {
+        "отмена",
+        "не отправляй",
+        "отбой",
+        "отмена отправки",
+    }:
+        PARUS_SEND_CONFIRM.pop(user_id, None)
+        PARUS_SEND_CONFIRM.pop(int(message.chat.id), None)
+        await message.answer("Отправку отменил. Черновик остаётся в Парусе.")
+        return True
+
+    awaiting = (
+        PARUS_SEND_CONFIRM.get(user_id)
+        or PARUS_SEND_CONFIRM.get(int(message.chat.id))
+    )
+    if awaiting == int(contact_id) and re.search(
+        r"^(подтверждаю|да подтверждаю|подтверждаю отправку|"
+        r"да отправляй|да отправь)$",
+        normalized,
+        flags=re.I,
+    ):
+        result = await asyncio.to_thread(
+            _parus_send_contact,
+            int(contact_id),
+        )
+        PARUS_SEND_CONFIRM.pop(user_id, None)
+        PARUS_SEND_CONFIRM.pop(int(message.chat.id), None)
+        PARUS_ACTIVE_CONTACT.pop(user_id, None)
+        PARUS_ACTIVE_CONTACT.pop(int(message.chat.id), None)
+        await message.answer(
+            f"Отправлено от ПАРУСА на {result.get('sent_to') or 'адрес пользователя'}."
+        )
+        return True
+
+    if re.search(
+        r"^(отправь|отправляй|отправить|можно отправлять|этот отправь|"
+        r"этот вариант отправь)$",
+        normalized,
+        flags=re.I,
+    ):
+        PARUS_SEND_CONFIRM[user_id] = int(contact_id)
+        PARUS_SEND_CONFIRM[int(message.chat.id)] = int(contact_id)
+        await message.answer(
+            "Подтвердить отправку этого ответа от ПАРУСА? "
+            "Скажи «подтверждаю».",
+        )
+        return True
+
+    if re.search(
+        r"^(ответь|ответить|напиши|добавь|добавить|убери|измени|"
+        r"исправь|переформулируй|скажи ему|скажи ей|сделай ответ)",
+        normalized,
+        flags=re.I,
+    ):
+        draft = await asyncio.to_thread(
+            _parus_build_draft,
+            int(contact_id),
+            body,
+        )
+        PARUS_SEND_CONFIRM.pop(user_id, None)
+        PARUS_SEND_CONFIRM.pop(int(message.chat.id), None)
+        await message.answer(
+            "Обновил черновик:\n\n" + draft,
+            reply_markup=_parus_contact_keyboard(int(contact_id)),
+        )
+        return True
+
+    return False
 
 
 def _relay_key(message: Message) -> tuple[int, int]:
@@ -5362,6 +5661,9 @@ async def vesya_handler(message: Message) -> None:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
+    if await _handle_parus_contact_command(message, text):
+        return
+
 
     # === SAVE PRIVATE USERS ===
     if message.chat.type == "private" and message.from_user:
@@ -6937,6 +7239,7 @@ async def main() -> None:
     asyncio.create_task(heartbeat_loop())
     asyncio.create_task(ingest24_loop(bot))
     asyncio.create_task(gmail_poll_loop())
+    asyncio.create_task(parus_contact_loop())
     asyncio.create_task(calendar_loop(bot, CALENDAR_STORAGE))
     await dp.start_polling(bot)
 
@@ -6967,6 +7270,59 @@ async def on_feedback(cb):
         await cb.answer("принято 🔥")
     except Exception:
         pass
+
+@dp.callback_query(F.data.startswith("parus_send:"))
+async def on_parus_contact_send(cb):
+    try:
+        if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS:
+            await cb.answer("Нет доступа", show_alert=True)
+            return
+        contact_id = int(cb.data.split(":", 1)[1])
+        result = await asyncio.to_thread(_parus_send_contact, contact_id)
+        PARUS_ACTIVE_CONTACT.pop(int(cb.from_user.id), None)
+        PARUS_ACTIVE_CONTACT.pop(int(cb.message.chat.id), None)
+        PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
+        PARUS_SEND_CONFIRM.pop(int(cb.message.chat.id), None)
+        await cb.message.answer(
+            f"Отправлено от ПАРУСА на {result.get('sent_to') or 'адрес пользователя'}."
+        )
+        await cb.answer("Отправлено")
+    except Exception as exc:
+        print(
+            f"[parus-contact] send failed: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        await cb.answer("Не отправилось", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("parus_redraft:"))
+async def on_parus_contact_redraft(cb):
+    try:
+        if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS:
+            await cb.answer("Нет доступа", show_alert=True)
+            return
+        contact_id = int(cb.data.split(":", 1)[1])
+        draft = await asyncio.to_thread(
+            _parus_build_draft,
+            contact_id,
+            "Сформулируй другой вариант ответа: короче, естественнее и без повторов.",
+        )
+        PARUS_ACTIVE_CONTACT[int(cb.from_user.id)] = contact_id
+        PARUS_ACTIVE_CONTACT[int(cb.message.chat.id)] = contact_id
+        PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
+        PARUS_SEND_CONFIRM.pop(int(cb.message.chat.id), None)
+        await cb.message.answer(
+            "Другой вариант:\n\n" + draft,
+            reply_markup=_parus_contact_keyboard(contact_id),
+        )
+        await cb.answer()
+    except Exception as exc:
+        print(
+            f"[parus-contact] redraft failed: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        await cb.answer("Не удалось обновить", show_alert=True)
+
 
 @dp.callback_query(F.data.startswith("gmail_open_id:"))
 @dp.callback_query(F.data.startswith("gmail_open:"))
