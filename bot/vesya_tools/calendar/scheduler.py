@@ -39,8 +39,11 @@ async def _resolve_person(bot, storage, item: dict) -> dict:
 async def _send_birthday(bot, storage, item: dict) -> None:
     """One Telegram message: video with greeting in caption, or text fallback."""
     item = await _resolve_person(bot, storage, item)
+    friendly_name = (str(item.get("nickname") or "").strip()
+                     or str(item.get("full_name") or "").strip()
+                     or str(item["person_name"]))
     caption = await generate_birthday_message(
-        str(item["person_name"]),
+        friendly_name,
         str(item["group_title"]),
         int(item["telegram_user_id"]) if item.get("telegram_user_id") else None,
         str(item["username"]) if item.get("username") else None,

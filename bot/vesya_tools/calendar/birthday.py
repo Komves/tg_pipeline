@@ -21,10 +21,11 @@ def build_birthday_message(
     """HTML caption for both birthday video and text-only fallback."""
     name = _display_name(person_name)
     escaped = html.escape(name)
-    if username:
-        mention = f"@{html.escape(username.lstrip('@'))}"
-    elif telegram_user_id:
+    # Keep the friendly name visible even when a username is available.
+    if telegram_user_id:
         mention = f'<a href="tg://user?id={int(telegram_user_id)}">{escaped}</a>'
+    elif username:
+        mention = f'<a href="https://t.me/{html.escape(username.lstrip("@"), quote=True)}">{escaped}</a>'
     else:
         mention = escaped
 

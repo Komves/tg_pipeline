@@ -75,6 +75,10 @@ class CalendarStorage:
             """)
             self._ensure_column(con, "birthdays", "telegram_user_id", "INTEGER")
             self._ensure_column(con, "birthdays", "username", "TEXT")
+            # Official name and friendly address are separate from the legacy
+            # person_name field, so old data and uniqueness constraints survive.
+            self._ensure_column(con, "birthdays", "full_name", "TEXT")
+            self._ensure_column(con, "birthdays", "nickname", "TEXT")
             # Legacy records use "id=123456" as the name: restore their Telegram identity.
             con.execute("""
                 UPDATE birthdays
@@ -227,7 +231,7 @@ class CalendarStorage:
         with self._connect() as con:
             rows = [dict(r) for r in con.execute(
                 """SELECT id, owner_user_id, person_name, telegram_user_id,
-                          username, last_congrats_year
+                          username, last_congrats_year, full_name, nickname
                    FROM birthdays WHERE group_id = ? ORDER BY id""",
                 (int(group_id),),
             ).fetchall()]
@@ -235,10 +239,15 @@ class CalendarStorage:
             matches = []
             for row in rows:
                 old_id = row["telegram_user_id"]
-                old_name = " ".join(str(row["person_name"]).casefold().split())
+                aliases = (
+                    row["person_name"],
+                    row.get("full_name"),
+                    row.get("nickname"),
+                )
+                old_names = {" ".join(str(alias).casefold().split()) for alias in aliases if alias}
                 same_id = telegram_user_id and old_id and int(old_id) == int(telegram_user_id)
                 conflicting_ids = telegram_user_id and old_id and int(old_id) != int(telegram_user_id)
-                if same_id or (old_name == norm and not conflicting_ids):
+                if same_id or (norm in old_names and not conflicting_ids):
                     matches.append(row)
 
             if not matches:
@@ -259,16 +268,19 @@ class CalendarStorage:
                 best_name = str(primary["person_name"])
             keep_id = telegram_user_id or primary["telegram_user_id"]
             keep_username = username or primary["username"]
+            keep_full_name = next((str(r["full_name"]) for r in matches if r.get("full_name")), None)
+            keep_nickname = next((str(r["nickname"]) for r in matches if r.get("nickname")), None)
             years = [int(row["last_congrats_year"]) for row in matches if row["last_congrats_year"] is not None]
             last_year = max(years) if years else None
             for row in matches[1:]:
                 con.execute("DELETE FROM birthdays WHERE id = ?", (int(row["id"]),))
             con.execute(
                 """UPDATE birthdays SET group_title=?, person_name=?, birthday=?,
-                       telegram_user_id=?, username=?, updated_at=?, last_congrats_year=?
+                       telegram_user_id=?, username=?, updated_at=?, last_congrats_year=?,
+                       full_name=?, nickname=?
                    WHERE id=?""",
                 (group_title, best_name, birthday, keep_id, keep_username,
-                 now_iso, last_year, int(primary["id"])),
+                 now_iso, last_year, keep_full_name, keep_nickname, int(primary["id"])),
             )
 
     def update_birthday_identity(
@@ -282,8 +294,10 @@ class CalendarStorage:
             row = con.execute("SELECT person_name FROM birthdays WHERE id=?", (birthday_id,)).fetchone()
             if row and str(row["person_name"]).lower().startswith("id="):
                 con.execute(
-                    "UPDATE birthdays SET person_name=?, username=COALESCE(?, username) WHERE id=?",
-                    (name, username, birthday_id),
+                    """UPDATE birthdays SET person_name=?,
+                       full_name=COALESCE(full_name, ?),
+                       username=COALESCE(?, username) WHERE id=?""",
+                    (name, name, username, birthday_id),
                 )
 
     def rename_birthday_by_telegram_id(
@@ -301,11 +315,31 @@ class CalendarStorage:
             if not row:
                 return False
             con.execute(
-                """UPDATE birthdays SET person_name=?, telegram_user_id=?, updated_at=?
-                   WHERE id=?""",
-                (name, telegram_user_id, now_iso, int(row["id"])),
+                """UPDATE birthdays SET person_name=?, nickname=?,
+                       telegram_user_id=?, updated_at=? WHERE id=?""",
+                (name, name, telegram_user_id, now_iso, int(row["id"])),
             )
             return True
+
+    def set_birthday_names_by_telegram_id(
+        self, group_id: int, telegram_user_id: int,
+        full_name: str, nickname: str, now_iso: str,
+    ) -> bool:
+        """Attach a full identity and a familiar address without changing DOB."""
+        official = " ".join(full_name.split())
+        familiar = " ".join(nickname.split())
+        if not official or not familiar or len(official) > 100 or len(familiar) > 100:
+            return False
+        with self._connect() as con:
+            cursor = con.execute(
+                """UPDATE birthdays
+                   SET full_name=?, nickname=?, telegram_user_id=?, updated_at=?
+                   WHERE group_id=?
+                     AND (telegram_user_id=? OR person_name=?)""",
+                (official, familiar, telegram_user_id, now_iso,
+                 group_id, telegram_user_id, f"id={telegram_user_id}"),
+            )
+            return cursor.rowcount > 0
 
     @staticmethod
     def _unique_birthdays(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -332,7 +366,8 @@ class CalendarStorage:
         with self._connect() as con:
             rows = con.execute(
                 """SELECT id, group_id, group_title, person_name, birthday,
-                          telegram_user_id, username, updated_at, last_congrats_year
+                          telegram_user_id, username, updated_at, last_congrats_year,
+                          full_name, nickname
                    FROM birthdays WHERE group_id = ?""",
                 (group_id,),
             ).fetchall()
@@ -343,14 +378,17 @@ class CalendarStorage:
         needle = " ".join(person_name.strip().casefold().split())
         with self._connect() as con:
             rows = con.execute(
-                """SELECT id, group_id, group_title, person_name, birthday
+                """SELECT id, group_id, group_title, person_name, birthday, full_name, nickname
                    FROM birthdays
                    WHERE group_id IN
                      (SELECT group_id FROM group_registry WHERE owner_user_id=?)""",
                 (owner_user_id,),
             ).fetchall()
         return [dict(r) for r in rows
-                if " ".join(str(r["person_name"]).casefold().split()) == needle]
+                if needle in {
+                    " ".join(str(alias).casefold().split())
+                    for alias in (r["person_name"], r["full_name"], r["nickname"]) if alias
+                }]
 
     def find_birthday_by_person_in_group(
         self, owner_user_id: int, group_id: int, person_name: str,
@@ -358,12 +396,15 @@ class CalendarStorage:
         needle = " ".join(person_name.strip().casefold().split())
         with self._connect() as con:
             rows = con.execute(
-                """SELECT id, group_id, group_title, person_name, birthday
+                """SELECT id, group_id, group_title, person_name, birthday, full_name, nickname
                    FROM birthdays WHERE group_id=?""",
                 (group_id,),
             ).fetchall()
         return [dict(r) for r in rows
-                if " ".join(str(r["person_name"]).casefold().split()) == needle]
+                if needle in {
+                    " ".join(str(alias).casefold().split())
+                    for alias in (r["person_name"], r["full_name"], r["nickname"]) if alias
+                }]
 
     def update_birthday(self, birthday_id: int, birthday: str, now_iso: str) -> None:
         with self._connect() as con:
@@ -382,7 +423,8 @@ class CalendarStorage:
         with self._connect() as con:
             rows = con.execute(
                 """SELECT id, group_id, group_title, person_name, telegram_user_id,
-                          username, birthday, last_congrats_year, updated_at
+                          username, birthday, last_congrats_year, updated_at,
+                          full_name, nickname
                    FROM birthdays"""
             ).fetchall()
         chosen = self._unique_birthdays([dict(r) for r in rows])
