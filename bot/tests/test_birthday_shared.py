@@ -87,6 +87,50 @@ class BirthdaySharedTests(unittest.TestCase):
             "Сергей (id=123456789) — 29.01.1973\nМиша - 19-04-1974", 2026),
             [("Сергей (id=123456789)", "1973-01-29"), ("Миша", "1974-04-19")])
 
+    def test_friendly_name_keeps_dob_and_original_identity(self):
+        self.add(1, "Алекс", "1973-01-29", telegram_id=123456789)
+        self.assertTrue(self.s.set_birthday_names_by_telegram_id(
+            self.group, 123456789, "Александр Тестов", "Алекс", self.now
+        ))
+        row = self.s.list_birthdays(55, self.group)[0]
+        self.assertEqual(row["person_name"], "Алекс")
+        self.assertEqual(row["full_name"], "Александр Тестов")
+        self.assertEqual(row["nickname"], "Алекс")
+        self.assertEqual(row["birthday"], "1973-01-29")
+        self.assertEqual(row["telegram_user_id"], 123456789)
+        self.assertEqual(len(self.s.find_birthday_by_person_in_group(
+            1, self.group, "Александр Тестов")), 1)
+        self.assertEqual(len(self.s.find_birthday_by_person_in_group(
+            1, self.group, "Алекс")), 1)
+
+        # Subsequent add/update by full name must reuse the same record.
+        self.add(2, "Александр Тестов", "1973-01-29")
+        rows = self.s.list_birthdays(1, self.group)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["nickname"], "Алекс")
+        self.assertEqual(rows[0]["full_name"], "Александр Тестов")
+
+        due = self.s.todays_birthdays("01-29", 2027)
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]["nickname"], "Алекс")
+
+    def test_legacy_rename_keeps_full_name_and_updates_nickname(self):
+        self.add(1, "Алекс", telegram_id=123456789)
+        self.s.set_birthday_names_by_telegram_id(
+            self.group, 123456789, "Александр Тестов", "Алекс", self.now)
+        self.s.rename_birthday_by_telegram_id(
+            self.group, 123456789, "Саня", self.now)
+        row = self.s.list_birthdays(1, self.group)[0]
+        self.assertEqual(row["full_name"], "Александр Тестов")
+        self.assertEqual(row["nickname"], "Саня")
+
+    def test_caption_prefers_friendly_name_not_username(self):
+        msg = build_birthday_message(
+            "Мэл", 123456789, username="anothername", wish="Удачи!")
+        self.assertIn('tg://user?id=123456789', msg)
+        self.assertIn('>Мэл</a>', msg)
+        self.assertNotIn("@anothername", msg)
+
     def test_html_caption_escapes_user_input(self):
         text = build_birthday_message("<Сергей>", 123456789,
                                       wish="Пусть всё получается!")
@@ -145,6 +189,65 @@ class BirthdaySendTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bot.messages, [])
             self.assertEqual(bot.videos[0][0], -100123456)
             self.assertEqual(marks, [(-100123456, "clip1")])
+
+    async def test_video_uses_the_group_nickname(self):
+        import sys
+        import types
+        from unittest.mock import AsyncMock, patch
+        from vesya_tools.calendar.scheduler import _send_birthday
+
+        beauty = types.ModuleType("beauty_pool")
+        beauty.pick_unseen_beauty_clip = lambda group_id: None
+        beauty.mark_beauty_clip_sent = lambda group_id, clip_id: None
+        aiogram_types = types.ModuleType("aiogram.types")
+        aiogram_types.FSInputFile = object
+
+        class Bot:
+            async def send_message(self, *args, **kwargs):
+                return None
+
+        row = {"id": 1, "group_id": -10077, "person_name": "Алекс",
+               "full_name": "Александр Тестов", "nickname": "Саня",
+               "group_title": "Тест", "telegram_user_id": 123456789,
+               "username": "testname"}
+        with patch.dict(sys.modules, {"beauty_pool": beauty, "aiogram.types": aiogram_types}), \
+             patch("vesya_tools.calendar.scheduler.generate_birthday_message",
+                   new=AsyncMock(return_value="ok")) as make:
+            await _send_birthday(Bot(), object(), row)
+        self.assertEqual(make.await_args.args[0], "Саня")
+
+    async def test_command_stores_names_without_changing_date(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from vesya_tools.calendar.handler import handle_calendar_message
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = CalendarStorage(Path(tmp) / "calendar.sqlite3")
+            group_id = -100777888
+            user_id = 55555
+            storage.register_group(group_id, user_id, "Тестовая группа",
+                                   "2026-10-16T12:00:00+05:00")
+            storage.upsert_birthday(group_id, user_id, "Тестовая группа",
+                                    "Алекс", "1973-01-29",
+                                    "2026-10-16T12:00:00+05:00",
+                                    telegram_user_id=123456789)
+            class Message:
+                text = ("Веся, запомни именинника группы Тестовая группа "
+                        "id=123456789: Александр Тестов — Саня")
+                from_user = SimpleNamespace(id=user_id)
+                chat = SimpleNamespace(type="private")
+                answer = AsyncMock()
+                bot = SimpleNamespace(get_chat_member=AsyncMock(
+                    return_value=SimpleNamespace(status="administrator")))
+
+            m = Message()
+            result = await handle_calendar_message(m, storage)
+            self.assertTrue(result)
+            row = storage.list_birthdays(user_id, group_id)[0]
+            self.assertEqual(row["full_name"], "Александр Тестов")
+            self.assertEqual(row["nickname"], "Саня")
+            self.assertEqual(row["birthday"], "1973-01-29")
+            m.answer.assert_awaited_once()
 
     async def test_missing_video_falls_back_to_text(self):
         import sys
