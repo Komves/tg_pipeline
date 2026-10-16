@@ -2434,24 +2434,13 @@ async def _try_universal_message_layer(
             flags=re.I,
         ).strip()
 
+        calendar_message = message.model_copy(update={"text": calendar_text})
         try:
-            result = await handle_calendar_message(message, calendar_text)
-
-            if result:
-                await _answer_long(message, result)
-
-            return True
-
+            if await handle_calendar_message(calendar_message, CALENDAR_STORAGE):
+                print("[calendar] handled", flush=True)
+                return True
         except Exception as e:
             print(f"[calendar] failed: {type(e).__name__}: {e}", flush=True)
-            return True
-        calendar_message = message.model_copy(update={"text": calendar_text})
-
-        if await handle_calendar_message(calendar_message, CALENDAR_STORAGE):
-            print("[calendar] reminder created", flush=True)
-            return True
-
-        print("[calendar] route=calendar but handler returned false", flush=True)
         return False
 
     if route == "topic_followup" and topic and not object_text:

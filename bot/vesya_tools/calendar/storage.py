@@ -75,6 +75,16 @@ class CalendarStorage:
             """)
             self._ensure_column(con, "birthdays", "telegram_user_id", "INTEGER")
             self._ensure_column(con, "birthdays", "username", "TEXT")
+            # Legacy records use "id=123456" as the name: restore their Telegram identity.
+            con.execute("""
+                UPDATE birthdays
+                SET telegram_user_id = CAST(SUBSTR(person_name, 4) AS INTEGER)
+                WHERE telegram_user_id IS NULL
+                  AND person_name GLOB 'id=[0-9]*'
+                  AND CAST(SUBSTR(person_name, 4) AS INTEGER) > 0
+            """)
+            con.execute("CREATE INDEX IF NOT EXISTS idx_birthdays_group ON birthdays(group_id)")
+
 
     def _ensure_column(self, con: sqlite3.Connection, table: str, column: str, column_type: str) -> None:
         rows = con.execute(f"PRAGMA table_info({table})").fetchall()
@@ -203,83 +213,157 @@ class CalendarStorage:
         telegram_user_id: int | None = None,
         username: str | None = None,
     ) -> None:
+        """Birthdays belong to the GROUP, not to the user who entered them."""
+        name = " ".join(person_name.strip().split())
+        if not name:
+            raise ValueError("birthday person name is empty")
+
+        if not telegram_user_id and name.lower().startswith("id="):
+            raw_id = name[3:].strip()
+            if raw_id.isdigit() and int(raw_id) > 0:
+                telegram_user_id = int(raw_id)
+
+        norm = name.casefold()
         with self._connect() as con:
+            rows = [dict(r) for r in con.execute(
+                """SELECT id, owner_user_id, person_name, telegram_user_id,
+                          username, last_congrats_year
+                   FROM birthdays WHERE group_id = ? ORDER BY id""",
+                (int(group_id),),
+            ).fetchall()]
+
+            matches = []
+            for row in rows:
+                old_id = row["telegram_user_id"]
+                old_name = " ".join(str(row["person_name"]).casefold().split())
+                same_id = telegram_user_id and old_id and int(old_id) == int(telegram_user_id)
+                conflicting_ids = telegram_user_id and old_id and int(old_id) != int(telegram_user_id)
+                if same_id or (old_name == norm and not conflicting_ids):
+                    matches.append(row)
+
+            if not matches:
+                con.execute(
+                    """INSERT INTO birthdays
+                       (group_id, owner_user_id, group_title, person_name,
+                        telegram_user_id, username, birthday, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (group_id, owner_user_id, group_title, name, telegram_user_id,
+                     username, birthday, now_iso, now_iso),
+                )
+                return
+
+            # Consolidate duplicate legacy records before updating the canonical one.
+            primary = matches[0]
+            best_name = name
+            if name.lower().startswith("id=") and not str(primary["person_name"]).lower().startswith("id="):
+                best_name = str(primary["person_name"])
+            keep_id = telegram_user_id or primary["telegram_user_id"]
+            keep_username = username or primary["username"]
+            years = [int(row["last_congrats_year"]) for row in matches if row["last_congrats_year"] is not None]
+            last_year = max(years) if years else None
+            for row in matches[1:]:
+                con.execute("DELETE FROM birthdays WHERE id = ?", (int(row["id"]),))
             con.execute(
-                """
-                INSERT INTO birthdays(group_id, owner_user_id, group_title, person_name, telegram_user_id, username, birthday, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(group_id, owner_user_id, person_name)
-                DO UPDATE SET birthday = excluded.birthday,
-                              telegram_user_id = excluded.telegram_user_id,
-                              username = excluded.username,
-                              group_title = excluded.group_title,
-                              updated_at = excluded.updated_at
-                """,
-                (group_id, owner_user_id, group_title, person_name, telegram_user_id, username, birthday, now_iso, now_iso),
+                """UPDATE birthdays SET group_title=?, person_name=?, birthday=?,
+                       telegram_user_id=?, username=?, updated_at=?, last_congrats_year=?
+                   WHERE id=?""",
+                (group_title, best_name, birthday, keep_id, keep_username,
+                 now_iso, last_year, int(primary["id"])),
             )
 
+    def update_birthday_identity(
+        self, birthday_id: int, person_name: str, username: str | None = None,
+    ) -> None:
+        """Resolve a legacy id= name, but never overwrite a human-entered name."""
+        name = " ".join((person_name or "").split())
+        if not name:
+            return
+        with self._connect() as con:
+            row = con.execute("SELECT person_name FROM birthdays WHERE id=?", (birthday_id,)).fetchone()
+            if row and str(row["person_name"]).lower().startswith("id="):
+                con.execute(
+                    "UPDATE birthdays SET person_name=?, username=COALESCE(?, username) WHERE id=?",
+                    (name, username, birthday_id),
+                )
+
+    def rename_birthday_by_telegram_id(
+        self, group_id: int, telegram_user_id: int, new_name: str, now_iso: str,
+    ) -> bool:
+        name = " ".join((new_name or "").split())
+        if not name:
+            return False
+        with self._connect() as con:
+            row = con.execute(
+                """SELECT id FROM birthdays WHERE group_id=?
+                   AND (telegram_user_id=? OR person_name=?) ORDER BY id LIMIT 1""",
+                (group_id, telegram_user_id, f"id={telegram_user_id}"),
+            ).fetchone()
+            if not row:
+                return False
+            con.execute(
+                """UPDATE birthdays SET person_name=?, telegram_user_id=?, updated_at=?
+                   WHERE id=?""",
+                (name, telegram_user_id, now_iso, int(row["id"])),
+            )
+            return True
+
+    @staticmethod
+    def _unique_birthdays(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Read legacy owner-specific duplicates as a single group birthday."""
+        chosen: dict[tuple[int, str], dict[str, Any]] = {}
+        # Last edited record wins if legacy owners supplied conflicting dates.
+        for row in sorted(rows, key=lambda r: (str(r.get("updated_at") or ""), int(r["id"])), reverse=True):
+            user_id = row.get("telegram_user_id")
+            name = " ".join(str(row["person_name"]).casefold().split())
+            if not user_id and name.startswith("id=") and name[3:].isdigit():
+                user_id = int(name[3:])
+            identity = f"id:{user_id}" if user_id else f"name:{name}"
+            key = (int(row["group_id"]), identity)
+            existing = chosen.get(key)
+            if existing is None:
+                chosen[key] = row
+            elif str(existing["person_name"]).lower().startswith("id=") and not name.startswith("id="):
+                # A resolved human name is preferable to an old id= placeholder.
+                chosen[key] = row
+        return list(chosen.values())
+
     def list_birthdays(self, owner_user_id: int, group_id: int) -> list[dict[str, Any]]:
+        # owner_user_id is retained for API compatibility; the list is shared.
         with self._connect() as con:
             rows = con.execute(
-                """
-                SELECT id, group_id, group_title, person_name, birthday
-                FROM birthdays
-                WHERE owner_user_id = ? AND group_id = ?
-                ORDER BY substr(birthday, 6, 5), person_name COLLATE NOCASE
-                """,
-                (owner_user_id, group_id),
+                """SELECT id, group_id, group_title, person_name, birthday,
+                          telegram_user_id, username, updated_at, last_congrats_year
+                   FROM birthdays WHERE group_id = ?""",
+                (group_id,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        unique = self._unique_birthdays([dict(r) for r in rows])
+        return sorted(unique, key=lambda r: (r["birthday"][5:], r["person_name"].casefold()))
 
     def find_birthday_by_person(self, owner_user_id: int, person_name: str) -> list[dict[str, Any]]:
-        needle = " ".join(person_name.strip().lower().split())
-
+        needle = " ".join(person_name.strip().casefold().split())
         with self._connect() as con:
             rows = con.execute(
-                """
-                SELECT id, group_id, group_title, person_name, birthday
-                FROM birthdays
-                WHERE owner_user_id = ?
-                """,
+                """SELECT id, group_id, group_title, person_name, birthday
+                   FROM birthdays
+                   WHERE group_id IN
+                     (SELECT group_id FROM group_registry WHERE owner_user_id=?)""",
                 (owner_user_id,),
             ).fetchall()
-
-        result = []
-
-        for row in rows:
-            normalized = " ".join(str(row["person_name"]).strip().lower().split())
-            if normalized == needle:
-                result.append(dict(row))
-
-        return result
+        return [dict(r) for r in rows
+                if " ".join(str(r["person_name"]).casefold().split()) == needle]
 
     def find_birthday_by_person_in_group(
-        self,
-        owner_user_id: int,
-        group_id: int,
-        person_name: str,
+        self, owner_user_id: int, group_id: int, person_name: str,
     ) -> list[dict[str, Any]]:
-        needle = " ".join(person_name.strip().lower().split())
-
+        needle = " ".join(person_name.strip().casefold().split())
         with self._connect() as con:
             rows = con.execute(
-                """
-                SELECT id, group_id, group_title, person_name, birthday
-                FROM birthdays
-                WHERE owner_user_id = ?
-                  AND group_id = ?
-                """,
-                (owner_user_id, group_id),
+                """SELECT id, group_id, group_title, person_name, birthday
+                   FROM birthdays WHERE group_id=?""",
+                (group_id,),
             ).fetchall()
-
-        result = []
-
-        for row in rows:
-            normalized = " ".join(str(row["person_name"]).strip().lower().split())
-            if normalized == needle:
-                result.append(dict(row))
-
-        return result
+        return [dict(r) for r in rows
+                if " ".join(str(r["person_name"]).casefold().split()) == needle]
 
     def update_birthday(self, birthday_id: int, birthday: str, now_iso: str) -> None:
         with self._connect() as con:
@@ -293,24 +377,39 @@ class CalendarStorage:
             con.execute("DELETE FROM birthdays WHERE id = ?", (birthday_id,))
 
     def todays_birthdays(self, month_day: str, year: int) -> list[dict[str, Any]]:
+        # De-duplicate BEFORE matching the date: a legacy duplicate with a
+        # different stored birthday must not cause a second greeting that year.
         with self._connect() as con:
             rows = con.execute(
-                """
-                SELECT id, group_id, group_title, person_name, telegram_user_id, username, birthday, last_congrats_year
-                FROM birthdays
-                WHERE substr(birthday, 6, 5) = ?
-                  AND (last_congrats_year IS NULL OR last_congrats_year < ?)
-                ORDER BY group_title COLLATE NOCASE, person_name COLLATE NOCASE
-                """,
-                (month_day, year),
+                """SELECT id, group_id, group_title, person_name, telegram_user_id,
+                          username, birthday, last_congrats_year, updated_at
+                   FROM birthdays"""
             ).fetchall()
-        return [dict(r) for r in rows]
+        chosen = self._unique_birthdays([dict(r) for r in rows])
+        return sorted(
+            [r for r in chosen
+             if r["birthday"][5:] == month_day
+             and (r["last_congrats_year"] is None or int(r["last_congrats_year"]) < year)],
+            key=lambda r: (str(r["group_title"]).casefold(), str(r["person_name"]).casefold()),
+        )
 
     def mark_birthday_congratulated(self, birthday_id: int, year: int, now_iso: str) -> None:
+        # Mark all duplicate legacy rows as sent, not only one owner copy.
         with self._connect() as con:
+            row = con.execute(
+                "SELECT group_id, person_name, telegram_user_id FROM birthdays WHERE id=?",
+                (birthday_id,),
+            ).fetchone()
+            if not row:
+                return
             con.execute(
-                "UPDATE birthdays SET last_congrats_year = ?, updated_at = ? WHERE id = ?",
-                (year, now_iso, birthday_id),
+                """UPDATE birthdays SET last_congrats_year=?, updated_at=?
+                   WHERE group_id=?
+                     AND (id=?
+                       OR (telegram_user_id IS NOT NULL AND telegram_user_id=?)
+                       OR LOWER(TRIM(person_name))=LOWER(TRIM(?)))""",
+                (year, now_iso, int(row["group_id"]), birthday_id,
+                 row["telegram_user_id"], row["person_name"]),
             )
 
     def register_group_member(

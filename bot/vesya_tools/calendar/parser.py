@@ -208,16 +208,21 @@ def parse_group_name_after(text: str, prefix: str) -> str:
 def parse_birthday_date(value: str, now_year: int) -> str | None:
     s = value.strip().lower()
 
-    m = re.match(r"^(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?$", s, flags=re.I)
-    if not m:
-        return None
+    numeric = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})(?:[./-](\d{4}))?", s)
+    if numeric:
+        day = int(numeric.group(1))
+        month = int(numeric.group(2))
+        year = int(numeric.group(3) or 1900)
+    else:
+        m = re.fullmatch(r"(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?", s, flags=re.I)
+        if not m:
+            return None
 
-    day = int(m.group(1))
-    month = RU_MONTHS.get(m.group(2).lower())
-    if not month:
-        return None
-
-    year = int(m.group(3) or 1900)
+        day = int(m.group(1))
+        month = RU_MONTHS.get(m.group(2).lower())
+        if not month:
+            return None
+        year = int(m.group(3) or 1900)
 
     try:
         datetime(year, month, day)
@@ -236,12 +241,11 @@ def parse_birthday_lines(text: str, now_year: int) -> list[tuple[str, str]]:
         if not line:
             continue
 
-        normalized = line.replace(" - ", " — ").replace("-", " — ")
-
-        if "—" not in normalized:
+        # Do not break hyphens inside numeric dates (29-01-1973).
+        parts = re.split(r"\s+[—-]\s+|\s*—\s*", line, maxsplit=1)
+        if len(parts) != 2:
             continue
-
-        name, date_raw = normalized.split("—", 1)
+        name, date_raw = parts
         name = name.strip()
         birthday = parse_birthday_date(date_raw.strip(), now_year)
 
