@@ -216,6 +216,51 @@ class BirthdaySendTests(unittest.IsolatedAsyncioTestCase):
             await _send_birthday(Bot(), object(), row)
         self.assertEqual(make.await_args.args[0], "Саня")
 
+    async def test_bulk_import_full_names_nicknames_with_optional_ids(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        from vesya_tools.calendar.handler import handle_calendar_message
+
+        with tempfile.TemporaryDirectory() as tmp:
+            s = CalendarStorage(Path(tmp) / "calendar.sqlite3")
+            group_id, editor = -100882211, 55555
+            s.register_group(group_id, editor, "Test Group", "2026-10-16T17:00:00+05:00")
+
+            class Message:
+                text = (
+                    "Веся добавь ДР для группы Test Group\n"
+                    "Иван Иванов (Иваныч) (id=123456789) — 19.04.1974\n"
+                    "Сергей Петров (Серёга) — 16.04.1974\n"
+                    "Александр Бондарев (Александр Вячеславович) — 11.11.1968"
+                )
+                from_user = SimpleNamespace(id=editor)
+                chat = SimpleNamespace(type="private")
+                answer = AsyncMock()
+                bot = SimpleNamespace(get_chat_member=AsyncMock(
+                    return_value=SimpleNamespace(status="member")))
+
+            with patch.dict(os.environ, {"V_BIRTHDAY_ADMIN_IDS": str(editor)}):
+                self.assertTrue(await handle_calendar_message(Message(), s))
+
+            rows = s.list_birthdays(editor, group_id)
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(
+                [(r["person_name"], r["nickname"], r["birthday"]) for r in rows],
+                [
+                    ("Сергей Петров", "Серёга", "1974-04-16"),
+                    ("Иван Иванов", "Иваныч", "1974-04-19"),
+                    ("Александр Бондарев", "Александр Вячеславович", "1968-11-11"),
+                ],
+            )
+            self.assertEqual(next(r for r in rows if r["nickname"] == "Иваныч")["telegram_user_id"], 123456789)
+            self.assertEqual(next(r for r in rows if r["nickname"] == "Серёга")["telegram_user_id"], None)
+            self.assertTrue(all(r["full_name"] == r["person_name"] for r in rows))
+            # Same lines may be sent again without introducing duplicate records.
+            with patch.dict(os.environ, {"V_BIRTHDAY_ADMIN_IDS": str(editor)}):
+                self.assertTrue(await handle_calendar_message(Message(), s))
+            self.assertEqual(len(s.list_birthdays(editor, group_id)), 3)
+
     async def test_command_stores_names_without_changing_date(self):
         from types import SimpleNamespace
         from unittest.mock import AsyncMock

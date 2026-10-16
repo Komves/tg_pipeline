@@ -216,6 +216,8 @@ class CalendarStorage:
         now_iso: str,
         telegram_user_id: int | None = None,
         username: str | None = None,
+        full_name: str | None = None,
+        nickname: str | None = None,
     ) -> None:
         """Birthdays belong to the GROUP, not to the user who entered them."""
         name = " ".join(person_name.strip().split())
@@ -227,6 +229,10 @@ class CalendarStorage:
             if raw_id.isdigit() and int(raw_id) > 0:
                 telegram_user_id = int(raw_id)
 
+        full_name = " ".join(full_name.split()) if full_name else None
+        nickname = " ".join(nickname.split()) if nickname else None
+        if (full_name and len(full_name) > 100) or (nickname and len(nickname) > 100):
+            raise ValueError("birthday name too long")
         norm = name.casefold()
         with self._connect() as con:
             rows = [dict(r) for r in con.execute(
@@ -254,10 +260,11 @@ class CalendarStorage:
                 con.execute(
                     """INSERT INTO birthdays
                        (group_id, owner_user_id, group_title, person_name,
-                        telegram_user_id, username, birthday, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        telegram_user_id, username, birthday, created_at, updated_at,
+                        full_name, nickname)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (group_id, owner_user_id, group_title, name, telegram_user_id,
-                     username, birthday, now_iso, now_iso),
+                     username, birthday, now_iso, now_iso, full_name, nickname),
                 )
                 return
 
@@ -268,8 +275,8 @@ class CalendarStorage:
                 best_name = str(primary["person_name"])
             keep_id = telegram_user_id or primary["telegram_user_id"]
             keep_username = username or primary["username"]
-            keep_full_name = next((str(r["full_name"]) for r in matches if r.get("full_name")), None)
-            keep_nickname = next((str(r["nickname"]) for r in matches if r.get("nickname")), None)
+            keep_full_name = full_name or next((str(r["full_name"]) for r in matches if r.get("full_name")), None)
+            keep_nickname = nickname or next((str(r["nickname"]) for r in matches if r.get("nickname")), None)
             years = [int(row["last_congrats_year"]) for row in matches if row["last_congrats_year"] is not None]
             last_year = max(years) if years else None
             for row in matches[1:]:

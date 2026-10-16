@@ -480,7 +480,17 @@ async def handle_calendar_message(message, storage) -> bool:
             if not raw_id and re.fullmatch(r"id=\d+", person_name, flags=re.I):
                 raw_id = person_name.split("=", 1)[1]
 
-            member = storage.find_group_member(int(group["group_id"]), person_name)
+            # Name (friendly address) (id=123) — DD.MM.YYYY
+            full_name = person_name
+            nickname = None
+            familiar = re.fullmatch(r"(.+?)\s*\(([^()]+)\)", person_name)
+            if familiar:
+                full_name = familiar.group(1).strip()
+                nickname = familiar.group(2).strip()
+                if not full_name or not nickname:
+                    continue
+
+            member = storage.find_group_member(int(group["group_id"]), full_name)
             telegram_user_id = int(raw_id) if raw_id else (
                 int(member["telegram_user_id"]) if member else None
             )
@@ -493,11 +503,13 @@ async def handle_calendar_message(message, storage) -> bool:
                 group_id=int(group["group_id"]),
                 owner_user_id=user_id,
                 group_title=str(group["group_title"]),
-                person_name=person_name,
+                person_name=full_name,
                 birthday=birthday,
                 now_iso=now_iso,
                 telegram_user_id=telegram_user_id,
                 username=username,
+                full_name=full_name if nickname else None,
+                nickname=nickname,
             )
 
         await message.answer(f"Записала ДР: {len(items)}. Привязала к участникам: {linked}.")
