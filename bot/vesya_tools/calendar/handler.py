@@ -430,7 +430,7 @@ async def handle_calendar_message(message, storage) -> bool:
     # Example (private chat):
     # Веся, запомни именинника группы <группа> id=123: Полное Имя — Прозвище
     person = re.match(
-        r"^запомни\\s+именинника\\s+группы\\s+(.+?)\\s+id=(\\d+)\\s*:\\s*(.+?)\\s+[—-]\\s+(.+)$",
+        r"^запомни\s+именинника\s+группы\s+(.+?)\s+id=(\d+)\s*:\s*(.+?)\s+[—-]\s+(.+)$",
         src, flags=re.I,
     )
     if person:
