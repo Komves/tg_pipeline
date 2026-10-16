@@ -36,8 +36,10 @@ async def _resolve_person(bot, storage, item: dict) -> dict:
     return row
 
 
-async def _send_birthday(bot, storage, item: dict) -> None:
-    """One Telegram message: video with greeting in caption, or text fallback."""
+async def _send_birthday(
+    bot, storage, item: dict, *, preview_chat_id: int | None = None,
+) -> None:
+    """Send a birthday clip. Private previews leave group state unchanged."""
     item = await _resolve_person(bot, storage, item)
     friendly_name = (str(item.get("nickname") or "").strip()
                      or str(item.get("full_name") or "").strip()
@@ -49,34 +51,37 @@ async def _send_birthday(bot, storage, item: dict) -> None:
         str(item["username"]) if item.get("username") else None,
     )
 
+    if preview_chat_id is not None:
+        caption = "🧪 Тест поздравления. В группу не отправлено.\n\n" + caption
+
     # The ordinary 'дай красоты' command uses this same pool.
     from beauty_pool import pick_unseen_beauty_clip, mark_beauty_clip_sent
     from aiogram.types import FSInputFile
 
-    group_id = int(item["group_id"])
-    clip = pick_unseen_beauty_clip(group_id)
+    recipient_id = int(preview_chat_id) if preview_chat_id is not None else int(item["group_id"])
+    clip = pick_unseen_beauty_clip(recipient_id)
     if not clip:
-        await bot.send_message(group_id, caption, parse_mode="HTML")
+        await bot.send_message(recipient_id, caption, parse_mode="HTML")
         return
 
     clip_id = str(clip.get("id") or "")
     video_path = Path(str(clip.get("path") or clip.get("abs_path") or ""))
     if not clip_id or not video_path.is_file():
         # A corrupt pool entry should not prevent a birthday greeting.
-        await bot.send_message(group_id, caption, parse_mode="HTML")
+        await bot.send_message(recipient_id, caption, parse_mode="HTML")
         return
 
     last_error = None
     for attempt in range(3):
         try:
             await bot.send_video(
-                group_id,
+                recipient_id,
                 video=FSInputFile(str(video_path)),
                 caption=caption,
                 parse_mode="HTML",
                 request_timeout=int(os.getenv("V_VIDEO_SEND_TIMEOUT", "45")),
             )
-            mark_beauty_clip_sent(group_id, clip_id)
+            mark_beauty_clip_sent(recipient_id, clip_id)
             return
         except Exception as exc:
             last_error = exc

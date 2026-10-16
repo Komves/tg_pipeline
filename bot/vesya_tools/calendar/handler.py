@@ -380,6 +380,62 @@ async def handle_calendar_message(message, storage) -> bool:
         await message.answer("\n".join(lines[:80]))
         return True
 
+    # Preview a real birthday greeting and a real clip in the requester's DM.
+    # No messages or sent-history changes for the target group.
+    preview = re.fullmatch(
+        r"тест\s+поздравления\s+группы\s+(.+?)\s+для\s+(.+)",
+        src, flags=re.I,
+    )
+    if preview:
+        group_name, person_query = (value.strip() for value in preview.groups())
+        group = storage.find_group(user_id, group_name)
+        if not group:
+            await message.answer("Такую группу я пока не вижу.")
+            return True
+        group_id = int(group["group_id"])
+        if not await _may_manage_birthdays(message, group_id):
+            await message.answer("Проверять поздравления может администратор календаря группы.")
+            return True
+
+        rows = storage.list_birthdays(user_id, group_id)
+        def normalized(value: str) -> str:
+            return " ".join((value or "").casefold().replace("ё", "е").split())
+
+        needle = normalized(person_query)
+        def variants(value: str) -> set[str]:
+            # Natural requests like "для Фимыча", "для Алекса", "для Мэла".
+            word = normalized(value)
+            options = {word}
+            if word and word[-1].isalpha() and word[-1] not in "аеёиоуыэюяьй":
+                options.add(word + "а")
+            return options
+
+        matches = [
+            row for row in rows
+            if any(needle in variants(str(row.get(key) or ""))
+                   for key in ("person_name", "full_name", "nickname"))
+        ]
+        if len(matches) != 1:
+            await message.answer(
+                "Не нашла такого именинника." if not matches
+                else "Нашла несколько совпадений. Укажи полное имя."
+            )
+            return True
+
+        from .scheduler import _send_birthday
+        try:
+            await _send_birthday(
+                message.bot, storage, matches[0],
+                preview_chat_id=int(message.chat.id),
+            )
+        except Exception as exc:
+            print(
+                f"[birthday] private preview failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            await message.answer("Тестовое поздравление не отправилось. Проверь логи Веси.")
+        return True
+
     if low.startswith("покажи др группы"):
         group_name = parse_group_name_after(src, "покажи др группы")
         group = storage.find_group(user_id, group_name)
