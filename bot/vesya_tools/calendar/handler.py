@@ -402,9 +402,17 @@ async def handle_calendar_message(message, storage) -> bool:
             return " ".join((value or "").casefold().replace("ё", "е").split())
 
         needle = normalized(person_query)
+        def variants(value: str) -> set[str]:
+            # Natural requests like "для Фимыча", "для Алекса", "для Мэла".
+            word = normalized(value)
+            options = {word}
+            if word and word[-1].isalpha() and word[-1] not in "аеёиоуыэюяьй":
+                options.add(word + "а")
+            return options
+
         matches = [
             row for row in rows
-            if any(normalized(str(row.get(key) or "")) == needle
+            if any(needle in variants(str(row.get(key) or ""))
                    for key in ("person_name", "full_name", "nickname"))
         ]
         if len(matches) != 1:
