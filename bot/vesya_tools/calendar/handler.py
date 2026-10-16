@@ -187,6 +187,41 @@ def _resolve_timezone_name(value: str) -> str | None:
     return None
 
 
+async def _may_manage_birthdays(message, group_id: int) -> bool:
+    """Only Telegram group admins or explicitly configured administrators may edit."""
+    import os
+    user_id = int(message.from_user.id) if message.from_user else 0
+    allowed = {int(x.strip()) for x in os.getenv("V_BIRTHDAY_ADMIN_IDS", "").split(",")
+               if x.strip().isdigit()}
+    if user_id and user_id in allowed:
+        return True
+    try:
+        member = await message.bot.get_chat_member(int(group_id), user_id)
+        status = str(getattr(member, "status", "")).lower()
+        return status in ("creator", "administrator", "owner", "chatmemberstatus.creator",
+                          "chatmemberstatus.administrator")
+    except Exception as exc:
+        print(f"[birthday] admin check failed: {type(exc).__name__}: {exc}", flush=True)
+        return False
+
+
+async def _resolve_birthday_name(message, storage, row: dict) -> str:
+    name = str(row["person_name"])
+    user_id = row.get("telegram_user_id")
+    if not name.lower().startswith("id=") or not user_id:
+        return name
+    try:
+        member = await message.bot.get_chat_member(int(row["group_id"]), int(user_id))
+        user = member.user
+        found_name = " ".join(p for p in (user.first_name, user.last_name) if p).strip()
+        if found_name:
+            storage.update_birthday_identity(int(row["id"]), found_name, user.username)
+            return found_name
+    except Exception as exc:
+        print(f"[birthday] cannot resolve id={user_id}: {type(exc).__name__}: {exc}", flush=True)
+    return name
+
+
 async def handle_calendar_message(message, storage) -> bool:
     import os
 
@@ -359,14 +394,34 @@ async def handle_calendar_message(message, storage) -> bool:
 
         lines = []
         for row in rows:
+            name = await _resolve_birthday_name(message, storage, row)
             birthday = str(row["birthday"])
             y, m, d = birthday.split("-")
-            if y == "1900":
-                lines.append(f"{row['person_name']} — {int(d):02d}.{int(m):02d}")
-            else:
-                lines.append(f"{row['person_name']} — {int(d):02d}.{int(m):02d}.{y}")
+            formatted_date = f"{int(d):02d}.{int(m):02d}"
+            if y != "1900":
+                formatted_date += f".{y}"
+            lines.append(f"{name} — {formatted_date}")
 
         await message.answer("\n".join(lines))
+        return True
+
+    rename = re.match(
+        r"^переименуй\s+др\s+группы\s+(.+?)\s+id=(\d+)\s+в\s+(.+)$",
+        src, flags=re.I,
+    )
+    if rename:
+        group_name, raw_id, new_name = rename.groups()
+        group = storage.find_group(user_id, group_name)
+        if not group:
+            await message.answer("Такую группу я пока не вижу.")
+        elif not await _may_manage_birthdays(message, int(group["group_id"])):
+            await message.answer("Изменять список ДР может администратор группы.")
+        elif storage.rename_birthday_by_telegram_id(
+            int(group["group_id"]), int(raw_id), new_name, now_iso
+        ):
+            await message.answer(f"Запомнила имя: {new_name.strip()}. Дату сохранила.")
+        else:
+            await message.answer("Такого ID в списке ДР группы не нашла.")
         return True
 
     if low.startswith("добавь др для группы"):
@@ -377,6 +432,10 @@ async def handle_calendar_message(message, storage) -> bool:
             await message.answer("Такую группу я пока не вижу. Сначала напиши там что-нибудь, чтобы я ее запомнила.")
             return True
 
+        if not await _may_manage_birthdays(message, int(group["group_id"])):
+            await message.answer("Добавлять ДР может администратор группы.")
+            return True
+
         items = parse_birthday_lines(body, now.year)
         if not items:
             await message.answer("Не вижу дат. Формат: Серега — 5 марта")
@@ -385,8 +444,17 @@ async def handle_calendar_message(message, storage) -> bool:
         linked = 0
 
         for person_name, birthday in items:
+            manual_id = re.fullmatch(r"(.+?)\s*\(id=(\d+)\)", person_name, flags=re.I)
+            if manual_id:
+                person_name = manual_id.group(1).strip()
+            raw_id = manual_id.group(2) if manual_id else None
+            if not raw_id and re.fullmatch(r"id=\d+", person_name, flags=re.I):
+                raw_id = person_name.split("=", 1)[1]
+
             member = storage.find_group_member(int(group["group_id"]), person_name)
-            telegram_user_id = int(member["telegram_user_id"]) if member else None
+            telegram_user_id = int(raw_id) if raw_id else (
+                int(member["telegram_user_id"]) if member else None
+            )
             username = str(member["username"]) if member and member.get("username") else None
 
             if telegram_user_id:
@@ -422,6 +490,9 @@ async def handle_calendar_message(message, storage) -> bool:
             await message.answer("Нашла в нескольких группах. Уточни группу.")
             return True
 
+        if not await _may_manage_birthdays(message, int(found[0]["group_id"])):
+            await message.answer("Исправлять ДР может администратор группы.")
+            return True
         storage.update_birthday(int(found[0]["id"]), birthday, now_iso)
         await message.answer("Исправила.")
         return True
@@ -457,6 +528,9 @@ async def handle_calendar_message(message, storage) -> bool:
             await message.answer("Нашла в нескольких группах. Уточни группу.")
             return True
 
+        if not await _may_manage_birthdays(message, int(found[0]["group_id"])):
+            await message.answer("Удалять ДР может администратор группы.")
+            return True
         storage.delete_birthday(int(found[0]["id"]))
         await message.answer("Удалила.")
         return True

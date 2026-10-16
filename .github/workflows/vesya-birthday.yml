@@ -1,0 +1,25 @@
+name: Vesya birthday regression
+
+on:
+  pull_request:
+    paths:
+      - "bot/vesya_tools/calendar/**"
+      - "bot/main.py"
+      - "bot/tests/test_birthday_shared.py"
+      - ".github/workflows/vesya-birthday.yml"
+  push:
+    branches:
+      - "feature/vesya-birthday-beauty-20261016"
+
+jobs:
+  birthday:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Python syntax
+        run: python -m compileall -q bot/vesya_tools/calendar bot/main.py
+      - name: Calendar tests
+        run: python -m unittest discover -s bot/tests -p 'test_birthday_shared.py' -v
