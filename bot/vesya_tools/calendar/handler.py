@@ -400,7 +400,10 @@ async def handle_calendar_message(message, storage) -> bool:
             formatted_date = f"{int(d):02d}.{int(m):02d}"
             if y != "1900":
                 formatted_date += f".{y}"
-            lines.append(f"{name} — {formatted_date}")
+            full_name = str(row.get("full_name") or "").strip() or name
+            nickname = str(row.get("nickname") or "").strip()
+            label = f"{full_name} (зову {nickname})" if nickname and nickname.casefold() != full_name.casefold() else full_name
+            lines.append(f"{label} — {formatted_date}")
 
         await message.answer("\n".join(lines))
         return True
@@ -422,6 +425,32 @@ async def handle_calendar_message(message, storage) -> bool:
             await message.answer(f"Запомнила имя: {new_name.strip()}. Дату сохранила.")
         else:
             await message.answer("Такого ID в списке ДР группы не нашла.")
+        return True
+
+    # Example (private chat):
+    # Веся, запомни именинника группы <группа> id=123: Полное Имя — Прозвище
+    person = re.match(
+        r"^запомни\\s+именинника\\s+группы\\s+(.+?)\\s+id=(\\d+)\\s*:\\s*(.+?)\\s+[—-]\\s+(.+)$",
+        src, flags=re.I,
+    )
+    if person:
+        group_name, raw_id, full_name, nickname = person.groups()
+        group = storage.find_group(user_id, group_name)
+        if not group:
+            await message.answer("Такую группу я пока не вижу.")
+            return True
+        if not await _may_manage_birthdays(message, int(group["group_id"])):
+            await message.answer("Изменять список ДР может администратор группы.")
+            return True
+        full_name, nickname = full_name.strip(), nickname.strip()
+        if storage.set_birthday_names_by_telegram_id(
+            int(group["group_id"]), int(raw_id), full_name, nickname, now_iso,
+        ):
+            await message.answer(
+                f"Запомнила: {full_name}. В группе зову {nickname}. Дату рождения сохранила."
+            )
+        else:
+            await message.answer("Не нашла этого ID в списке ДР или имя слишком длинное.")
         return True
 
     if low.startswith("добавь др для группы"):
