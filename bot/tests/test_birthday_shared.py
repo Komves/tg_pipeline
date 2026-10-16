@@ -294,6 +294,91 @@ class BirthdaySendTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row["birthday"], "1973-01-29")
             m.answer.assert_awaited_once()
 
+    async def test_private_preview_sends_video_only_to_requester(self):
+        import sys
+        import types
+        from unittest.mock import AsyncMock, patch
+        from vesya_tools.calendar.scheduler import _send_birthday
+
+        class File:
+            def __init__(self, path):
+                self.path = path
+
+        class Bot:
+            def __init__(self):
+                self.sent = []
+            async def send_video(self, chat_id, **kwargs):
+                self.sent.append((chat_id, kwargs))
+
+        class Storage:
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            path.write_bytes(b"dummy")
+            chosen = []
+            marked = []
+            beauty = types.ModuleType("beauty_pool")
+            beauty.pick_unseen_beauty_clip = lambda key: (
+                chosen.append(key) or {"id": "c1", "path": str(path)}
+            )
+            beauty.mark_beauty_clip_sent = lambda key, cid: marked.append((key, cid))
+            aiogram_types = types.ModuleType("aiogram.types")
+            aiogram_types.FSInputFile = File
+
+            bot = Bot()
+            group_id = -1002345
+            viewer = 123456789
+            row = {
+                "id": 2, "group_id": group_id, "person_name": "Алекс",
+                "full_name": "Александр Тестов", "nickname": "Алекс",
+                "group_title": "Комвес", "telegram_user_id": viewer, "username": None,
+            }
+            with patch.dict(sys.modules, {
+                "beauty_pool": beauty, "aiogram.types": aiogram_types,
+            }), patch(
+                "vesya_tools.calendar.scheduler.generate_birthday_message",
+                new=AsyncMock(return_value="🎂 Алекс, с днюхой! Красоты тебе!"),
+            ):
+                await _send_birthday(bot, Storage(), row, preview_chat_id=viewer)
+            self.assertEqual(chosen, [viewer])
+            self.assertEqual(marked, [(viewer, "c1")])
+            self.assertEqual(len(bot.sent), 1)
+            self.assertEqual(bot.sent[0][0], viewer)
+            self.assertNotEqual(bot.sent[0][0], group_id)
+            self.assertIn("В группу не отправлено", bot.sent[0][1]["caption"])
+
+    async def test_preview_handler_obeys_admin_access_and_does_not_mark_birthday(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        from vesya_tools.calendar.handler import handle_calendar_message
+
+        with tempfile.TemporaryDirectory() as tmp:
+            s = CalendarStorage(Path(tmp) / "birthdays.sqlite3")
+            owner_id = 123456789
+            group_id = -10098765
+            now = "2026-10-16T09:00:00+05:00"
+            s.register_group(group_id, owner_id, "Комвес", now)
+            s.upsert_birthday(group_id, owner_id, "Комвес", "Марк Марголин",
+                              "1974-04-19", now, telegram_user_id=owner_id,
+                              full_name="Марк Марголин", nickname="Фимыч")
+            m = SimpleNamespace(
+                text="Веся тест поздравления группы Комвес для Фимыча",
+                from_user=SimpleNamespace(id=owner_id),
+                chat=SimpleNamespace(type="private", id=owner_id),
+                bot=SimpleNamespace(get_chat_member=AsyncMock()),
+                answer=AsyncMock(),
+            )
+            with patch.dict(os.environ, {"V_BIRTHDAY_ADMIN_IDS": str(owner_id)}), patch(
+                "vesya_tools.calendar.scheduler._send_birthday",
+                new=AsyncMock(return_value=None),
+            ) as sender:
+                self.assertTrue(await handle_calendar_message(m, s))
+            self.assertEqual(sender.await_args.kwargs["preview_chat_id"], owner_id)
+            self.assertEqual(sender.await_args.args[2]["nickname"], "Фимыч")
+            self.assertIsNone(s.list_birthdays(owner_id, group_id)[0]["last_congrats_year"])
+
     async def test_missing_video_falls_back_to_text(self):
         import sys
         import types
