@@ -138,6 +138,33 @@ class BirthdaySharedTests(unittest.TestCase):
         self.assertTrue(text.endswith("Красоты тебе! 😎"))
 
 
+class BirthdayScheduleTests(unittest.TestCase):
+    def test_ekaterinburg_0730_without_jitter(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from vesya_tools.calendar.scheduler import _birthday_time_reached
+
+        tz = ZoneInfo("Asia/Yekaterinburg")
+        self.assertFalse(_birthday_time_reached(datetime(2026, 11, 11, 7, 29, tzinfo=tz), 7, 30, 0))
+        self.assertTrue(_birthday_time_reached(datetime(2026, 11, 11, 7, 30, tzinfo=tz), 7, 30, 0))
+        self.assertTrue(_birthday_time_reached(datetime(2026, 11, 11, 7, 31, tzinfo=tz), 7, 30, 0))
+
+    def test_jitter_is_added_after_minute(self):
+        from datetime import datetime
+        from vesya_tools.calendar.scheduler import _birthday_time_reached
+
+        self.assertFalse(_birthday_time_reached(datetime(2026, 11, 11, 7, 39), 7, 30, 10))
+        self.assertTrue(_birthday_time_reached(datetime(2026, 11, 11, 7, 40), 7, 30, 10))
+        self.assertTrue(_birthday_time_reached(datetime(2026, 11, 11, 9, 10), 9, 0, 10))
+
+    def test_invalid_schedule_rejected(self):
+        from datetime import datetime
+        from vesya_tools.calendar.scheduler import _birthday_time_reached
+
+        with self.assertRaises(ValueError):
+            _birthday_time_reached(datetime(2026, 11, 11, 7, 30), 7, 60)
+
+
 class BirthdaySendTests(unittest.IsolatedAsyncioTestCase):
     async def test_video_uses_existing_beauty_pool_and_group_history(self):
         import asyncio
