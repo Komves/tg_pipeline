@@ -97,6 +97,13 @@ async def _send_birthday(
     raise last_error or RuntimeError("birthday video delivery failed")
 
 
+def _birthday_time_reached(now: datetime, hour: int, minute: int, jitter: int = 0) -> bool:
+    """Run no earlier than local HH:MM, allowing optional delayed jitter."""
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59 or jitter < 0:
+        raise ValueError("Invalid birthday schedule")
+    return (now.hour * 60 + now.minute) >= (hour * 60 + minute + jitter)
+
+
 async def calendar_loop(bot, storage) -> None:
     tz_name = (
         os.getenv("V_BIRTHDAY_TZ")
@@ -106,6 +113,7 @@ async def calendar_loop(bot, storage) -> None:
     )
     check_sec = int(os.getenv("V_CALENDAR_CHECK_SEC", "60"))
     birthday_hour = int(os.getenv("V_BIRTHDAY_HOUR", "9"))
+    birthday_minute = int(os.getenv("V_BIRTHDAY_MINUTE", "0"))
     birthday_jitter_min = int(os.getenv("V_BIRTHDAY_JITTER_MIN", "40"))
 
     tz = ZoneInfo(tz_name)
@@ -132,7 +140,7 @@ async def calendar_loop(bot, storage) -> None:
                     seed = f"{now.year}:{item['group_id']}:{item['telegram_user_id'] or item['person_name']}"
                     digest = hashlib.sha256(seed.encode("utf-8")).digest()
                     jitter = int.from_bytes(digest[:2], "big") % max(1, birthday_jitter_min + 1)
-                    if (now.hour, now.minute) < (birthday_hour, jitter):
+                    if not _birthday_time_reached(now, birthday_hour, birthday_minute, jitter):
                         continue
 
                     await _send_birthday(bot, storage, item)
