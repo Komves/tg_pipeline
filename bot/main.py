@@ -838,17 +838,16 @@ def _is_admin_user(message: Message) -> bool:
 
 
 def _parus_target_chat_id() -> int | None:
+    # Customer emails and drafts must never appear in a group.
     explicit = (os.getenv("PARUS_TG_CHAT_ID") or "").strip()
     if explicit:
         try:
-            return int(explicit)
-        except Exception:
+            target = int(explicit)
+            if target > 0 and target in ADMIN_USER_IDS:
+                return target
+        except ValueError:
             pass
-    if ALLOWED_CHAT_ID is not None:
-        return int(ALLOWED_CHAT_ID)
-    if ADMIN_USER_IDS:
-        return int(ADMIN_USER_IDS[0])
-    return None
+    return int(ADMIN_USER_IDS[0]) if ADMIN_USER_IDS else None
 
 
 def _parus_headers() -> dict[str, str]:
