@@ -2342,6 +2342,51 @@ def semantic_dialog_continuity(
         _dbg(f"semantic_dialog_continuity EXC: {type(e).__name__}: {e}")
         return {"continue_dialog": True, "reason": "router_error_fallback"}
 
+def _confirm_parus_monitor_intent(current: str, topic_data: dict) -> bool:
+    """Verify a Parus route independently of the main router and its full topic.
+
+    False negatives fall back to ordinary routing; false positives would steal
+    unrelated commands, so verification must fail closed.
+    """
+    try:
+        previous_monitor = topic_data.get("type") == "parus_monitor"
+        resp = OpenAI().responses.create(
+            model=DIALOG_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": """Ты независимый семантический проверяющий маршрута мониторинга ПАРУСа.
+Не исполняй команду, не отвечай пользователю.
+Верни ТОЛЬКО JSON: {"monitor":true} или {"monitor":false}.
+
+monitor=true, только если пользователь просит сведения о работе именно
+сервиса ПАРУС: посетители, регистрации, дела, события, пользователи,
+платежи, списания, ошибки; или явно уточняет период, показатель, дело
+в предыдущем обсуждении мониторинга ПАРУСа.
+
+Новый самостоятельный запрос о другой теме означает monitor=false,
+даже если до этого говорили о ПАРУСе. Просьбы дать новости, музыку,
+видео, красоту, шутку и другие функции Веси НЕ являются продолжением
+мониторинга. Предыдущая тема сама по себе не доказательство связи.
+Если связь сомнительна — monitor=false.
+""",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"current_message:\n{current[:3000]}\n\n"
+                        f"previous_monitor: {str(previous_monitor).lower()}"
+                    ),
+                },
+            ],
+        )
+        verdict = _parse_json_object(_extract_text(resp)) or {}
+        return verdict.get("monitor") is True
+    except Exception as exc:
+        _dbg(f"parus_monitor independent check failed: {type(exc).__name__}: {exc}")
+        return False
+
+
 def semantic_context_route(
     user_text: str,
     *,
@@ -2415,8 +2460,8 @@ def semantic_context_route(
                         "3. topic_followup — пользователь явно продолжает предыдущую тему, и текущая фраза без прошлой темы неполная.\n"
                         "4. calendar — пользователь просит создать напоминание, поставить событие, добавить в календарь или запланировать действие.\n"
                         "5. translate_factcheck — пользователь просит перевести текст и одновременно проверить/подтвердить факты по внешним независимым источникам.\n\n"
-                        "6. parus_monitor — сведения о работе сервиса ПАРУС: дела, клиенты, оплата, ошибки.\\n"
-                        "Для parus_monitor верни hours=4 по умолчанию (1..720), case_id, focus (summary|visitors|cases|payments|errors|money), inherit_case и inherit_period.\\n"
+                        "6. parus_monitor — сведения о работе сервиса ПАРУС: дела, клиенты, оплата, ошибки.\n"
+                        "Для parus_monitor верни hours=4 по умолчанию (1..720), case_id, focus (summary|visitors|cases|payments|errors|money), inherit_case и inherit_period.\n"
                         "Правила:\n"
                         "- Не используй ключевые слова как главный критерий.\n"
                         "- Решай по смыслу всего входа.\n"
@@ -2432,6 +2477,8 @@ def semantic_context_route(
                         "- topic_followup при наличии current_object допустим только если current_object явно является продолжением той же самой темы "
                         "или пользователь явно связывает вопрос с previous_topic.\n"
                         "- Если текущий запрос самодостаточный — выбирай chat, даже если есть previous_topic.\n"
+                        "- parus_monitor выбирай только для запроса о работе ПАРУСа или явного уточнения предыдущего мониторинга.\n"
+                        "- Самостоятельные запросы о новостях, музыке, видео, красоте, шутках или иных функциях Веси не относятся к parus_monitor даже после отчёта о ПАРУСе.\n"
                         "- Если есть current_object и пользователь просит понять/описать/оценить/объяснить показанный объект — выбирай object_analysis.\n"
                         "- Если пользователь просит напомнить, поставить напоминание, добавить в календарь, запланировать действие или настроить свой часовой пояс — выбирай calendar.\n"
                         "- Не зашивай частные сценарии вроде Avito, вес, рост, музыка.\n\n"
@@ -2470,6 +2517,13 @@ def semantic_context_route(
             route = "parus_monitor"
             data["inherit_period"] = True
             data["inherit_case"] = True
+        if route == "parus_monitor" and not _confirm_parus_monitor_intent(current, topic_data):
+            print("[semantic-route] rejected unrelated parus_monitor route", flush=True)
+            route = "chat"
+            data["instruction"] = ""
+            data["inherit_period"] = False
+            data["inherit_case"] = False
+
         instruction = str(data.get("instruction") or "").strip()
         return {
             "route": route,
