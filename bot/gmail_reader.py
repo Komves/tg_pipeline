@@ -222,6 +222,32 @@ def split_exact(text: str, max_chars: int) -> list[str]:
     return parts
 
 
+def split_for_telegram(text: str, max_utf16_units: int = 3500) -> list[str]:
+    """Telegram counts UTF-16 units, not Python characters. Preserve exact content."""
+    if max_utf16_units < 2:
+        raise ValueError("Chunk limit too small")
+    result = []
+    position = 0
+    while position < len(text):
+        limit = position
+        units = 0
+        while limit < len(text):
+            cost = 2 if ord(text[limit]) > 0xFFFF else 1
+            if units + cost > max_utf16_units:
+                break
+            limit += 1
+            units += cost
+        if limit == position:
+            raise ValueError("Chunk limit too small for a Unicode character")
+        if limit < len(text):
+            split_at = text.rfind("\n", position + (limit - position) // 2, limit)
+            if split_at > position:
+                limit = split_at + 1
+        result.append(text[position:limit])
+        position = limit
+    return result
+
+
 def format_open_message(item: dict) -> list[str]:
     """Telegram-safe full original, with no LLM translation or truncation."""
     heading = (
@@ -237,11 +263,11 @@ def format_open_message(item: dict) -> list[str]:
     body = str(item.get("body") or "")
     if not item.get("body_available"):
         body = "[Текст письма отсутствует или его не удалось извлечь. Сниппет не заменяет оригинал.]"
-    if len(heading) + len(body) + 2 <= 3600:
+    if len((heading + "\n\n" + body).encode("utf-16-le")) // 2 <= 3600:
         return [heading + "\n\n" + body]
 
-    output = split_exact(heading, 3500)
-    body_chunks = split_exact(body, 3400)
+    output = split_for_telegram(heading, 3500)
+    body_chunks = split_for_telegram(body, 3400)
     for index, part in enumerate(body_chunks, 1):
         output.append(f"Текст письма, часть {index}/{len(body_chunks)}:\n\n{part}")
     return output
