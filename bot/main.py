@@ -5,6 +5,7 @@ import os
 import time
 import random
 import json
+import hashlib
 import shutil
 import uuid
 import html
@@ -927,9 +928,10 @@ def _parus_monitor_data(hours: int, case_id: int | None) -> dict:
     )
 
 
-def _parus_confirm_keyboard(contact_id: int) -> InlineKeyboardMarkup:
+def _parus_confirm_keyboard(contact_id: int, draft: str) -> InlineKeyboardMarkup:
+    fingerprint = hashlib.sha256(draft.encode("utf-8")).hexdigest()[:12]
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Подтвердить отправку", callback_data=f"parus_confirm_send:{int(contact_id)}"),
+        InlineKeyboardButton(text="✅ Подтвердить отправку", callback_data=f"parus_confirm_send:{int(contact_id)}:{fingerprint}"),
         InlineKeyboardButton(text="Отмена", callback_data=f"parus_cancel_send:{int(contact_id)}"),
     ]])
 
@@ -1091,7 +1093,7 @@ async def _handle_parus_contact_command(
             "Сохранила твой текст без изменений.\n\n"
             + str(result.get("draft_text") or exact_text)
             + "\n\nОтправить именно его клиенту?",
-            reply_markup=_parus_confirm_keyboard(custom_contact_id),
+            reply_markup=_parus_confirm_keyboard(custom_contact_id, str(result.get("draft_text") or exact_text)),
         )
         return True
 
@@ -7234,7 +7236,7 @@ async def on_parus_contact_send(cb):
         f"Получатель: {contact.get('email')}\n\n"
         f"Точный текст отправки:\n{contact.get('draft_text')}\n\n"
         "Отправить этот ответ?",
-        reply_markup=_parus_confirm_keyboard(contact_id),
+        reply_markup=_parus_confirm_keyboard(contact_id, str(contact["draft_text"])),
     )
     await cb.answer()
 
@@ -7266,7 +7268,16 @@ async def on_parus_contact_confirm_send(cb):
     if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS or cb.message.chat.type != "private":
         await cb.answer("Нет доступа", show_alert=True)
         return
-    contact_id = int(cb.data.split(":", 1)[1])
+    parts = cb.data.split(":")
+    if len(parts) != 3:
+        await cb.answer("Подтверждение устарело", show_alert=True)
+        return
+    contact_id = int(parts[1])
+    contact = await asyncio.to_thread(_parus_get_contact, contact_id)
+    digest = hashlib.sha256(str(contact.get("draft_text") or "").encode("utf-8")).hexdigest()[:12]
+    if contact.get("status") != "draft_ready" or digest != parts[2]:
+        await cb.answer("Черновик изменён. Открой его заново.", show_alert=True)
+        return
     try:
         result = await asyncio.to_thread(_parus_send_contact, contact_id)
         await cb.message.edit_reply_markup(reply_markup=None)
