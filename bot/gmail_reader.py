@@ -196,7 +196,7 @@ def read_message(detail: dict, token: str = "") -> dict:
         "from": headers.get("from", ""),
         "to": headers.get("to", ""),
         "date": headers.get("date", ""),
-        "body": "\n\n".join(x for x in (plain or html_parts) if x.strip()).strip(),
+        "body": "\n\n".join(x for x in (plain or html_parts) if x.strip()),
         "attachments": attachments,
         "body_available": bool(plain or html_parts),
         "internalDate": detail.get("internalDate"),
