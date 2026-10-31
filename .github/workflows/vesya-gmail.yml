@@ -1,0 +1,27 @@
+name: Vesya Gmail full-text regression
+
+on:
+  pull_request:
+    paths:
+      - "bot/gmail_reader.py"
+      - "bot/main.py"
+      - "bot/tests/test_gmail_reader.py"
+      - ".github/workflows/vesya-gmail.yml"
+  push:
+    branches:
+      - "feature/vesya-gmail-full-reading-20261031"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Gmail HTTP dependency
+        run: python -m pip install requests
+      - name: Syntax
+        run: python -m compileall -q bot/gmail_reader.py bot/main.py
+      - name: MIME and summary tests
+        run: python -m unittest discover -s bot/tests -p 'test_gmail_reader.py' -v
