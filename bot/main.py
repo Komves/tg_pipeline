@@ -12,6 +12,13 @@ import base64
 import clip_embedder
 import re
 import requests
+from gmail_reader import (
+    fetch_message as gmail_fetch_full,
+    read_message as gmail_read_full,
+    summarize_message as gmail_summarize,
+    format_open_message as gmail_format_open,
+    get_access_token as gmail_access_token,
+)
 from pathlib import Path
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ChatAction
@@ -6389,23 +6396,6 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
             import requests
             from openai import OpenAI
 
-            def _ru_summary(s: str) -> str:
-                key = (os.getenv("OPENAI_API_KEY") or "").strip()
-                if not key:
-                    return s[:260]
-                try:
-                    client = OpenAI(api_key=key)
-                    r = client.responses.create(
-                        model=os.getenv("V_DIALOG_MODEL", "gpt-4o-mini"),
-                        input=[
-                            {"role": "system", "content": "Кратко переведи и перескажи письмо по-русски в 1-2 строки. Без воды."},
-                            {"role": "user", "content": s[:2500]},
-                        ],
-                    )
-                    return (getattr(r, "output_text", "") or s[:260]).strip()
-                except Exception:
-                    return s[:260]
-
             supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
             supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
             user_id = int(message.from_user.id)
@@ -6462,27 +6452,16 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
                 if not msg_id:
                     continue
 
-                detail = requests.get(
-                    f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    params={"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]},
-                    timeout=20,
-                ).json()
+                try:
+                    detail = await asyncio.to_thread(gmail_fetch_full, msg_id, access_token)
+                    item = await asyncio.to_thread(gmail_read_full, detail, access_token)
+                    summary = await gmail_summarize(item)
+                except Exception as exc:
+                    print(f"[gmail_check] read failed msg_id={msg_id}: {type(exc).__name__}: {exc}", flush=True)
+                    continue
 
-                headers = {h.get("name"): h.get("value") for h in detail.get("payload", {}).get("headers", [])}
-                subj = headers.get("Subject", "без темы")
-                frm = headers.get("From", "")
-                date = headers.get("Date", "")
-                snippet = detail.get("snippet", "")
-
-                saved.append({
-                    "id": msg_id,
-                    "from": frm,
-                    "subject": subj,
-                    "date": date,
-                    "snippet": snippet,
-                    "access_token": access_token,
-                })
+                item["access_token"] = access_token
+                saved.append(item)
 
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="Открыть", callback_data=f"gmail_open_id:{msg_id}"),
@@ -6490,9 +6469,9 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
                 ]])
 
                 await message.answer(
-                    f"{idx}. 📩 {subj}\n"
-                    f"От: {frm}\n"
-                    f"Кратко: {_ru_summary(snippet)}",
+                    f"{idx}. 📩 {item['subject']}\n"
+                    f"От: {item['from']}\n"
+                    f"Кратко: {summary}",
                     reply_markup=kb,
                 )
 
@@ -6523,88 +6502,12 @@ r"\b(ответь|ответь\s+на\s+вопрос|ответь\s+по\s+су�
                 return
 
             item = cached[n - 1]
-            access_token = item["access_token"]
             msg_id = item["id"]
-
-            detail = requests.get(
-                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
-                headers={"Authorization": f"Bearer {access_token}"},
-                params={"format": "full"},
-                timeout=20,
-            ).json()
-
-            def _walk_parts(payload):
-                if not payload:
-                    return ""
-                body = payload.get("body", {}) or {}
-                data = body.get("data")
-                mime = payload.get("mimeType", "")
-                if data and ("text/plain" in mime or mime == ""):
-                    try:
-                        raw = base64.urlsafe_b64decode(data + "===")
-                        return raw.decode("utf-8", errors="replace")
-                    except Exception:
-                        return ""
-                for p in payload.get("parts", []) or []:
-                    got = _walk_parts(p)
-                    if got:
-                        return got
-                return ""
-
-            full_text = _walk_parts(detail.get("payload") or {})
-            if not full_text:
-                full_text = detail.get("snippet", "")
-
-            def _translate_full_email_to_ru(s: str) -> str:
-                src = (s or "").strip()
-                if not src:
-                    return ""
-
-                key = (os.getenv("OPENAI_API_KEY") or "").strip()
-                if not key:
-                    return src
-
-                try:
-                    from openai import OpenAI
-
-                    client = OpenAI(api_key=key)
-                    r = client.responses.create(
-                        model=os.getenv("V_DIALOG_MODEL", "gpt-5.4-mini"),
-                        input=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "Переведи письмо на русский полностью и аккуратно.\n"
-                                    "Не пересказывай кратко.\n"
-                                    "Не сокращай.\n"
-                                    "Сохрани смысл всех абзацев, чисел, дат, ссылок и условий.\n"
-                                    "Рекламные подписи тоже переведи, если они есть в тексте.\n"
-                                    "Верни только перевод."
-                                ),
-                            },
-                            {
-                                "role": "user",
-                                "content": src[:20000],
-                            },
-                        ],
-                    )
-
-                    return (getattr(r, "output_text", "") or "").strip() or src
-
-                except Exception as e:
-                    print(f"[gmail_translate] failed: {type(e).__name__}: {e}", flush=True)
-                    return src
-
-            translated_text = _translate_full_email_to_ru(full_text)
-
-            out = (
-                f"📩 {item.get('subject')}\n"
-                f"От: {item.get('from')}\n"
-                f"Дата: {item.get('date')}\n\n"
-                f"{translated_text}"
-            )
-
-            await _answer_long(message, out)
+            access_token = await asyncio.to_thread(gmail_access_token, user_id)
+            detail = await asyncio.to_thread(gmail_fetch_full, msg_id, access_token)
+            full = await asyncio.to_thread(gmail_read_full, detail, access_token)
+            for part in gmail_format_open(full):
+                await message.answer(part)
 
         except Exception as e:
             print(f"[gmail_open] failed: {type(e).__name__}: {e}", flush=True)
@@ -7053,30 +6956,6 @@ async def _gmail_poll_once() -> None:
         except Exception:
             return 0
 
-    def _ru_summary(text: str) -> str:
-        key = (os.getenv("OPENAI_API_KEY") or "").strip()
-        if not key:
-            return (text or "")[:260]
-
-        try:
-            client = OpenAI(api_key=key)
-            r = client.responses.create(
-                model=os.getenv("V_DIALOG_MODEL", "gpt-4o-mini"),
-                input=[
-                    {
-                        "role": "system",
-                        "content": "Кратко переведи и перескажи письмо по-русски в 1-2 строки. Без воды.",
-                    },
-                    {
-                        "role": "user",
-                        "content": (text or "")[:2500],
-                    },
-                ],
-            )
-            return (getattr(r, "output_text", "") or text[:260]).strip()
-        except Exception:
-            return (text or "")[:260]
-
     supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
     supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
 
@@ -7160,33 +7039,19 @@ async def _gmail_poll_once() -> None:
             if not msg_id:
                 continue
 
-            detail = requests.get(
-                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
-                headers={"Authorization": f"Bearer {access_token}"},
-                params={
-                    "format": "metadata",
-                    "metadataHeaders": ["From", "Subject", "Date"],
-                },
-                timeout=20,
-            ).json()
-
-            internal_ms = int(detail.get("internalDate") or 0)
-            if internal_ms <= last_ms:
+            try:
+                detail = await asyncio.to_thread(gmail_fetch_full, msg_id, access_token)
+                internal_ms = int(detail.get("internalDate") or 0)
+                if internal_ms <= last_ms:
+                    continue
+                item = await asyncio.to_thread(gmail_read_full, detail, access_token)
+                item["access_token"] = access_token
+                item["summary"] = await gmail_summarize(item)
+                new_items.append(item)
+            except Exception as exc:
+                print(f"[gmail_poll] read failed msg_id={msg_id}: {type(exc).__name__}: {exc}", flush=True)
+                # Do not mark an unreadable email as successfully read.
                 continue
-
-            msg_headers = {
-                h.get("name"): h.get("value")
-                for h in detail.get("payload", {}).get("headers", [])
-            }
-
-            new_items.append({
-                "id": msg_id,
-                "from": msg_headers.get("From", ""),
-                "subject": msg_headers.get("Subject", "без темы"),
-                "date": msg_headers.get("Date", ""),
-                "snippet": detail.get("snippet", ""),
-                "access_token": access_token,
-            })
 
         if new_items:
             GMAIL_LAST_MESSAGES[user_id] = new_items[:10]
@@ -7202,7 +7067,7 @@ async def _gmail_poll_once() -> None:
                     text=(
                         f"{idx}. 📩 {item.get('subject')}\n"
                         f"От: {item.get('from')}\n"
-                        f"Кратко: {_ru_summary(item.get('snippet') or '')}"
+                        f"Кратко: {item.get('summary') or 'Не удалось подготовить резюме.'}"
                     ),
                     reply_markup=kb,
                 )
@@ -7318,97 +7183,20 @@ async def on_parus_contact_redraft(cb):
 @dp.callback_query(F.data.startswith("gmail_open:"))
 async def on_gmail_open(cb):
     try:
-        import base64
-        import requests
-        from openai import OpenAI
-
         msg_id = cb.data.split(":", 1)[1].strip()
         user_id = int(cb.from_user.id)
-        cached = GMAIL_LAST_MESSAGES.get(user_id) or []
+        # Refresh from the account owned by the user at click time; old buttons
+        # keep working after token expiry or process restart.
+        access_token = await asyncio.to_thread(gmail_access_token, user_id)
+        detail = await asyncio.to_thread(gmail_fetch_full, msg_id, access_token)
+        full = await asyncio.to_thread(gmail_read_full, detail, access_token)
 
-        item = next((x for x in cached if x.get("id") == msg_id), None)
-        if not item:
-            await cb.message.answer("кэш письма сдох. Проверь почту заново.")
-            return
-
-        access_token = item["access_token"]
-
-        detail = requests.get(
-            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{item['id']}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"format": "full"},
-            timeout=20,
-        ).json()
-
-        def _decode_gmail_body(data: str) -> str:
-            if not data:
-                return ""
-            try:
-                pad = "=" * (-len(data) % 4)
-                return base64.urlsafe_b64decode((data + pad).encode("utf-8")).decode("utf-8", errors="replace")
-            except Exception:
-                return ""
-
-        def _html_to_text(s: str) -> str:
-            s = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", s or "")
-            s = re.sub(r"(?i)<br\s*/?>", "\n", s)
-            s = re.sub(r"(?i)</p\s*>", "\n\n", s)
-            s = re.sub(r"(?s)<[^>]+>", " ", s)
-            s = html.unescape(s)
-            s = re.sub(r"[ \t]+", " ", s)
-            s = re.sub(r"\n\s+\n", "\n\n", s)
-            return s.strip()
-
-        def _walk(payload):
-            plain_parts = []
-            html_parts = []
-
-            def rec(p):
-                if not p:
-                    return
-
-                mime = (p.get("mimeType") or "").lower()
-                body = p.get("body", {}) or {}
-                data = body.get("data")
-
-                if data:
-                    txt = _decode_gmail_body(data)
-                    if txt:
-                        if mime == "text/plain":
-                            plain_parts.append(txt)
-                        elif mime == "text/html":
-                            html_parts.append(_html_to_text(txt))
-
-                for child in p.get("parts", []) or []:
-                    rec(child)
-
-            rec(payload)
-
-            if plain_parts:
-                return "\n\n".join(x.strip() for x in plain_parts if x.strip()).strip()
-
-            if html_parts:
-                return "\n\n".join(x.strip() for x in html_parts if x.strip()).strip()
-
-            return ""
-
-        full_text = _walk(detail.get("payload") or {}) or detail.get("snippet", "")
-
-        translated = chatgpt_dialog.translate_to_ru(full_text)
+        for part in gmail_format_open(full):
+            await cb.message.answer(part)
 
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="Удалить", callback_data=f"gmail_del_id:{msg_id}"),
         ]])
-
-        full_reply = (
-            f"📩 {item.get('subject')}\n"
-            f"От: {item.get('from')}\n"
-            f"Дата: {item.get('date')}\n\n"
-            f"{translated}"
-        )
-
-        await _answer_long(cb.message, full_reply)
-
         await cb.message.answer("Действие с письмом:", reply_markup=kb)
         await cb.answer()
 
