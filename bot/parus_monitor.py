@@ -12,6 +12,7 @@ EVENT_NAMES = {
     "public_document_completed": "закончил пробный анализ",
 }
 JOB_NAMES = {"workspace_turn": "Рабочая комната", "case_advisor": "Штурман"}
+JOB_STATUS = {"queued": "в очереди", "running": "в работе", "completed": "завершено", "failed": "ошибка", "cancelled": "отменено"}
 
 
 def clock(value):
@@ -62,7 +63,7 @@ def format_monitor(data, focus="summary", case_id=None):
             out.append(f"Номер: {record.get('number')} · {record.get('email') or record.get('user_id')}")
             out.append(f"Статус: {record.get('status')}; обновлено {clock(record.get('updated_at'))}")
         for job in [j for j in jobs if j.get("case_id") == case_id][:10]:
-            out.append(f"• {clock(job.get('finished_at') or job.get('updated_at'))}: {JOB_NAMES.get(job.get('job_type'), job.get('job_type'))} — {job.get('status')}")
+            out.append(f"• {clock(job.get('finished_at') or job.get('updated_at'))}: {JOB_NAMES.get(job.get('job_type'), job.get('job_type'))} — {JOB_STATUS.get(job.get('status'), job.get('status'))}")
         for event in [e for e in events if e.get("case_id") == case_id][:10]:
             if event.get("type") in EVENT_NAMES:
                 out.append(f"• {clock(event.get('at'))}: {EVENT_NAMES[event['type']]}")
@@ -83,7 +84,7 @@ def format_monitor(data, focus="summary", case_id=None):
         for c in (data.get("new_cases") or [])[:5]:
             out.append(f"• Новое дело №{c.get('case_id')}: {c.get('email')}")
         for j in jobs[:8]:
-            out.append(f"• Дело №{j.get('case_id')}: {JOB_NAMES.get(j.get('job_type'), j.get('job_type'))} — {j.get('status')}")
+            out.append(f"• Дело №{j.get('case_id')}: {JOB_NAMES.get(j.get('job_type'), j.get('job_type'))} — {JOB_STATUS.get(j.get('status'), j.get('status'))}")
     if focus in {"summary", "errors", "problems"}:
         out.append(f"Ошибок: {len(errors)}; заданий с ошибками: {sum(j.get('status') == 'failed' for j in jobs)}.")
     out.append("Источник: база ПАРУСа, не полные логи Render.")
