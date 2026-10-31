@@ -1,0 +1,1 @@
+"""Parus monitoring report."""
