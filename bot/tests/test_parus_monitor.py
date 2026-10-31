@@ -33,7 +33,7 @@ class ParusMonitorTests(unittest.TestCase):
             "events": [],
         }, case_id=60)
         self.assertIn("Дело №60", s)
-        self.assertIn("заверш", s.lower() if "заверш" in s.lower() else "заверш")
+        self.assertIn("завершено", s)
         self.assertIn("не сырые логи", s)
 
     def test_payment_total_no_bonus_mixing(self):
