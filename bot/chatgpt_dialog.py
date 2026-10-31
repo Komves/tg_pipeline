@@ -2409,12 +2409,14 @@ def semantic_context_route(
                         "Ты semantic-router для Telegram-бота Веси.\n"
                         "Ты НЕ отвечаешь пользователю.\n"
                         "Ты только выбираешь маршрут обработки сообщения.\n\n"
-                        "Есть пять маршрутов:\n"
+                        "Есть шесть маршрутов:\n"
                         "1. chat — самостоятельный обычный запрос или разговор.\n"
                         "2. object_analysis — пользователь показывает объект: фото, текст, ссылку, объявление, пересланное сообщение, документ — и ожидает понимание/оценку/объяснение этого объекта.\n"
                         "3. topic_followup — пользователь явно продолжает предыдущую тему, и текущая фраза без прошлой темы неполная.\n"
                         "4. calendar — пользователь просит создать напоминание, поставить событие, добавить в календарь или запланировать действие.\n"
                         "5. translate_factcheck — пользователь просит перевести текст и одновременно проверить/подтвердить факты по внешним независимым источникам.\n\n"
+                        "6. parus_monitor — сведения о работе сервиса ПАРУС: дела, клиенты, оплата, ошибки.\\n"
+                        "Для parus_monitor верни hours=4 по умолчанию (1..720), case_id, focus (summary|visitors|cases|payments|errors|money), inherit_case и inherit_period.\\n"
                         "Правила:\n"
                         "- Не используй ключевые слова как главный критерий.\n"
                         "- Решай по смыслу всего входа.\n"
@@ -2444,7 +2446,7 @@ def semantic_context_route(
                         "Если пользователь явно спрашивает 'фейк?', 'правда?', 'проверь достоверность' — instruction должен требовать осторожную проверку достоверности.\n"
                         "Не зашивай частные сценарии. Решай по смыслу текущего запроса и объекта.\n\n"
                         "Верни только JSON:\n"
-                        "{\"route\":\"chat|object_analysis|topic_followup|calendar|translate_factcheck\",\"instruction\":\"обязательный контракт для исполнителя: что сделать, какой тип ответа, чего не делать\"}"
+                        "{\"route\":\"chat|object_analysis|topic_followup|calendar|translate_factcheck|parus_monitor\",\"instruction\":\"контракт\",\"hours\":4,\"case_id\":null,\"focus\":\"summary\",\"inherit_period\":false,\"inherit_case\":false}"
                     ),
                 },
                 {
@@ -2461,14 +2463,22 @@ def semantic_context_route(
         data = _parse_json_object(_extract_text(resp)) or {}
         route = str(data.get("route") or "chat").strip().lower()
 
-        if route not in {"chat", "object_analysis", "topic_followup", "calendar", "translate_factcheck"}:
+        if route not in {"chat", "object_analysis", "topic_followup", "calendar", "translate_factcheck", "parus_monitor"}:
             route = "chat"
 
+        if route == "topic_followup" and topic_data.get("type") == "parus_monitor":
+            route = "parus_monitor"
+            data["inherit_period"] = True
+            data["inherit_case"] = True
         instruction = str(data.get("instruction") or "").strip()
-
         return {
             "route": route,
             "instruction": instruction,
+            "hours": data.get("hours"),
+            "case_id": data.get("case_id"),
+            "focus": data.get("focus"),
+            "inherit_period": data.get("inherit_period") is True,
+            "inherit_case": data.get("inherit_case") is True,
         }
 
     except Exception as e:

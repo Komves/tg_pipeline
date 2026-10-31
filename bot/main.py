@@ -5,6 +5,7 @@ import os
 import time
 import random
 import json
+import hashlib
 import shutil
 import uuid
 import html
@@ -173,6 +174,7 @@ from aiogram.types import Message
 from aiogram.filters import Command
 
 import chatgpt_dialog
+import parus_monitor
 import news_digest
 import memory as vesya_memory
 from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo, handle_analytics_callback, is_analytics_active
@@ -816,6 +818,7 @@ PARUS_CONTACT_POLL_SEC = max(
 )
 PARUS_ACTIVE_CONTACT: dict[int, int] = {}
 PARUS_SEND_CONFIRM: dict[int, int] = {}
+PARUS_CUSTOM_PENDING: dict[tuple[int, int], int] = {}
 
 MAIN_GROUP_ID = -1002356524398
 
@@ -835,17 +838,16 @@ def _is_admin_user(message: Message) -> bool:
 
 
 def _parus_target_chat_id() -> int | None:
+    # Customer emails and drafts must never appear in a group.
     explicit = (os.getenv("PARUS_TG_CHAT_ID") or "").strip()
     if explicit:
         try:
-            return int(explicit)
-        except Exception:
+            target = int(explicit)
+            if target > 0 and target in ADMIN_USER_IDS:
+                return target
+        except ValueError:
             pass
-    if ALLOWED_CHAT_ID is not None:
-        return int(ALLOWED_CHAT_ID)
-    if ADMIN_USER_IDS:
-        return int(ADMIN_USER_IDS[0])
-    return None
+    return int(ADMIN_USER_IDS[0]) if ADMIN_USER_IDS else None
 
 
 def _parus_headers() -> dict[str, str]:
@@ -899,6 +901,40 @@ def _parus_build_draft(contact_id: int, instruction: str = "") -> str:
     return str(data.get("draft_text") or "").strip()
 
 
+def _parus_custom_draft(contact_id: int, body: str) -> dict:
+    return _parus_request(
+        "POST",
+        f"/internal/vesya/contacts/{int(contact_id)}/custom-draft",
+        payload={"text": body},
+        timeout=30,
+    )
+
+
+def _parus_get_contact(contact_id: int) -> dict:
+    return _parus_request(
+        "GET",
+        f"/internal/vesya/contacts/{int(contact_id)}",
+        timeout=20,
+    )
+
+
+def _parus_monitor_data(hours: int, case_id: int | None) -> dict:
+    suffix = f"&case_id={int(case_id)}" if case_id else ""
+    return _parus_request(
+        "GET",
+        f"/internal/vesya/monitor?hours={int(hours)}{suffix}",
+        timeout=35,
+    )
+
+
+def _parus_confirm_keyboard(contact_id: int, draft: str) -> InlineKeyboardMarkup:
+    fingerprint = hashlib.sha256(draft.encode("utf-8")).hexdigest()[:12]
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Подтвердить отправку", callback_data=f"parus_confirm_send:{int(contact_id)}:{fingerprint}"),
+        InlineKeyboardButton(text="Отмена", callback_data=f"parus_cancel_send:{int(contact_id)}"),
+    ]])
+
+
 def _parus_mark_notified(contact_id: int) -> None:
     _parus_request(
         "POST",
@@ -928,6 +964,10 @@ def _parus_contact_keyboard(contact_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="Другой вариант",
                     callback_data=f"parus_redraft:{int(contact_id)}",
+                ),
+                InlineKeyboardButton(
+                    text="Свой вариант",
+                    callback_data=f"parus_custom:{int(contact_id)}",
                 ),
             ]
         ]
@@ -1018,12 +1058,43 @@ async def _handle_parus_contact_command(
     message: Message,
     text: str,
 ) -> bool:
-    if not _is_admin_user(message):
+    if not _is_admin_user(message) or message.chat.type != "private":
         return False
 
     user_id = int(message.from_user.id) if message.from_user else 0
     body = _strip_vesya_prefix(text or "").strip()
     normalized = re.sub(r"\s+", " ", body.lower()).strip(" ?!.,:;")
+
+    custom_key = (int(message.chat.id), user_id)
+    custom_contact_id = PARUS_CUSTOM_PENDING.get(custom_key)
+    if custom_contact_id is not None:
+        exact_text = text or ""
+        if message.chat.type != "private":
+            PARUS_CUSTOM_PENDING.pop(custom_key, None)
+            return False
+        if normalized in {"отмена", "отбой", "не надо"}:
+            PARUS_CUSTOM_PENDING.pop(custom_key, None)
+            await message.answer("Свой ответ отменён. Обращение осталось без изменений.")
+            return True
+        if not exact_text.strip() or exact_text.lstrip().startswith("/"):
+            await message.answer("Напиши текст ответа обычным сообщением либо «отмена».")
+            return True
+        try:
+            result = await asyncio.to_thread(_parus_custom_draft, custom_contact_id, exact_text)
+        except Exception as exc:
+            print(f"[parus-contact] custom draft failed: {type(exc).__name__}", flush=True)
+            await message.answer("Не удалось сохранить твой ответ. Попробуй ещё раз.")
+            return True
+        PARUS_CUSTOM_PENDING.pop(custom_key, None)
+        PARUS_ACTIVE_CONTACT[user_id] = int(custom_contact_id)
+        PARUS_SEND_CONFIRM.pop(user_id, None)
+        await message.answer(
+            "Сохранила твой текст без изменений.\n\n"
+            + str(result.get("draft_text") or exact_text)
+            + "\n\nОтправить именно его клиенту?",
+            reply_markup=_parus_confirm_keyboard(custom_contact_id, str(result.get("draft_text") or exact_text)),
+        )
+        return True
 
     if re.search(
         r"\b(обращения|обращение)\b.*\b(парус|паруса)\b|"
@@ -2427,6 +2498,27 @@ async def _try_universal_message_layer(
     )
 
     route = str(semantic_ctx.get("route") or "chat").strip().lower()
+
+    if route == "parus_monitor":
+        if not _is_admin_user(message) or message.chat.type != "private":
+            await message.answer("Сводки ПАРУСа доступны только владельцу в личном чате.")
+            return True
+        hours, case_id, focus = parus_monitor.route_params(semantic_ctx, route_topic)
+        try:
+            data = await asyncio.to_thread(_parus_monitor_data, hours, case_id)
+            report = parus_monitor.format_monitor(data, focus=focus, case_id=case_id)
+            _remember_topic(chat_id, user_id, {
+                "type": "parus_monitor",
+                "hours": hours,
+                "case_id": case_id,
+                "focus": focus,
+                "summary": report[:900],
+            })
+            await _answer_long(message, report)
+        except Exception as exc:
+            print(f"[parus-monitor] failed: {type(exc).__name__}", flush=True)
+            await message.answer("Не получилось получить свежую сводку ПАРУСа. Проверь подключение сервиса.")
+        return True
 
     if route == "calendar":
         calendar_text = re.sub(
@@ -7128,26 +7220,87 @@ async def on_feedback(cb):
 
 @dp.callback_query(F.data.startswith("parus_send:"))
 async def on_parus_contact_send(cb):
+    if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS or cb.message.chat.type != "private":
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    contact_id = int(cb.data.split(":", 1)[1])
+    contact = await asyncio.to_thread(_parus_get_contact, contact_id)
+    if contact.get("status") == "sent":
+        await cb.answer("Уже отправлено", show_alert=True)
+        return
+    if contact.get("status") != "draft_ready" or not contact.get("draft_text"):
+        await cb.answer("Нет готового текста", show_alert=True)
+        return
+    await cb.message.answer(
+        f"Получатель: {contact.get('email')}\n\n"
+        f"Точный текст отправки:\n{contact.get('draft_text')}\n\n"
+        "Отправить этот ответ?",
+        reply_markup=_parus_confirm_keyboard(contact_id, str(contact["draft_text"])),
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("parus_custom:"))
+async def on_parus_contact_custom(cb):
+    if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS or cb.message.chat.type != "private":
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    contact_id = int(cb.data.split(":", 1)[1])
+    contact = await asyncio.to_thread(_parus_get_contact, contact_id)
+    if contact.get("status") not in {"new", "draft_ready"}:
+        await cb.answer("Обращение уже закрыто", show_alert=True)
+        return
+    key = (int(cb.message.chat.id), int(cb.from_user.id))
+    PARUS_CUSTOM_PENDING[key] = contact_id
+    PARUS_ACTIVE_CONTACT[int(cb.from_user.id)] = contact_id
+    PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
+    await cb.message.answer(
+        f"Свой вариант для обращения №{contact_id} ({contact.get('email')}).\n"
+        "Пришли следующим сообщением ТОЛЬКО текст письма.\n"
+        "Я сохраню его дословно и покажу на подтверждение. Для отмены напиши «отмена»."
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("parus_confirm_send:"))
+async def on_parus_contact_confirm_send(cb):
+    if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS or cb.message.chat.type != "private":
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    if len(parts) != 3:
+        await cb.answer("Подтверждение устарело", show_alert=True)
+        return
+    contact_id = int(parts[1])
+    contact = await asyncio.to_thread(_parus_get_contact, contact_id)
+    digest = hashlib.sha256(str(contact.get("draft_text") or "").encode("utf-8")).hexdigest()[:12]
+    if contact.get("status") != "draft_ready" or digest != parts[2]:
+        await cb.answer("Черновик изменён. Открой его заново.", show_alert=True)
+        return
     try:
-        if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS:
-            await cb.answer("Нет доступа", show_alert=True)
-            return
-        contact_id = int(cb.data.split(":", 1)[1])
         result = await asyncio.to_thread(_parus_send_contact, contact_id)
-        PARUS_ACTIVE_CONTACT.pop(int(cb.from_user.id), None)
-        PARUS_ACTIVE_CONTACT.pop(int(cb.message.chat.id), None)
-        PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
-        PARUS_SEND_CONFIRM.pop(int(cb.message.chat.id), None)
+        await cb.message.edit_reply_markup(reply_markup=None)
         await cb.message.answer(
-            f"Отправлено от ПАРУСА на {result.get('sent_to') or 'адрес пользователя'}."
+            ("Уже было отправлено." if result.get("already_sent") else
+             f"Отправлено клиенту: {result.get('sent_to') or 'адрес не указан'}.")
         )
-        await cb.answer("Отправлено")
+        PARUS_ACTIVE_CONTACT.pop(int(cb.from_user.id), None)
+        PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
+        await cb.answer("Готово")
     except Exception as exc:
-        print(
-            f"[parus-contact] send failed: {type(exc).__name__}: {exc}",
-            flush=True,
-        )
-        await cb.answer("Не отправилось", show_alert=True)
+        print(f"[parus-contact] confirm send failed: {type(exc).__name__}", flush=True)
+        await cb.answer("Не удалось отправить. Проверь состояние обращения.", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("parus_cancel_send:"))
+async def on_parus_contact_cancel_send(cb):
+    if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS or cb.message.chat.type != "private":
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer("Отправку отменил. Черновик сохранён.")
+    await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("parus_redraft:"))
