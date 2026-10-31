@@ -1068,7 +1068,7 @@ async def _handle_parus_contact_command(
     custom_key = (int(message.chat.id), user_id)
     custom_contact_id = PARUS_CUSTOM_PENDING.get(custom_key)
     if custom_contact_id is not None:
-        exact_text = (text or "").strip()
+        exact_text = text or ""
         if message.chat.type != "private":
             PARUS_CUSTOM_PENDING.pop(custom_key, None)
             return False
@@ -1076,7 +1076,7 @@ async def _handle_parus_contact_command(
             PARUS_CUSTOM_PENDING.pop(custom_key, None)
             await message.answer("Свой ответ отменён. Обращение осталось без изменений.")
             return True
-        if not exact_text or exact_text.startswith("/"):
+        if not exact_text.strip() or exact_text.lstrip().startswith("/"):
             await message.answer("Напиши текст ответа обычным сообщением либо «отмена».")
             return True
         try:
