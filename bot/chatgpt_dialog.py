@@ -2466,11 +2466,19 @@ def semantic_context_route(
         if route not in {"chat", "object_analysis", "topic_followup", "calendar", "translate_factcheck", "parus_monitor"}:
             route = "chat"
 
+        if route == "topic_followup" and topic_data.get("type") == "parus_monitor":
+            route = "parus_monitor"
+            data["inherit_period"] = True
+            data["inherit_case"] = True
         instruction = str(data.get("instruction") or "").strip()
-
         return {
             "route": route,
             "instruction": instruction,
+            "hours": data.get("hours"),
+            "case_id": data.get("case_id"),
+            "focus": data.get("focus"),
+            "inherit_period": data.get("inherit_period") is True,
+            "inherit_case": data.get("inherit_case") is True,
         }
 
     except Exception as e:
