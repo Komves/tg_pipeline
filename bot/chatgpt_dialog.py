@@ -2446,7 +2446,7 @@ def semantic_context_route(
                         "Если пользователь явно спрашивает 'фейк?', 'правда?', 'проверь достоверность' — instruction должен требовать осторожную проверку достоверности.\n"
                         "Не зашивай частные сценарии. Решай по смыслу текущего запроса и объекта.\n\n"
                         "Верни только JSON:\n"
-                        "{\"route\":\"chat|object_analysis|topic_followup|calendar|translate_factcheck\",\"instruction\":\"обязательный контракт для исполнителя: что сделать, какой тип ответа, чего не делать\"}"
+                        "{\"route\":\"chat|object_analysis|topic_followup|calendar|translate_factcheck|parus_monitor\",\"instruction\":\"обязательный контракт для исполнителя: что сделать, какой тип ответа, чего не делать\"}"
                     ),
                 },
                 {
