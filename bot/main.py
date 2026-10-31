@@ -1057,7 +1057,7 @@ async def _handle_parus_contact_command(
     message: Message,
     text: str,
 ) -> bool:
-    if not _is_admin_user(message):
+    if not _is_admin_user(message) or message.chat.type != "private":
         return False
 
     user_id = int(message.from_user.id) if message.from_user else 0
@@ -1067,6 +1067,7 @@ async def _handle_parus_contact_command(
     custom_key = (int(message.chat.id), user_id)
     custom_contact_id = PARUS_CUSTOM_PENDING.get(custom_key)
     if custom_contact_id is not None:
+        exact_text = (text or "").strip()
         if message.chat.type != "private":
             PARUS_CUSTOM_PENDING.pop(custom_key, None)
             return False
@@ -1074,11 +1075,11 @@ async def _handle_parus_contact_command(
             PARUS_CUSTOM_PENDING.pop(custom_key, None)
             await message.answer("Свой ответ отменён. Обращение осталось без изменений.")
             return True
-        if not body or body.startswith("/"):
+        if not exact_text or exact_text.startswith("/"):
             await message.answer("Напиши текст ответа обычным сообщением либо «отмена».")
             return True
         try:
-            result = await asyncio.to_thread(_parus_custom_draft, custom_contact_id, body)
+            result = await asyncio.to_thread(_parus_custom_draft, custom_contact_id, exact_text)
         except Exception as exc:
             print(f"[parus-contact] custom draft failed: {type(exc).__name__}", flush=True)
             await message.answer("Не удалось сохранить твой ответ. Попробуй ещё раз.")
@@ -1088,7 +1089,7 @@ async def _handle_parus_contact_command(
         PARUS_SEND_CONFIRM.pop(user_id, None)
         await message.answer(
             "Сохранила твой текст без изменений.\n\n"
-            + str(result.get("draft_text") or body)
+            + str(result.get("draft_text") or exact_text)
             + "\n\nОтправить именно его клиенту?",
             reply_markup=_parus_confirm_keyboard(custom_contact_id),
         )
