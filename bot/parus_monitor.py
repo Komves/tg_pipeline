@@ -46,3 +46,36 @@ def route_params(route, topic=None):
         focus = "summary"
     return max(1, min(720, hours)), case_id, focus
 
+
+def format_monitor(data, focus="summary", case_id=None):
+    out = [f"⚓ ПАРУС — последние {data.get('hours') or 4} ч"]
+    payments = data.get("payments") or []
+    jobs = data.get("jobs") or []
+    events = data.get("events") or []
+    errors = data.get("errors") or []
+    if case_id:
+        record = data.get("selected_case")
+        out.append(f"Дело №{case_id}")
+        if not record:
+            out.append("Дело не найдено.")
+        else:
+            out.append(f"Номер: {record.get('number')} · {record.get('email') or record.get('user_id')}")
+            out.append(f"Статус: {record.get('status')}; обновлено {clock(record.get('updated_at'))}")
+        for job in [j for j in jobs if j.get("case_id") == case_id][:10]:
+            out.append(f"• {clock(job.get('finished_at') or job.get('updated_at'))}: {JOB_NAMES.get(job.get('job_type'), job.get('job_type'))} — {job.get('status')}")
+        for event in [e for e in events if e.get("case_id") == case_id][:10]:
+            if event.get("type") in EVENT_NAMES:
+                out.append(f"• {clock(event.get('at'))}: {EVENT_NAMES[event['type']]}")
+        out.append("Расходы конкретного дела и скачивания этот источник не подтверждает.")
+        out.append("Источник: события ПАРУСа, не сырые логи Render.")
+        return "\n".join(out)
+    visitors = data.get("visitors") or {}
+    if focus in {"summary", "visitors"}:
+        out.append(f"Посетителей по браузерным идентификаторам: {visitors.get('observed', 0)}; вовлечённых: {visitors.get('engaged', 0)}; с меткой Яндекса: {visitors.get('from_yandex', 0)}.")
+        out.append("Это не число уникальных людей или оплаченных кликов.")
+        out.append(f"Новых регистраций: {len(data.get('registrations') or [])}; дел: {len(data.get('new_cases') or [])}.")
+    if focus in {"summary", "payments", "money"}:
+        total = sum((Decimal(str(p.get('amount_rub') or 0)) for p in payments), Decimal("0"))
+        out.append(f"Поступления: {len(payments)} платежей на {money(total)}; списано с денежных балансов: {money((data.get('charges') or {}).get('cash_rub'))}.")
+        for p in payments[:10]:
+            out.append(f"• {clock(p.get('at'))} · {p.get('email')} · {money(p.get('amount_rub'))} · платёж №{p.get('payment_id')}")
