@@ -85,6 +85,9 @@ def format_monitor(data, focus="summary", case_id=None):
             out.append(f"• Новое дело №{c.get('case_id')}: {c.get('email')}")
         for j in jobs[:8]:
             out.append(f"• Дело №{j.get('case_id')}: {JOB_NAMES.get(j.get('job_type'), j.get('job_type'))} — {JOB_STATUS.get(j.get('status'), j.get('status'))}")
+    if focus in {"summary", "visitors", "cases"}:
+        for e in [e for e in events if e.get("type") in EVENT_NAMES][:10]:
+            out.append(f"• {clock(e.get('at'))}: {e.get('email') or e.get('user_id') or 'посетитель'} — {EVENT_NAMES[e['type']]}" + (f" · дело №{e['case_id']}" if e.get("case_id") else ""))
     if focus in {"summary", "errors", "problems"}:
         out.append(f"Ошибок: {len(errors)}; заданий с ошибками: {sum(j.get('status') == 'failed' for j in jobs)}.")
     out.append("Источник: база ПАРУСа, не полные логи Render.")
