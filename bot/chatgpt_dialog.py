@@ -2461,7 +2461,7 @@ def semantic_context_route(
         data = _parse_json_object(_extract_text(resp)) or {}
         route = str(data.get("route") or "chat").strip().lower()
 
-        if route not in {"chat", "object_analysis", "topic_followup", "calendar", "translate_factcheck"}:
+        if route not in {"chat", "object_analysis", "topic_followup", "calendar", "translate_factcheck", "parus_monitor"}:
             route = "chat"
 
         instruction = str(data.get("instruction") or "").strip()
