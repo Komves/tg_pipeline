@@ -2415,8 +2415,8 @@ def semantic_context_route(
                         "3. topic_followup — пользователь явно продолжает предыдущую тему, и текущая фраза без прошлой темы неполная.\n"
                         "4. calendar — пользователь просит создать напоминание, поставить событие, добавить в календарь или запланировать действие.\n"
                         "5. translate_factcheck — пользователь просит перевести текст и одновременно проверить/подтвердить факты по внешним независимым источникам.\n\n"
-                        "6. parus_monitor — сведения о работе сервиса ПАРУС: дела, клиенты, оплата, ошибки.\\n"
-                        "Для parus_monitor верни hours=4 по умолчанию (1..720), case_id, focus (summary|visitors|cases|payments|errors|money), inherit_case и inherit_period.\\n"
+                        "6. parus_monitor — сведения о работе сервиса ПАРУС: дела, клиенты, оплата, ошибки.\n"
+                        "Для parus_monitor верни hours=4 по умолчанию (1..720), case_id, focus (summary|visitors|cases|payments|errors|money), inherit_case и inherit_period.\n"
                         "Правила:\n"
                         "- Не используй ключевые слова как главный критерий.\n"
                         "- Решай по смыслу всего входа.\n"
@@ -2466,10 +2466,8 @@ def semantic_context_route(
         if route not in {"chat", "object_analysis", "topic_followup", "calendar", "translate_factcheck", "parus_monitor"}:
             route = "chat"
 
-        if route == "topic_followup" and topic_data.get("type") == "parus_monitor":
-            route = "parus_monitor"
-            data["inherit_period"] = True
-            data["inherit_case"] = True
+        # Do not force all topic_followup responses into Parus monitoring.
+        # A fresh, independent message must never inherit the monitoring route.
         instruction = str(data.get("instruction") or "").strip()
         return {
             "route": route,
