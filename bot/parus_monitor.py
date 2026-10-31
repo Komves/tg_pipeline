@@ -75,7 +75,16 @@ def format_monitor(data, focus="summary", case_id=None):
         out.append("Это не число уникальных людей или оплаченных кликов.")
         out.append(f"Новых регистраций: {len(data.get('registrations') or [])}; дел: {len(data.get('new_cases') or [])}.")
     if focus in {"summary", "payments", "money"}:
-        total = sum((Decimal(str(p.get('amount_rub') or 0)) for p in payments), Decimal("0"))
-        out.append(f"Поступления: {len(payments)} платежей на {money(total)}; списано с денежных балансов: {money((data.get('charges') or {}).get('cash_rub'))}.")
-        for p in payments[:10]:
-            out.append(f"• {clock(p.get('at'))} · {p.get('email')} · {money(p.get('amount_rub'))} · платёж №{p.get('payment_id')}")
+        total = sum((Decimal(str(p.get("amount_rub") or 0)) for p in payments), Decimal("0"))
+        out.append(f"Поступило: {len(payments)} на {money(total)}; списано: {money((data.get('charges') or {}).get('cash_rub'))}.")
+        for p in payments[:5]:
+            out.append(f"• {clock(p.get('at'))}: {p.get('email')} — {money(p.get('amount_rub'))}")
+    if focus in {"summary", "cases"}:
+        for c in (data.get("new_cases") or [])[:5]:
+            out.append(f"• Новое дело №{c.get('case_id')}: {c.get('email')}")
+        for j in jobs[:8]:
+            out.append(f"• Дело №{j.get('case_id')}: {JOB_NAMES.get(j.get('job_type'), j.get('job_type'))} — {j.get('status')}")
+    if focus in {"summary", "errors", "problems"}:
+        out.append(f"Ошибок: {len(errors)}; заданий с ошибками: {sum(j.get('status') == 'failed' for j in jobs)}.")
+    out.append("Источник: база ПАРУСа, не полные логи Render.")
+    return "\n".join(out)
