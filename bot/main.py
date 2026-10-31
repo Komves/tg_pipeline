@@ -7197,26 +7197,78 @@ async def on_feedback(cb):
 
 @dp.callback_query(F.data.startswith("parus_send:"))
 async def on_parus_contact_send(cb):
+    if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS or cb.message.chat.type != "private":
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    contact_id = int(cb.data.split(":", 1)[1])
+    contact = await asyncio.to_thread(_parus_get_contact, contact_id)
+    if contact.get("status") == "sent":
+        await cb.answer("Уже отправлено", show_alert=True)
+        return
+    if contact.get("status") != "draft_ready" or not contact.get("draft_text"):
+        await cb.answer("Нет готового текста", show_alert=True)
+        return
+    await cb.message.answer(
+        f"Получатель: {contact.get('email')}\n\n"
+        f"Точный текст отправки:\n{contact.get('draft_text')}\n\n"
+        "Отправить этот ответ?",
+        reply_markup=_parus_confirm_keyboard(contact_id),
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("parus_custom:"))
+async def on_parus_contact_custom(cb):
+    if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS or cb.message.chat.type != "private":
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    contact_id = int(cb.data.split(":", 1)[1])
+    contact = await asyncio.to_thread(_parus_get_contact, contact_id)
+    if contact.get("status") not in {"new", "draft_ready"}:
+        await cb.answer("Обращение уже закрыто", show_alert=True)
+        return
+    key = (int(cb.message.chat.id), int(cb.from_user.id))
+    PARUS_CUSTOM_PENDING[key] = contact_id
+    PARUS_ACTIVE_CONTACT[int(cb.from_user.id)] = contact_id
+    PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
+    await cb.message.answer(
+        f"Свой вариант для обращения №{contact_id} ({contact.get('email')}).\n"
+        "Пришли следующим сообщением ТОЛЬКО текст письма.\n"
+        "Я сохраню его дословно и покажу на подтверждение. Для отмены напиши «отмена»."
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("parus_confirm_send:"))
+async def on_parus_contact_confirm_send(cb):
+    if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS or cb.message.chat.type != "private":
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    contact_id = int(cb.data.split(":", 1)[1])
     try:
-        if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS:
-            await cb.answer("Нет доступа", show_alert=True)
-            return
-        contact_id = int(cb.data.split(":", 1)[1])
         result = await asyncio.to_thread(_parus_send_contact, contact_id)
-        PARUS_ACTIVE_CONTACT.pop(int(cb.from_user.id), None)
-        PARUS_ACTIVE_CONTACT.pop(int(cb.message.chat.id), None)
-        PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
-        PARUS_SEND_CONFIRM.pop(int(cb.message.chat.id), None)
+        await cb.message.edit_reply_markup(reply_markup=None)
         await cb.message.answer(
-            f"Отправлено от ПАРУСА на {result.get('sent_to') or 'адрес пользователя'}."
+            ("Уже было отправлено." if result.get("already_sent") else
+             f"Отправлено клиенту: {result.get('sent_to') or 'адрес не указан'}.")
         )
-        await cb.answer("Отправлено")
+        PARUS_ACTIVE_CONTACT.pop(int(cb.from_user.id), None)
+        PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
+        await cb.answer("Готово")
     except Exception as exc:
-        print(
-            f"[parus-contact] send failed: {type(exc).__name__}: {exc}",
-            flush=True,
-        )
-        await cb.answer("Не отправилось", show_alert=True)
+        print(f"[parus-contact] confirm send failed: {type(exc).__name__}", flush=True)
+        await cb.answer("Не удалось отправить. Проверь состояние обращения.", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("parus_cancel_send:"))
+async def on_parus_contact_cancel_send(cb):
+    if not cb.from_user or int(cb.from_user.id) not in ADMIN_USER_IDS or cb.message.chat.type != "private":
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    PARUS_SEND_CONFIRM.pop(int(cb.from_user.id), None)
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer("Отправку отменил. Черновик сохранён.")
+    await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("parus_redraft:"))
