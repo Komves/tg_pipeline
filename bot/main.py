@@ -173,6 +173,7 @@ from aiogram.types import Message
 from aiogram.filters import Command
 
 import chatgpt_dialog
+import parus_monitor
 import news_digest
 import memory as vesya_memory
 from analytics_agent.gateway import handle_analytics_message, handle_analytics_photo, handle_analytics_callback, is_analytics_active
@@ -816,6 +817,7 @@ PARUS_CONTACT_POLL_SEC = max(
 )
 PARUS_ACTIVE_CONTACT: dict[int, int] = {}
 PARUS_SEND_CONFIRM: dict[int, int] = {}
+PARUS_CUSTOM_PENDING: dict[tuple[int, int], int] = {}
 
 MAIN_GROUP_ID = -1002356524398
 
@@ -899,6 +901,39 @@ def _parus_build_draft(contact_id: int, instruction: str = "") -> str:
     return str(data.get("draft_text") or "").strip()
 
 
+def _parus_custom_draft(contact_id: int, body: str) -> dict:
+    return _parus_request(
+        "POST",
+        f"/internal/vesya/contacts/{int(contact_id)}/custom-draft",
+        payload={"text": body},
+        timeout=30,
+    )
+
+
+def _parus_get_contact(contact_id: int) -> dict:
+    return _parus_request(
+        "GET",
+        f"/internal/vesya/contacts/{int(contact_id)}",
+        timeout=20,
+    )
+
+
+def _parus_monitor_data(hours: int, case_id: int | None) -> dict:
+    suffix = f"&case_id={int(case_id)}" if case_id else ""
+    return _parus_request(
+        "GET",
+        f"/internal/vesya/monitor?hours={int(hours)}{suffix}",
+        timeout=35,
+    )
+
+
+def _parus_confirm_keyboard(contact_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Подтвердить отправку", callback_data=f"parus_confirm_send:{int(contact_id)}"),
+        InlineKeyboardButton(text="Отмена", callback_data=f"parus_cancel_send:{int(contact_id)}"),
+    ]])
+
+
 def _parus_mark_notified(contact_id: int) -> None:
     _parus_request(
         "POST",
@@ -928,6 +963,10 @@ def _parus_contact_keyboard(contact_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="Другой вариант",
                     callback_data=f"parus_redraft:{int(contact_id)}",
+                ),
+                InlineKeyboardButton(
+                    text="Свой вариант",
+                    callback_data=f"parus_custom:{int(contact_id)}",
                 ),
             ]
         ]
@@ -1024,6 +1063,36 @@ async def _handle_parus_contact_command(
     user_id = int(message.from_user.id) if message.from_user else 0
     body = _strip_vesya_prefix(text or "").strip()
     normalized = re.sub(r"\s+", " ", body.lower()).strip(" ?!.,:;")
+
+    custom_key = (int(message.chat.id), user_id)
+    custom_contact_id = PARUS_CUSTOM_PENDING.get(custom_key)
+    if custom_contact_id is not None:
+        if message.chat.type != "private":
+            PARUS_CUSTOM_PENDING.pop(custom_key, None)
+            return False
+        if normalized in {"отмена", "отбой", "не надо"}:
+            PARUS_CUSTOM_PENDING.pop(custom_key, None)
+            await message.answer("Свой ответ отменён. Обращение осталось без изменений.")
+            return True
+        if not body or body.startswith("/"):
+            await message.answer("Напиши текст ответа обычным сообщением либо «отмена».")
+            return True
+        try:
+            result = await asyncio.to_thread(_parus_custom_draft, custom_contact_id, body)
+        except Exception as exc:
+            print(f"[parus-contact] custom draft failed: {type(exc).__name__}", flush=True)
+            await message.answer("Не удалось сохранить твой ответ. Попробуй ещё раз.")
+            return True
+        PARUS_CUSTOM_PENDING.pop(custom_key, None)
+        PARUS_ACTIVE_CONTACT[user_id] = int(custom_contact_id)
+        PARUS_SEND_CONFIRM.pop(user_id, None)
+        await message.answer(
+            "Сохранила твой текст без изменений.\n\n"
+            + str(result.get("draft_text") or body)
+            + "\n\nОтправить именно его клиенту?",
+            reply_markup=_parus_confirm_keyboard(custom_contact_id),
+        )
+        return True
 
     if re.search(
         r"\b(обращения|обращение)\b.*\b(парус|паруса)\b|"
