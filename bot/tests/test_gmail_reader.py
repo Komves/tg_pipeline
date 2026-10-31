@@ -119,6 +119,20 @@ class GmailReaderTests(unittest.TestCase):
         for text in ["a" * 9000, "\n\n" * 5000, "one\n" * 3000]:
             self.assertEqual("".join(gmail_reader.split_exact(text, 1000)), text)
 
+    def test_emoji_heavy_full_email_fits_telegram_utf16_limit(self):
+        body = "📩" * 5500 + "\nФинальный абзац."
+        item = {
+            "subject": "Проверка длинного письма", "from": "from@example.org",
+            "to": "to@example.org", "date": "31 Oct 2026",
+            "body": body, "body_available": True, "attachments": [],
+        }
+        pieces = gmail_reader.format_open_message(item)
+        self.assertTrue(all(len(piece.encode("utf-16-le")) // 2 <= 4096 for piece in pieces))
+        self.assertEqual(
+            "".join(piece.split(":\n\n", 1)[1] for piece in pieces[1:]),
+            body,
+        )
+
     def test_multichunk_summary_includes_last_part_and_consolidates(self):
         class FakeClient:
             def __init__(self, **kwargs):
