@@ -2497,6 +2497,27 @@ async def _try_universal_message_layer(
 
     route = str(semantic_ctx.get("route") or "chat").strip().lower()
 
+    if route == "parus_monitor":
+        if not _is_admin_user(message) or message.chat.type != "private":
+            await message.answer("Сводки ПАРУСа доступны только владельцу в личном чате.")
+            return True
+        hours, case_id, focus = parus_monitor.route_params(semantic_ctx, route_topic)
+        try:
+            data = await asyncio.to_thread(_parus_monitor_data, hours, case_id)
+            report = parus_monitor.format_monitor(data, focus=focus, case_id=case_id)
+            _remember_topic(chat_id, user_id, {
+                "type": "parus_monitor",
+                "hours": hours,
+                "case_id": case_id,
+                "focus": focus,
+                "summary": report[:900],
+            })
+            await _answer_long(message, report)
+        except Exception as exc:
+            print(f"[parus-monitor] failed: {type(exc).__name__}", flush=True)
+            await message.answer("Не получилось получить свежую сводку ПАРУСа. Проверь подключение сервиса.")
+        return True
+
     if route == "calendar":
         calendar_text = re.sub(
             r"^.*?\b("
