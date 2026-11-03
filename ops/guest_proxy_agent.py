@@ -7,6 +7,7 @@ Only Telegram IDs, account numbers, credentials and timestamps are stored.
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,10 @@ from pathlib import Path
 DB_PATH = Path("/var/lib/guest-proxy/users.db")
 TOKEN_PATH = Path("/etc/guest-proxy-api.secret")
 PORT = 43131
+CLIENT_BINARY = Path("/usr/local/share/vesya-proxy/VesyaProxyClient.exe")
+CLIENT_MAGIC = b"\nVESYA_PROXY_CONFIG_V1\n"
+DOWNLOAD_LINK_TTL = 48 * 3600
+DOWNLOAD_BASE = "https://paruslegal.ru:43130/download/"
 MONTH = 30 * 24 * 3600
 
 
@@ -92,7 +97,10 @@ def dispatch(action: str, params: dict) -> dict:
                 ).fetchone()
             if row is None:
                 return {"status": "not_found"}
-            return view(row, reveal=True)
+            answer = view(row, reveal=True)
+            if answer["status"] == "active":
+                answer["download_url"] = issue_download_link(db, row)
+            return answer
 
         if action == "list":
             rows = db.execute(
@@ -120,6 +128,62 @@ def dispatch(action: str, params: dict) -> dict:
         return view(row)
 
 
+def issue_download_link(db: sqlite3.Connection, row: sqlite3.Row) -> str:
+    """A shareable, short-lived bearer URL; the plaintext token is never stored."""
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS proxy_downloads (
+            user_id INTEGER PRIMARY KEY,
+            token_sha256 TEXT UNIQUE NOT NULL,
+            issued_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        )"""
+    )
+    now = int(time.time())
+    token = secrets.token_urlsafe(24)
+    token_sha256 = hashlib.sha256(token.encode("ascii")).hexdigest()
+    until = min(now + DOWNLOAD_LINK_TTL, int(row["expires_at"]))
+    db.execute(
+        """INSERT INTO proxy_downloads
+            (user_id, token_sha256, issued_at, expires_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+            token_sha256=excluded.token_sha256,
+            issued_at=excluded.issued_at,
+            expires_at=excluded.expires_at""",
+        (int(row["id"]), token_sha256, now, until),
+    )
+    return DOWNLOAD_BASE + token
+
+
+def download_payload(token: str) -> bytes | None:
+    """Return the user-specific PE file only for a valid unexpired link."""
+    digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+    now = int(time.time())
+    with connection() as db:
+        row = db.execute(
+            """SELECT u.* FROM proxy_downloads d
+               JOIN users u ON u.id=d.user_id
+               WHERE d.token_sha256=? AND d.expires_at>?
+                 AND u.disabled=0 AND u.expires_at>?
+                 AND u.telegram_id IS NOT NULL""",
+            (digest, now, now),
+        ).fetchone()
+        if row is None:
+            return None
+        cfg = {
+            "host": "paruslegal.ru",
+            "port": 43128,
+            "username": row["username"],
+            "password": row["password"],
+            "expires_at": row["expires_at"],
+        }
+    binary = CLIENT_BINARY.read_bytes()
+    if not binary.startswith(b"MZ") or len(binary) > 20_000_000:
+        raise RuntimeError("invalid Windows launcher binary")
+    suffix = json.dumps(cfg, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    return binary + CLIENT_MAGIC + suffix
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # Do not log Telegram IDs or proxy credentials.
@@ -133,6 +197,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self):
+        match = re.fullmatch(r"/download/([A-Za-z0-9_-]{32})", self.path)
+        if not match:
+            self.send_json(404, {"error": "not found"})
+            return
+        try:
+            content = download_payload(match.group(1))
+        except (OSError, RuntimeError):
+            self.send_json(503, {"error": "client download temporarily unavailable"})
+            return
+        except Exception:
+            self.send_json(500, {"error": "internal error"})
+            return
+        if content is None:
+            self.send_json(410, {"error": "link expired; request a new link from Vesya"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", 'attachment; filename="Vesya_ChatGPT.exe"')
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store, private")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
 
     def do_POST(self):
         expected = TOKEN_PATH.read_text(encoding="ascii").strip()
