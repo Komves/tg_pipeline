@@ -66,7 +66,7 @@ ss -lntp | grep -E ':43127|:43128|:43129|:43130|:43131'
 
 On Render, after setting both environment variables and redeploying, message
 Vesya `/proxy` (creates user003 if first two test users still exist).
-Telegram message contains Chrome launch command and credentials.
+Telegram returns the username/password and attaches a simple Windows `Open_ChatGPT.cmd` launcher. Download and double-click the file; Chrome opens with a separate profile and requests the issued credentials. The launcher contains no secrets and installs nothing.
 Check `/proxy_admin` from the owner Telegram ID.
 
 If credentials are issued but Chrome takes time to accept them, wait for the
