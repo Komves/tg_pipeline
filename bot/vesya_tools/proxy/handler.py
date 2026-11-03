@@ -96,7 +96,7 @@ def windows_launcher() -> bytes:
         f'--proxy-server="https://{SERVICE_HOST}:{SERVICE_PORT}" "https://chatgpt.com/"',
         "exit /b 0",
     ]
-    return ("\\r\\n".join(lines) + "\\r\\n").encode("ascii")
+    return ("\r\n".join(lines) + "\r\n").encode("ascii")
 
 
 async def _send_windows_launcher(message) -> None:
@@ -107,8 +107,8 @@ async def _send_windows_launcher(message) -> None:
         document,
         caption=(
             "💻 Для Windows: скачай файл и открой двойным щелчком. "
-            "Откроется отдельное окно Chrome с прокси.\\n"
-            "Логин и пароль введи из сообщения выше.\\n"
+            "Откроется отдельное окно Chrome с прокси.\n"
+            "Логин и пароль введи из сообщения выше.\n"
             "Файл не устанавливает программ и не содержит пароля. "
             "Работает на компьютере с Google Chrome."
         ),
