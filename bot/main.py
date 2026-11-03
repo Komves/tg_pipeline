@@ -5750,6 +5750,14 @@ async def vesya_handler(message: Message) -> None:
     chat_id = int(message.chat.id)
     user_id = int(message.from_user.id) if message.from_user else 0
 
+    # Temporary proxy: explicit commands only, before the general LLM router.
+    try:
+        from vesya_tools.proxy.handler import handle_proxy_message
+        if await handle_proxy_message(message, text, is_admin=_is_admin_user(message)):
+            return
+    except Exception as exc:
+        print(f"[guest_proxy] handler failed: {type(exc).__name__}", flush=True)
+
     if await _handle_parus_contact_command(message, text):
         return
 
