@@ -71,14 +71,47 @@ def _instructions(result: dict) -> str:
         f"Тип: HTTPS-прокси\n"
         f"Логин: {login}\n"
         f"Пароль: {password}\n\n"
-        "Для Windows открой PowerShell и выполни:\n"
-        '& "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe" '
-        '--user-data-dir="$env:LOCALAPPDATA\\VesyaProxyChrome" '
-        f'--proxy-server="https://{SERVICE_HOST}:{SERVICE_PORT}" '
-        '"https://chatgpt.com/"\n\n'
-        "При запросе введи логин и пароль выше.\n"
+        "Для Windows: ниже пришлю файл «Открыть ChatGPT.cmd».\n"
+        "Сохрани файл и дважды нажми на него: Chrome запустится сам.\n"
+        "Когда браузер запросит авторизацию, введи логин и пароль выше.\n\n"
         "Доступ автоматически прекратится через 30 дней. "
         "Повторная регистрация новый срок не даёт."
+    )
+
+
+def windows_launcher() -> bytes:
+    """Plain Windows cmd launcher. Intentionally contains no user credentials."""
+    lines = [
+        "@echo off",
+        "setlocal",
+        'set "CHROME=%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"',
+        'if not exist "%CHROME%" set "CHROME=%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe"',
+        'if not exist "%CHROME%" set "CHROME=%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"',
+        'if not exist "%CHROME%" (',
+        "    echo Google Chrome was not found. Install Chrome and try again.",
+        "    pause",
+        "    exit /b 1",
+        ")",
+        'start "" "%CHROME%" --user-data-dir="%LOCALAPPDATA%\\VesyaProxyChrome" '
+        f'--proxy-server="https://{SERVICE_HOST}:{SERVICE_PORT}" "https://chatgpt.com/"',
+        "exit /b 0",
+    ]
+    return ("\\r\\n".join(lines) + "\\r\\n").encode("ascii")
+
+
+async def _send_windows_launcher(message) -> None:
+    from aiogram.types import BufferedInputFile
+
+    document = BufferedInputFile(windows_launcher(), filename="Open_ChatGPT.cmd")
+    await message.answer_document(
+        document,
+        caption=(
+            "💻 Для Windows: скачай файл и открой двойным щелчком. "
+            "Откроется отдельное окно Chrome с прокси.\\n"
+            "Логин и пароль введи из сообщения выше.\\n"
+            "Файл не устанавливает программ и не содержит пароля. "
+            "Работает на компьютере с Google Chrome."
+        ),
     )
 
 
@@ -118,6 +151,14 @@ async def handle_proxy_message(message, raw_text: str, *, is_admin: bool = False
                 await message.answer("Ты пока не подключал прокси. Напиши /proxy.")
             elif state == "active":
                 await message.answer(_instructions(result))
+                try:
+                    await _send_windows_launcher(message)
+                except Exception as exc:
+                    LOG.warning("proxy launcher delivery failed type=%s", type(exc).__name__)
+                    await message.answer(
+                        "Не удалось прикрепить файл запуска. Напиши администратору — "
+                        "доступ уже активен и остаётся действующим."
+                    )
             elif state == "expired":
                 await message.answer(
                     f"Прокси №{int(result['id']):03d}: срок закончился "
