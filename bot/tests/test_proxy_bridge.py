@@ -1,6 +1,7 @@
 """Regression tests for Vesya's standalone one-month proxy access."""
 import asyncio
 import importlib.util
+import json
 import os
 import sqlite3
 import sys
@@ -28,6 +29,7 @@ class IntentTests(unittest.TestCase):
     def test_admin_commands(self):
         self.assertEqual(parse_proxy_intent("Веся продли прокси 003"), ("renew", 3))
         self.assertEqual(parse_proxy_intent("/proxy_disable 2"), ("disable", 2))
+        self.assertEqual(parse_proxy_intent("/proxy_manual"), ("manual", None))
         self.assertEqual(parse_proxy_intent("Веся покажи пользователей прокси"), ("list", None))
 
     def test_other_chat_unaffected(self):
@@ -95,6 +97,34 @@ class StorageTests(unittest.TestCase):
         renewed = agent.dispatch("renew", {"id": 1})
         self.assertEqual(renewed["status"], "active")
         self.assertGreater(renewed["expires_at"], first["expires_at"])
+
+    def test_shareable_download_has_per_user_credentials_and_expiration(self):
+        first = agent.dispatch("register", {"telegram_id": 123456})
+        self.assertEqual(first["status"], "active")
+        self.assertIn("/download/", first["download_url"])
+        token = first["download_url"].rsplit("/", 1)[-1]
+        self.assertEqual(len(token), 32)
+        binary = Path(self.tmp.name) / "client.exe"
+        binary.write_bytes(b"MZ" + b"x" * 256)
+        with patch.object(agent, "CLIENT_BINARY", binary):
+            payload = agent.download_payload(token)
+            self.assertIsNotNone(payload)
+            self.assertTrue(payload.startswith(b"MZ"))
+            cfg = json.loads(payload.split(agent.CLIENT_MAGIC, 1)[1])
+            self.assertEqual(cfg["username"], first["username"])
+            self.assertEqual(cfg["password"], first["password"])
+
+            refreshed = agent.dispatch("status", {"telegram_id": 123456})
+            self.assertNotEqual(refreshed["download_url"], first["download_url"])
+            self.assertIsNone(agent.download_payload(token))
+            next_token = refreshed["download_url"].rsplit("/", 1)[-1]
+            self.assertIsNotNone(agent.download_payload(next_token))
+            with sqlite3.connect(agent.DB_PATH) as db:
+                db.execute("UPDATE users SET disabled=1 WHERE telegram_id=123456")
+            self.assertIsNone(agent.download_payload(next_token))
+
+    def test_link_restricted_to_valid_user(self):
+        self.assertIsNone(agent.download_payload("a" * 32))
 
     def test_expired_account_cannot_reregister(self):
         first = agent.dispatch("register", {"telegram_id": 12345})
