@@ -24,7 +24,7 @@ def parse_proxy_intent(text: str):
         return "register", None
     if re.fullmatch(r"/proxy(?:@\w+)?|(?:дай|выдай|получить|подключить|хочу|нужен|нужна|оформи)\s+(?:мне\s+)?(?:временный\s+)?прокси|прокси", text):
         return "register", None
-    if re.fullmatch(r"/proxy_manual(?:@\\w+)?|настройки\\s+прокси|ручное\\s+подключение\\s+прокси", text):
+    if re.fullmatch(r"/proxy_manual(?:@\w+)?|настройки\s+прокси|ручное\s+подключение\s+прокси", text):
         return "manual", None
     if re.fullmatch(r"/proxy_status(?:@\w+)?|(?:мой|статус|срок)\s+прокси", text):
         return "status", None
