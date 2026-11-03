@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bot"))
 sys.path.insert(0, str(ROOT))
-from vesya_tools.proxy.handler import handle_proxy_message, parse_proxy_intent
+from vesya_tools.proxy.handler import handle_proxy_message, parse_proxy_intent, windows_launcher
 
 spec = importlib.util.spec_from_file_location("guest_proxy_agent", ROOT / "ops" / "guest_proxy_agent.py")
 agent = importlib.util.module_from_spec(spec)
@@ -46,6 +46,19 @@ class IntentTests(unittest.TestCase):
                 api.assert_not_awaited()
                 self.assertIn("только администратору", message.answer.call_args.args[0])
         asyncio.run(run())
+
+
+class LauncherTests(unittest.TestCase):
+    def test_launcher_opens_chrome_without_powershell_or_password(self):
+        content = windows_launcher()
+        self.assertTrue(content.startswith(b"@echo off\\r\\n"))
+        self.assertIn(b"start \"\" \"%CHROME%\"", content)
+        self.assertIn(b'https://paruslegal.ru:43128', content)
+        self.assertIn(b'https://chatgpt.com/', content)
+        self.assertIn(b'--user-data-dir=', content)
+        self.assertNotIn(b'password', content.lower())
+        self.assertNotIn(b'user001', content)
+        self.assertNotIn(b'powershell', content.lower())
 
 
 class StorageTests(unittest.TestCase):
