@@ -24,6 +24,34 @@ fi
 chown root:guestproxyapi /etc/guest-proxy-api.secret
 chmod 0640 /etc/guest-proxy-api.secret
 
+# Build a generic Windows binary locally. It contains no passwords;
+# personalized settings are added only when a signed-in user opens a link.
+CLIENT_DIR=/usr/local/share/vesya-proxy
+CLIENT_BIN="$CLIENT_DIR/VesyaProxyClient.exe"
+if [[ ! -s "$CLIENT_BIN" ]]; then
+  install -d -m 0755 "$CLIENT_DIR" /usr/local/src/vesya-proxy-client
+  curl -fsSLo /usr/local/src/vesya-proxy-client/main.go \
+    https://raw.githubusercontent.com/Komves/tg_pipeline/master/ops/guest_proxy_client/main.go
+  curl -fsSLo /usr/local/src/vesya-proxy-client/go.mod \
+    https://raw.githubusercontent.com/Komves/tg_pipeline/master/ops/guest_proxy_client/go.mod
+  INSTALLED_GO=0
+  if ! command -v go >/dev/null 2>&1; then
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y golang-go
+    INSTALLED_GO=1
+  fi
+  (
+    cd /usr/local/src/vesya-proxy-client
+    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOTOOLCHAIN=local GOMAXPROCS=2 \
+      go build -trimpath -ldflags="-s -w -H windowsgui" -o "$CLIENT_BIN.tmp" .
+  )
+  test -s "$CLIENT_BIN.tmp"
+  mv "$CLIENT_BIN.tmp" "$CLIENT_BIN"
+  chmod 0644 "$CLIENT_BIN"
+  if [[ "$INSTALLED_GO" = 1 ]]; then go clean -cache; fi
+  echo "Windows client built: $(stat -c %s "$CLIENT_BIN") bytes"
+fi
+
 install -d -m 0755 /usr/local/libexec
 curl -fsSL https://raw.githubusercontent.com/Komves/tg_pipeline/master/ops/guest_proxy_agent.py \
   -o /usr/local/libexec/guest_proxy_agent.py
