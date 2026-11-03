@@ -1,0 +1,28 @@
+name: Vesya proxy regression tests
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'bot/vesya_tools/proxy/**'
+      - 'bot/tests/test_proxy_bridge.py'
+      - 'bot/main.py'
+      - 'ops/guest_proxy_agent.py'
+      - 'ops/install_guest_proxy_agent.sh'
+      - '.github/workflows/vesya-proxy-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install minimal dependencies
+        run: python -m pip install httpx
+      - name: Check syntax of the integration
+        run: python -m py_compile bot/main.py bot/vesya_tools/proxy/handler.py ops/guest_proxy_agent.py
+      - name: Run proxy tests
+        run: python -m unittest discover -s bot/tests -p test_proxy_bridge.py -v
