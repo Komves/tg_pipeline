@@ -51,7 +51,7 @@ class IntentTests(unittest.TestCase):
 class LauncherTests(unittest.TestCase):
     def test_launcher_opens_chrome_without_powershell_or_password(self):
         content = windows_launcher()
-        self.assertTrue(content.startswith(b"@echo off\\r\\n"))
+        self.assertTrue(content.startswith(b"@echo off\r\n"))
         self.assertIn(b"start \"\" \"%CHROME%\"", content)
         self.assertIn(b'https://paruslegal.ru:43128', content)
         self.assertIn(b'https://chatgpt.com/', content)
