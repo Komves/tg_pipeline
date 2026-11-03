@@ -55,7 +55,7 @@ WantedBy=multi-user.target
 EOF
 
 # Existing 3proxy/stunnel stays on port 43128; API gets a separate TLS port.
-if ! grep -q '^\\[guest-proxy-api\\]$' /etc/stunnel/guest-proxy.conf; then
+if ! grep -Fqx '[guest-proxy-api]' /etc/stunnel/guest-proxy.conf; then
 cat >> /etc/stunnel/guest-proxy.conf <<'EOF'
 
 [guest-proxy-api]
