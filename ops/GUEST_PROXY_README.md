@@ -66,7 +66,11 @@ ss -lntp | grep -E ':43127|:43128|:43129|:43130|:43131'
 
 On Render, after setting both environment variables and redeploying, message
 Vesya `/proxy` (creates user003 if first two test users still exist).
-Telegram returns the username/password and attaches a simple Windows `Open_ChatGPT.cmd` launcher. Download and double-click the file; Chrome opens with a separate profile and requests the issued credentials. The launcher contains no secrets and installs nothing.
+Vesya now returns a shareable personal HTTPS link instead of requiring Telegram on the computer. The recipient forwards the URL to their computer (email or messenger), downloads `Vesya_ChatGPT.exe`, and double-clicks it. The launcher starts a localhost-only proxy and opens an isolated Chrome profile, automatically supplying credentials to the existing TLS 3proxy. Windows users do not type proxy credentials.
+
+Each URL is a 192-bit random bearer token, stored only as SHA-256 in the VPS database, valid for 48 hours and invalidated on the next `/proxy_status` request. A downloaded launcher contains account credentials and must be treated as private. Account expiry remains server-controlled, independent of download URL expiry. `/proxy_manual` preserves the old credentials + `Open_ChatGPT.cmd` fallback.
+
+The generic Windows executable is cross-compiled on the VPS at installation (using Ubuntu's Go toolchain) and stored in `/usr/local/share/vesya-proxy/VesyaProxyClient.exe`. The personalized executable is generated on demand without storing individual binaries. Windows SmartScreen may warn because the program is unsigned; do not instruct people to disable security protections.
 Check `/proxy_admin` from the owner Telegram ID.
 
 If credentials are issued but Chrome takes time to accept them, wait for the
