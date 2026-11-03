@@ -99,7 +99,7 @@ echo "=== NEW PORTS ==="
 ss -lntp | grep -E ':43128|:43129|:43130|:43131' || true
 echo "=== API CHECK ==="
 TOKEN="$(cat /etc/guest-proxy-api.secret)"
-curl -fsS --max-time 10 \
+curl -fsS --noproxy '*' --max-time 10 \
   --resolve paruslegal.ru:43130:127.0.0.1 \
   -H "X-Proxy-Token: ${TOKEN}" -H "Content-Type: application/json" \
   -d '{"telegram_id":1}' "https://paruslegal.ru:43130/v1/status"
