@@ -124,6 +124,7 @@ class StorageTests(unittest.TestCase):
             self.assertIsNone(agent.download_payload(next_token))
 
     def test_link_restricted_to_valid_user(self):
+        agent.dispatch("register", {"telegram_id": 777})
         self.assertIsNone(agent.download_payload("a" * 32))
 
     def test_expired_account_cannot_reregister(self):
