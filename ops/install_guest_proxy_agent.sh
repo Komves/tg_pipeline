@@ -117,6 +117,7 @@ chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/restart-guest-proxy-tls.sh
 
 systemctl daemon-reload
 systemctl enable --now guest-proxy-api.service guest-proxy-sync.path
+systemctl restart guest-proxy-api.service
 systemctl restart guest-proxy-tls.service
 
 echo "=== STATUS ==="
