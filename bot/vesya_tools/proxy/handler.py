@@ -24,6 +24,8 @@ def parse_proxy_intent(text: str):
         return "register", None
     if re.fullmatch(r"/proxy(?:@\w+)?|(?:дай|выдай|получить|подключить|хочу|нужен|нужна|оформи)\s+(?:мне\s+)?(?:временный\s+)?прокси|прокси", text):
         return "register", None
+    if re.fullmatch(r"/proxy_manual(?:@\\w+)?|настройки\\s+прокси|ручное\\s+подключение\\s+прокси", text):
+        return "manual", None
     if re.fullmatch(r"/proxy_status(?:@\w+)?|(?:мой|статус|срок)\s+прокси", text):
         return "status", None
     if re.fullmatch(r"/proxy_admin(?:@\w+)?|(?:покажи|дай|список)\s+(?:всех\s+)?(?:пользователей|список пользователей)\s+прокси|список\s+прокси", text):
@@ -61,21 +63,32 @@ def _date(unix_time: int) -> str:
 
 def _instructions(result: dict) -> str:
     number = int(result["id"])
-    login = str(result["username"])
-    password = str(result["password"])
+    url = str(result.get("download_url") or "")
+    if not url.startswith("https://paruslegal.ru:43130/download/"):
+        raise ValueError("Download link not available")
     return (
-        f"Прокси №{number:03d} активирован на 30 дней.\n"
-        f"Доступ до: {_date(result['expires_at'])}\n\n"
+        f"Прокси №{number:03d} активен до {_date(result['expires_at'])}.\n\n"
+        "Перешли себе эту ссылку на компьютер (через почту или мессенджер):\n"
+        f"{url}\n\n"
+        "Открой ссылку на компьютере, скачай Vesya_ChatGPT.exe и дважды нажми на файл. "
+        "Chrome сам откроет ChatGPT — логин и пароль вводить не нужно.\n\n"
+        "Ссылка действует 48 часов. Если не успел — напиши /proxy_status, "
+        "получишь новую. Сам доступ действует 30 дней.\n\n"
+        "Если Windows блокирует запуск, не отключай защиту; "
+        "для ручного подключения напиши /proxy_manual."
+    )
+
+
+def _manual_instructions(result: dict) -> str:
+    return (
+        f"Прокси №{int(result['id']):03d}, доступ до {_date(result['expires_at'])}.\n"
         f"Адрес: {SERVICE_HOST}\n"
         f"Порт: {SERVICE_PORT}\n"
-        f"Тип: HTTPS-прокси\n"
-        f"Логин: {login}\n"
-        f"Пароль: {password}\n\n"
-        "Для Windows: ниже пришлю файл «Открыть ChatGPT.cmd».\n"
-        "Сохрани файл и дважды нажми на него: Chrome запустится сам.\n"
-        "Когда браузер запросит авторизацию, введи логин и пароль выше.\n\n"
-        "Доступ автоматически прекратится через 30 дней. "
-        "Повторная регистрация новый срок не даёт."
+        "Тип: HTTPS-прокси\n"
+        f"Логин: {result['username']}\n"
+        f"Пароль: {result['password']}\n\n"
+        "Для Windows ниже будет файл Open_ChatGPT.cmd: скачай и запусти, "
+        "при запросе Chrome введи логин и пароль из этого сообщения."
     )
 
 
@@ -144,21 +157,20 @@ async def handle_proxy_message(message, raw_text: str, *, is_admin: bool = False
         return True
 
     try:
-        if action in {"register", "status"}:
-            result = await _api(action, {"telegram_id": int(message.from_user.id)})
+        if action in {"register", "status", "manual"}:
+            result = await _api("status" if action == "manual" else action, {"telegram_id": int(message.from_user.id)})
             state = result.get("status")
             if state == "not_found":
                 await message.answer("Ты пока не подключал прокси. Напиши /proxy.")
             elif state == "active":
-                await message.answer(_instructions(result))
-                try:
-                    await _send_windows_launcher(message)
-                except Exception as exc:
-                    LOG.warning("proxy launcher delivery failed type=%s", type(exc).__name__)
-                    await message.answer(
-                        "Не удалось прикрепить файл запуска. Напиши администратору — "
-                        "доступ уже активен и остаётся действующим."
-                    )
+                if action == "manual":
+                    await message.answer(_manual_instructions(result))
+                    try:
+                        await _send_windows_launcher(message)
+                    except Exception as exc:
+                        LOG.warning("proxy manual launcher failed type=%s", type(exc).__name__)
+                else:
+                    await message.answer(_instructions(result))
             elif state == "expired":
                 await message.answer(
                     f"Прокси №{int(result['id']):03d}: срок закончился "
