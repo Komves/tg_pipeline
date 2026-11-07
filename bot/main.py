@@ -2797,7 +2797,17 @@ def _tts_to_ogg_bytes(text: str) -> bytes:
             return r.content
 
     except Exception as e:
-        print(f"[voice] elevenlabs tts failed: {type(e).__name__}: {e}", flush=True)
+        # Report only machine-readable provider code. Do not leak key, proxy
+        # credentials, response body, user text, or raw exception URL.
+        if isinstance(e, httpx.HTTPStatusError):
+            from vesya_tools.parus_voiceover import safe_provider_error_code
+            code = safe_provider_error_code(e.response)
+            print(
+                f"[voice] elevenlabs tts rejected: HTTP {e.response.status_code}; provider_code={code}",
+                flush=True,
+            )
+        else:
+            print(f"[voice] elevenlabs tts failed: {type(e).__name__}", flush=True)
         return b""
 
 async def _send_reply_for_event(message: Message, reply: str, *, event_type: str = "text") -> None:
