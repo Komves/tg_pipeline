@@ -5734,6 +5734,40 @@ async def cmd_parus_narration_samples(message: Message) -> None:
             await message.answer("Пробная озвучка ПАРУСа доступна только администратору.")
         return
 
+    # Full 16-scene soundtrack: only for the admin, only through Timeweb.
+    # One ZIP is sent to Telegram for synchronization with the existing video.
+    requested_command = (message.text or "").partition(" ")[2].strip()
+    if requested_command.casefold() in {"full", "полная", "всё", "все"}:
+        from aiogram.types import BufferedInputFile
+        from vesya_tools.parus_video_narration import narration_archive
+
+        await message.answer(
+            "Готовлю полную озвучку 16 сцен голосом Брайана. "
+            "Уже созданные фрагменты повторно оплачивать не потребуется. "
+            "Результат отправлю одним ZIP-архивом."
+        )
+        try:
+            archive, generated, cached = await asyncio.to_thread(narration_archive)
+        except Exception as exc:
+            # Exception internals may contain proxy details; do not print them.
+            info = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+            print(f"[parus_voice_full] failed: {info}", flush=True)
+            await message.answer(
+                "Не удалось завершить озвучку всех сцен: " + info
+                + ". Готовые части сохранены; при повторе они не будут синтезированы заново."
+            )
+            return
+        await message.answer_document(
+            BufferedInputFile(archive, filename="PARUS_Brian_16_scenes.zip"),
+            caption=(
+                "ПАРУС — полная озвучка видеоинструкции, 16 MP3 (Брайан). "
+                f"Новых фрагментов: {generated}, из кэша: {cached}. "
+                "Отправь этот ZIP в ChatGPT — наложу звук на видеоряд."
+            ),
+            request_timeout=120,
+        )
+        return
+
     from aiogram.types import BufferedInputFile
     from vesya_tools.parus_voiceover import (
         MAX_SAMPLE_CHARACTERS,
