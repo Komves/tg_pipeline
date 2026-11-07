@@ -19,6 +19,7 @@ from gmail_reader import (
     summarize_message as gmail_summarize,
     format_open_message as gmail_format_open,
     get_access_token as gmail_access_token,
+    move_message_to_trash_verified as gmail_move_to_trash_verified,
 )
 from pathlib import Path
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -7504,95 +7505,59 @@ async def on_gmail_open(cb):
 @dp.callback_query(F.data.startswith("gmail_del_id:"))
 @dp.callback_query(F.data.startswith("gmail_del:"))
 async def on_gmail_delete(cb):
+    # Acknowledge the button immediately: Telegram expires callback queries
+    # if we wait for Gmail OAuth + API calls before answering them.
     try:
-        import requests
+        await cb.answer("Проверяю удаление в Gmail…")
+    except Exception as exc:
+        print(f"[gmail_del] callback acknowledgement: {type(exc).__name__}", flush=True)
 
-        msg_id = cb.data.split(":", 1)[1].strip()
+    try:
         user_id = int(cb.from_user.id)
+        msg_id = cb.data.split(":", 1)[1].strip()
         cached = GMAIL_LAST_MESSAGES.get(user_id) or []
-
         item = next((x for x in cached if x.get("id") == msg_id), None)
-        if not item:
-            item = {"id": msg_id, "subject": "письмо"}
+        subject = (item or {}).get("subject") or "письмо"
 
-        supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-        supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
-
-        r = requests.get(
-            f"{supabase_url}/rest/v1/gmail_accounts",
-            headers={
-                "apikey": supabase_key,
-                "Authorization": f"Bearer {supabase_key}",
-            },
-            params={
-                "select": "creds_json",
-                "user_id": f"eq.{user_id}",
-                "order": "id.desc",
-                "limit": "1",
-            },
-            timeout=20,
+        # Never use a token cached for a different user or expired on restart.
+        access_token = await asyncio.to_thread(gmail_access_token, user_id)
+        status = await asyncio.to_thread(
+            gmail_move_to_trash_verified, msg_id, access_token,
         )
 
-        rows = r.json()
-        if not rows:
-            await cb.message.answer("почта не подключена")
-            return
-
-        creds = rows[0].get("creds_json") or {}
-        refresh_token = creds.get("refresh_token")
-        if not refresh_token:
-            await cb.message.answer("refresh_token не найден")
-            return
-
-        token_res = requests.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token",
-            },
-            timeout=20,
-        ).json()
-
-        access_token = token_res.get("access_token")
-        if not access_token:
-            await cb.message.answer(f"не смогла обновить токен: {token_res}")
-            return
-
-        rr = requests.post(
-            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{item['id']}/trash",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=20,
-        )
-
-        if rr.status_code >= 300:
-            body = rr.text[:500]
-            if rr.status_code in (401, 403):
-                await cb.message.answer(
-                    "Не удалила. У почты нет права на удаление. "
-                    "Нужно переподключить Gmail со scope gmail.modify."
-                )
-            else:
-                await cb.message.answer(f"не удалила: {rr.status_code} {body}")
-            return
-
-        try:
-            GMAIL_LAST_MESSAGES[user_id] = [x for x in cached if x.get("id") != msg_id]
-        except Exception:
-            pass
-
+        GMAIL_LAST_MESSAGES[user_id] = [x for x in cached if x.get("id") != msg_id]
         try:
             await cb.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
 
-        await cb.message.answer(f"удалила: {item.get('subject')}")
-        await cb.answer("удалено")
+        remaining = status.get("remaining_thread_inbox")
+        explanation = ""
+        if isinstance(remaining, int) and remaining > 0:
+            explanation = (
+                f"\n\nВ этой переписке осталось ещё {remaining} "
+                "письм(а) во входящих. Поэтому цепочка может по-прежнему "
+                "отображаться в разделе «Оповещения» Gmail."
+            )
 
-    except Exception as e:
-        print(f"[gmail_del] failed: {type(e).__name__}: {e}", flush=True)
-        await cb.message.answer(f"не удалила: {type(e).__name__}: {e}")
+        await cb.message.answer(
+            f"Переместила в корзину Gmail: {subject}. "
+            "Проверила: у письма есть метка «Корзина», "
+            "а метки «Входящие» больше нет."
+            + explanation,
+        )
+        print(
+            "[gmail_del] verified trashed=True "
+            f"remaining_thread_inbox={remaining!r}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[gmail_del] failed: {type(exc).__name__}: {exc}", flush=True)
+        await cb.message.answer(
+            "Не могу подтвердить удаление письма в Gmail. "
+            "Кнопку оставила на месте; попробуй ещё раз. "
+            f"Причина: {type(exc).__name__}."
+        )
 
 if __name__ == "__main__":
     asyncio.run(main())
