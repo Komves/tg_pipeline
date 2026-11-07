@@ -175,5 +175,78 @@ class GmailReaderTests(unittest.TestCase):
         self.assertEqual(get.call_args.kwargs["params"]["user_id"], "eq.123456")
 
 
+class GmailDeleteVerificationTests(unittest.TestCase):
+    class FakeResponse:
+        def __init__(self, payload, status=200):
+            self.payload = payload
+            self.status_code = status
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise gmail_reader.requests.HTTPError(f"{self.status_code}")
+
+        def json(self):
+            return self.payload
+
+    def test_trash_verified_independently_and_other_thread_items_detected(self):
+        post_resp = self.FakeResponse({"id": "msg123", "threadId": "thread1"})
+        msg_resp = self.FakeResponse({
+            "id": "msg123", "threadId": "thread1",
+            "labelIds": ["TRASH", "CATEGORY_UPDATES"],
+        })
+        thread_resp = self.FakeResponse({
+            "messages": [
+                {"id": "msg123", "labelIds": ["TRASH"]},
+                {"id": "anothermsg", "labelIds": ["INBOX", "CATEGORY_UPDATES"]},
+            ]
+        })
+        with patch.object(gmail_reader.requests, "post", return_value=post_resp) as p, \
+             patch.object(gmail_reader.requests, "get", side_effect=[msg_resp, thread_resp]) as g:
+            result = gmail_reader.move_message_to_trash_verified("msg123", "fake_token")
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["remaining_thread_inbox"], 1)
+        self.assertTrue(p.call_args.args[0].endswith("/messages/msg123/trash"))
+        self.assertEqual(g.call_args_list[0].kwargs["params"]["format"], "minimal")
+        self.assertEqual(g.call_args_list[1].kwargs["params"]["format"], "minimal")
+
+    def test_success_http_does_not_count_without_trash_label(self):
+        with patch.object(gmail_reader.requests, "post", return_value=self.FakeResponse(
+            {"id": "abc123", "threadId": "t123"}
+        )), patch.object(gmail_reader.requests, "get", return_value=self.FakeResponse({
+            "id": "abc123", "labelIds": ["INBOX", "CATEGORY_UPDATES"]
+        })):
+            with self.assertRaisesRegex(RuntimeError, "не подтвердил"):
+                gmail_reader.move_message_to_trash_verified("abc123", "fake_token")
+
+    def test_unauthorized_request_does_not_report_success(self):
+        with patch.object(gmail_reader.requests, "post", return_value=self.FakeResponse({}, 403)):
+            with self.assertRaises(gmail_reader.requests.HTTPError):
+                gmail_reader.move_message_to_trash_verified("abc123", "fake_token")
+
+    def test_verification_error_does_not_report_success(self):
+        with patch.object(gmail_reader.requests, "post", return_value=self.FakeResponse({
+            "id": "abc123", "threadId": "t123"
+        })), patch.object(gmail_reader.requests, "get", return_value=self.FakeResponse({}, 500)):
+            with self.assertRaises(gmail_reader.requests.HTTPError):
+                gmail_reader.move_message_to_trash_verified("abc123", "fake_token")
+
+    def test_optional_thread_check_failure_does_not_cancel_verified_delete(self):
+        with patch.object(gmail_reader.requests, "post", return_value=self.FakeResponse({
+            "id": "abc123", "threadId": "t123"
+        })), patch.object(gmail_reader.requests, "get", side_effect=[
+            self.FakeResponse({"id": "abc123", "labelIds": ["TRASH"]}),
+            self.FakeResponse({}, 500)
+        ]):
+            result = gmail_reader.move_message_to_trash_verified("abc123", "fake_token")
+        self.assertTrue(result["verified"])
+        self.assertIsNone(result["remaining_thread_inbox"])
+
+    def test_bad_message_id_is_rejected_before_any_http(self):
+        with patch.object(gmail_reader.requests, "post") as p:
+            with self.assertRaises(ValueError):
+                gmail_reader.move_message_to_trash_verified("../bad", "fake_token")
+            p.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
