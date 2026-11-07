@@ -37,6 +37,54 @@ class ParusVoiceoverTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "ELEVENLABS_API_KEY"):
                 render_narration_sample("Проверка.", VOICE_PRESETS[0][2])
 
+    def test_unavailable_proxy_uses_direct_route_without_env_proxy(self):
+        import httpx
+
+        broken = Mock()
+        broken.post.side_effect = httpx.ConnectError("unreachable")
+        broken_context = Mock()
+        broken_context.__enter__ = Mock(return_value=broken)
+        broken_context.__exit__ = Mock(return_value=None)
+
+        healthy = Mock()
+        healthy_response = Mock()
+        healthy_response.content = b"ID3-fallback"
+        healthy_response.raise_for_status.return_value = None
+        healthy.post.return_value = healthy_response
+        healthy_context = Mock()
+        healthy_context.__enter__ = Mock(return_value=healthy)
+        healthy_context.__exit__ = Mock(return_value=None)
+
+        with patch.dict(os.environ, {
+            "ELEVENLABS_API_KEY": "testing-key",
+            "ELEVENLABS_PROXY": "socks5://127.0.0.1:1080",
+        }):
+            with patch("httpx.Client", side_effect=[broken_context, healthy_context]) as factory:
+                result = render_narration_sample(SAMPLE_TEXT, VOICE_PRESETS[0][2])
+
+        self.assertEqual(result, b"ID3-fallback")
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual(factory.call_args_list[0].kwargs["proxy"], "socks5://127.0.0.1:1080")
+        self.assertIsNone(factory.call_args_list[1].kwargs["proxy"])
+        self.assertIs(factory.call_args_list[1].kwargs["trust_env"], False)
+
+    def test_both_routes_fail_with_safe_diagnostics(self):
+        import httpx
+
+        with patch.dict(os.environ, {
+            "ELEVENLABS_API_KEY": "testing-key",
+            "ELEVENLABS_PROXY": "socks5://user:secret@127.0.0.1:1080",
+        }):
+            with patch("httpx.Client", side_effect=httpx.ConnectError("credentials-should-not-leak")):
+                with self.assertRaises(RuntimeError) as raised:
+                    render_narration_sample(SAMPLE_TEXT, VOICE_PRESETS[0][2])
+
+        result = str(raised.exception)
+        self.assertIn("прокси: ConnectError", result)
+        self.assertIn("прямое подключение: ConnectError", result)
+        self.assertNotIn("secret", result)
+        self.assertNotIn("credentials-should-not-leak", result)
+
     def test_request_uses_existing_proxy_and_russian_model(self):
         response = Mock()
         response.content = b"ID3" + b"audio-payload"

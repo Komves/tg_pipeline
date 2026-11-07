@@ -5749,15 +5749,28 @@ async def cmd_parus_narration_samples(message: Message) -> None:
         "Озвучиваю один и тот же фрагмент ПАРУСа тремя мужскими голосами. "
         "Файлы MP3 можно прослушать и сохранить."
     )
+    succeeded = 0
     for index, (voice_key, voice_label, voice_id) in enumerate(VOICE_PRESETS, 1):
         try:
             audio = await asyncio.to_thread(render_narration_sample, phrase, voice_id)
         except Exception as exc:
             code = getattr(getattr(exc, "response", None), "status_code", None)
-            detail = f"HTTP {code}" if code else type(exc).__name__
+            # RuntimeError messages from the isolated helper contain only
+            # sanitised route labels and HTTP codes, never proxy credentials.
+            detail = str(exc) if isinstance(exc, RuntimeError) else (
+                f"HTTP {code}" if code else type(exc).__name__
+            )
             print(f"[parus_voice] sample={voice_key} failed: {detail}", flush=True)
-            await message.answer(f"Голос «{voice_label}» не получен ({detail}).")
-            if code in (401, 402, 403, 429) or isinstance(exc, RuntimeError):
+            await message.answer(f"Голос «{voice_label}» не получен: {detail}")
+            if (
+                code in (401, 402, 403, 429)
+                or "недоступен" in detail
+                or "ELEVENLABS_API_KEY" in detail
+                or "HTTP 401" in detail
+                or "HTTP 402" in detail
+                or "HTTP 403" in detail
+                or "HTTP 429" in detail
+            ):
                 break
             continue
 
@@ -5767,10 +5780,17 @@ async def cmd_parus_narration_samples(message: Message) -> None:
             title=f"ПАРУС — {voice_label}",
             performer="ПАРУС",
         )
+        succeeded += 1
 
-    await message.answer(
-        "Какой голос подходит для видеоинструкции: Адам, Даниэль или Брайан?"
-    )
+    if succeeded:
+        await message.answer(
+            "Какой голос подходит для видеоинструкции: Адам, Даниэль или Брайан?"
+        )
+    else:
+        await message.answer(
+            "Звуковые файлы не созданы. Причина указана выше; "
+            "повторять запрос без исправления подключения не нужно."
+        )
 
 
 @dp.message(F.text)
