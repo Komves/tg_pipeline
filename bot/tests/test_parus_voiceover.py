@@ -85,6 +85,34 @@ class ParusVoiceoverTests(unittest.TestCase):
         self.assertNotIn("secret", result)
         self.assertNotIn("credentials-should-not-leak", result)
 
+    def test_provider_error_code_reported_without_leaking_message(self):
+        import httpx
+
+        request = httpx.Request("POST", "https://api.elevenlabs.io/v1/text-to-speech/fake")
+        response = httpx.Response(
+            400,
+            request=request,
+            json={"detail": {
+                "status": "invalid_language_code",
+                "message": "private customer details should not be shown",
+            }},
+        )
+        client = Mock()
+        client.post.return_value = response
+        manager = Mock()
+        manager.__enter__ = Mock(return_value=client)
+        manager.__exit__ = Mock(return_value=None)
+        with patch.dict(os.environ, {
+            "ELEVENLABS_API_KEY": "testing-key",
+            "ELEVENLABS_PROXY": "",
+        }):
+            with patch("httpx.Client", return_value=manager):
+                with self.assertRaises(RuntimeError) as raised:
+                    render_narration_sample(SAMPLE_TEXT, VOICE_PRESETS[0][2])
+        safe_error = str(raised.exception)
+        self.assertIn("HTTP 400 / invalid_language_code", safe_error)
+        self.assertNotIn("private customer", safe_error)
+
     def test_request_uses_existing_proxy_and_russian_model(self):
         response = Mock()
         response.content = b"ID3" + b"audio-payload"
@@ -103,7 +131,7 @@ class ParusVoiceoverTests(unittest.TestCase):
         self.assertEqual(audio, response.content)
         self.assertEqual(http_client.call_args.kwargs["proxy"], "socks5://127.0.0.1:1080")
         kwargs = client.post.call_args.kwargs
-        self.assertEqual(kwargs["json"]["language_code"], "ru")
+        self.assertNotIn("language_code", kwargs["json"])
         self.assertEqual(kwargs["json"]["model_id"], "eleven_multilingual_v2")
         self.assertEqual(kwargs["params"]["output_format"], "mp3_44100_128")
 
