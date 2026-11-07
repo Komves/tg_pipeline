@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from vesya_tools.parus_voiceover import (
     MAX_SAMPLE_CHARACTERS,
     SAMPLE_TEXT,
+    BRIAN_STRESS_SAMPLE,
     VOICE_PRESETS,
     render_narration_sample,
     safe_provider_error_code,
@@ -24,6 +25,12 @@ class ParusVoiceoverTests(unittest.TestCase):
         self.assertEqual(len(VOICE_PRESETS), 3)
         self.assertEqual(len({preset[2] for preset in VOICE_PRESETS}), 3)
         self.assertIn("ПАРУС", SAMPLE_TEXT)
+
+    def test_brian_only_first_mention_has_first_syllable_stress(self):
+        self.assertTrue(BRIAN_STRESS_SAMPLE.startswith("Па́рус —"))
+        self.assertIn("стороны ПАРУС готовит", BRIAN_STRESS_SAMPLE)
+        self.assertNotIn("ПАРУС —", BRIAN_STRESS_SAMPLE)
+        self.assertLessEqual(len(BRIAN_STRESS_SAMPLE), MAX_SAMPLE_CHARACTERS)
 
     def test_safe_error_code_extraction(self):
         response = Mock()

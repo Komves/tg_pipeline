@@ -5738,29 +5738,39 @@ async def cmd_parus_narration_samples(message: Message) -> None:
     from vesya_tools.parus_voiceover import (
         MAX_SAMPLE_CHARACTERS,
         SAMPLE_TEXT,
+        BRIAN_STRESS_SAMPLE,
         VOICE_PRESETS,
         render_narration_sample,
     )
 
-    # Optional custom script: /parusvoice <text> or reply with /parusvoice.
+    # /parusvoice brian: exactly one sample, with stress on the first syllable
+    # of the opening "Па́рус". Ordinary /parusvoice remains unchanged.
     requested = (message.text or "").partition(" ")[2].strip()
+    brian_stress_test = requested.casefold() in {"brian", "брайан"}
     quoted = getattr(message, "reply_to_message", None)
     if not requested and quoted:
         requested = (getattr(quoted, "text", None) or "").strip()
-    phrase = requested or SAMPLE_TEXT
+    phrase = BRIAN_STRESS_SAMPLE if brian_stress_test else (requested or SAMPLE_TEXT)
+    presets = tuple(p for p in VOICE_PRESETS if p[0] == "brian") if brian_stress_test else VOICE_PRESETS
     if len(phrase) > MAX_SAMPLE_CHARACTERS:
         await message.answer(
-            "Для сравнения трёх голосов нужен фрагмент до 650 символов. "
+            "Для пробной озвучки нужен фрагмент до 650 символов. "
             "Пришли более короткий текст командой /parusvoice."
         )
         return
 
-    await message.answer(
-        "Озвучиваю один и тот же фрагмент ПАРУСа тремя мужскими голосами. "
-        "Файлы MP3 можно прослушать и сохранить."
-    )
+    if brian_stress_test:
+        await message.answer(
+            "Проверяю первый слог в слове «Па́рус» голосом Брайана. "
+            "Отправляю только один MP3, остальные голоса не запускаю."
+        )
+    else:
+        await message.answer(
+            "Озвучиваю один и тот же фрагмент ПАРУСа тремя мужскими голосами. "
+            "Файлы MP3 можно прослушать и сохранить."
+        )
     succeeded = 0
-    for index, (voice_key, voice_label, voice_id) in enumerate(VOICE_PRESETS, 1):
+    for index, (voice_key, voice_label, voice_id) in enumerate(presets, 1):
         try:
             audio = await asyncio.to_thread(render_narration_sample, phrase, voice_id)
         except Exception as exc:
@@ -5786,7 +5796,8 @@ async def cmd_parus_narration_samples(message: Message) -> None:
 
         await message.answer_audio(
             BufferedInputFile(audio, filename=f"parus_voice_{voice_key}.mp3"),
-            caption=f"Проба {index}/3: {voice_label}.",
+            caption=(f"Проба ударения: {voice_label}." if brian_stress_test
+                     else f"Проба {index}/3: {voice_label}."),
             title=f"ПАРУС — {voice_label}",
             performer="ПАРУС",
         )
@@ -5794,7 +5805,9 @@ async def cmd_parus_narration_samples(message: Message) -> None:
 
     if succeeded:
         await message.answer(
-            "Какой голос подходит для видеоинструкции: Адам, Даниэль или Брайан?"
+            "Правильно ли теперь звучит первое слово «Па́рус»?"
+            if brian_stress_test
+            else "Какой голос подходит для видеоинструкции: Адам, Даниэль или Брайан?"
         )
     else:
         await message.answer(

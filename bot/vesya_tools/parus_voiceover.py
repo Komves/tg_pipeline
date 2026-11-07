@@ -19,6 +19,12 @@ SAMPLE_TEXT = (
     "процессуальных документов."
 )
 
+# Only the first mention is changed for a pronunciation test. The TTS
+# engine may or may not obey the combining stress mark; the user decides
+# after listening. Subsequent occurrences keep the original spelling.
+BRIAN_STRESS_SAMPLE = SAMPLE_TEXT.replace("ПАРУС —", "Па́рус —", 1)
+
+
 # IDs for ElevenLabs multilingual TTS. A voice must be available to the
 # account; API errors are reported instead of substituting a different voice.
 VOICE_PRESETS = (
