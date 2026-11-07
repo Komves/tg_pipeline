@@ -136,6 +136,63 @@ def fetch_message(message_id: str, token: str) -> dict:
     ))
 
 
+def move_message_to_trash_verified(message_id: str, token: str) -> dict:
+    """Move exactly one Gmail message to Trash and verify its state.
+
+    A 2xx status only confirms that Gmail accepted the request. A fresh read of
+    labelIds confirms the message is in Trash and is no longer in the inbox.
+    We never trash an entire conversation without explicit user consent.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", message_id or ""):
+        raise ValueError("Некорректный идентификатор письма.")
+
+    url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.post(f"{url}/trash", headers=headers, timeout=25)
+    response.raise_for_status()
+
+    # Check the returned state and then independently re-fetch; a successful
+    # POST alone must not trigger a misleading "удалила" confirmation.
+    posted = response.json()
+    if not isinstance(posted, dict):
+        raise RuntimeError("Gmail не вернул состояние удалённого письма.")
+
+    detail = _response_json(requests.get(
+        url, headers=headers, params={"format": "minimal"}, timeout=25,
+    ))
+    labels = set(detail.get("labelIds") or [])
+    if "TRASH" not in labels or "INBOX" in labels:
+        raise RuntimeError(
+            "Gmail не подтвердил перемещение письма в корзину. "
+            "Попробуй ещё раз через минуту."
+        )
+
+    # Gmail groups messages by thread. Other INBOX messages can keep the
+    # conversation visible in Updates, even after this one was trashed.
+    remaining_thread_inbox = None
+    thread_id = detail.get("threadId") or posted.get("threadId")
+    if thread_id and re.fullmatch(r"[A-Za-z0-9_-]+", str(thread_id)):
+        try:
+            thread = _response_json(requests.get(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}",
+                headers=headers, params={"format": "minimal"}, timeout=20,
+            ))
+            remaining_thread_inbox = sum(
+                1 for item in thread.get("messages", [])
+                if item.get("id") != message_id
+                and "INBOX" in (item.get("labelIds") or [])
+            )
+        except Exception as exc:
+            print(
+                f"[gmail_del] thread state check unavailable: {type(exc).__name__}",
+                flush=True,
+            )
+    return {
+        "verified": True,
+        "remaining_thread_inbox": remaining_thread_inbox,
+    }
+
+
 def read_message(detail: dict, token: str = "") -> dict:
     """Collect all text leaves, prefer text/plain to HTML alternatives.
 
