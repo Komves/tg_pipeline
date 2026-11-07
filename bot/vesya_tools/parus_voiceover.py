@@ -29,6 +29,24 @@ VOICE_PRESETS = (
 MAX_SAMPLE_CHARACTERS = 650
 
 
+def safe_provider_error_code(response) -> str:
+    """Extract only a safe machine code from an ElevenLabs error response.
+
+    Do not emit response body, request URL, provider message, or credentials.
+    """
+    try:
+        detail = response.json().get("detail", {})
+        if isinstance(detail, dict):
+            code = detail.get("code") or detail.get("status") or ""
+            if isinstance(code, str):
+                import re
+                if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", code):
+                    return code
+    except (ValueError, AttributeError, TypeError):
+        pass
+    return "unspecified"
+
+
 def render_narration_sample(text: str, voice_id: str) -> bytes:
     """Generate a short downloadable MP3 with existing credentials and proxy."""
     phrase = str(text or "").strip()

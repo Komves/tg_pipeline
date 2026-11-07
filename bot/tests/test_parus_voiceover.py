@@ -14,6 +14,7 @@ from vesya_tools.parus_voiceover import (
     SAMPLE_TEXT,
     VOICE_PRESETS,
     render_narration_sample,
+    safe_provider_error_code,
 )
 
 
@@ -23,6 +24,20 @@ class ParusVoiceoverTests(unittest.TestCase):
         self.assertEqual(len(VOICE_PRESETS), 3)
         self.assertEqual(len({preset[2] for preset in VOICE_PRESETS}), 3)
         self.assertIn("ПАРУС", SAMPLE_TEXT)
+
+    def test_safe_error_code_extraction(self):
+        response = Mock()
+        response.json.return_value = {
+            "detail": {"status": "invalid_api_key", "message": "Never show token abc123"}
+        }
+        self.assertEqual(safe_provider_error_code(response), "invalid_api_key")
+
+    def test_safe_error_code_rejects_untrusted_message(self):
+        response = Mock()
+        response.json.return_value = {"detail": {
+            "status": "invalid_key?token=something-secret",
+        }}
+        self.assertEqual(safe_provider_error_code(response), "unspecified")
 
     def test_overlong_sample_rejected_without_network(self):
         with self.assertRaisesRegex(ValueError, "650 символов"):
