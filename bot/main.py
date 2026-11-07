@@ -5714,6 +5714,65 @@ async def on_voice(message: Message) -> None:
         print(f"[voice] handler failed: {type(e).__name__}: {e}", flush=True)
         await message.answer(f"голос сломался: {type(e).__name__}: {e}")
 
+@dp.message(Command("parusvoice"))
+async def cmd_parus_narration_samples(message: Message) -> None:
+    """Admin-only, explicit command: three short downloadable MP3 voice tests."""
+    if not _chat_allowed(message):
+        return
+    if message.chat.type != "private" or not _is_admin_user(message):
+        if message.chat.type == "private":
+            await message.answer("Пробная озвучка ПАРУСа доступна только администратору.")
+        return
+
+    from aiogram.types import BufferedInputFile
+    from vesya_tools.parus_voiceover import (
+        MAX_SAMPLE_CHARACTERS,
+        SAMPLE_TEXT,
+        VOICE_PRESETS,
+        render_narration_sample,
+    )
+
+    # Optional custom script: /parusvoice <text> or reply with /parusvoice.
+    requested = (message.text or "").partition(" ")[2].strip()
+    quoted = getattr(message, "reply_to_message", None)
+    if not requested and quoted:
+        requested = (getattr(quoted, "text", None) or "").strip()
+    phrase = requested or SAMPLE_TEXT
+    if len(phrase) > MAX_SAMPLE_CHARACTERS:
+        await message.answer(
+            "Для сравнения трёх голосов нужен фрагмент до 650 символов. "
+            "Пришли более короткий текст командой /parusvoice."
+        )
+        return
+
+    await message.answer(
+        "Озвучиваю один и тот же фрагмент ПАРУСа тремя мужскими голосами. "
+        "Файлы MP3 можно прослушать и сохранить."
+    )
+    for index, (voice_key, voice_label, voice_id) in enumerate(VOICE_PRESETS, 1):
+        try:
+            audio = await asyncio.to_thread(render_narration_sample, phrase, voice_id)
+        except Exception as exc:
+            code = getattr(getattr(exc, "response", None), "status_code", None)
+            detail = f"HTTP {code}" if code else type(exc).__name__
+            print(f"[parus_voice] sample={voice_key} failed: {detail}", flush=True)
+            await message.answer(f"Голос «{voice_label}» не получен ({detail}).")
+            if code in (401, 402, 403, 429) or isinstance(exc, RuntimeError):
+                break
+            continue
+
+        await message.answer_audio(
+            BufferedInputFile(audio, filename=f"parus_voice_{voice_key}.mp3"),
+            caption=f"Проба {index}/3: {voice_label}.",
+            title=f"ПАРУС — {voice_label}",
+            performer="ПАРУС",
+        )
+
+    await message.answer(
+        "Какой голос подходит для видеоинструкции: Адам, Даниэль или Брайан?"
+    )
+
+
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
     print("[TYPE DEBUG]", type(message.text), message.text)
