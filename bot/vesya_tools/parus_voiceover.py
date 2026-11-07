@@ -68,7 +68,6 @@ def render_narration_sample(text: str, voice_id: str) -> bytes:
                     json={
                         "text": phrase,
                         "model_id": "eleven_multilingual_v2",
-                        "language_code": "ru",
                         "voice_settings": {
                             "stability": 0.72,
                             "similarity_boost": 0.78,
@@ -88,10 +87,24 @@ def render_narration_sample(text: str, voice_id: str) -> bytes:
             continue
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
+            # Include only the documented machine-readable error code, not
+            # arbitrary provider messages, response headers or account data.
+            provider_code = ""
+            try:
+                details = exc.response.json().get("detail", {})
+                if isinstance(details, dict):
+                    candidate = details.get("code") or details.get("status") or ""
+                    if isinstance(candidate, str):
+                        import re
+                        if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", candidate):
+                            provider_code = candidate
+            except (ValueError, AttributeError, TypeError):
+                pass
+            detail = f"HTTP {status}" + (f" / {provider_code}" if provider_code else "")
             # An intermediary can reject requests; try the direct route.
             if route_proxy and status in (403, 407, 502, 503, 504):
-                errors.append(f"{route_name}: HTTP {status}")
+                errors.append(f"{route_name}: {detail}")
                 continue
-            raise RuntimeError(f"ElevenLabs: HTTP {status} ({route_name}).") from None
+            raise RuntimeError(f"ElevenLabs: {detail} ({route_name}).") from None
 
     raise RuntimeError("ElevenLabs недоступен: " + "; ".join(errors))
