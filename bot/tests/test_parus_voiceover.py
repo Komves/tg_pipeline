@@ -37,53 +37,40 @@ class ParusVoiceoverTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "ELEVENLABS_API_KEY"):
                 render_narration_sample("Проверка.", VOICE_PRESETS[0][2])
 
-    def test_unavailable_proxy_uses_direct_route_without_env_proxy(self):
+    def test_missing_proxy_blocks_direct_requests_without_network(self):
+        with patch.dict(os.environ, {
+            "ELEVENLABS_API_KEY": "testing-key",
+            "ELEVENLABS_PROXY": "",
+        }):
+            with patch("httpx.Client") as client:
+                with self.assertRaisesRegex(RuntimeError, "Не настроен ELEVENLABS_PROXY"):
+                    render_narration_sample(SAMPLE_TEXT, VOICE_PRESETS[0][2])
+        client.assert_not_called()
+
+    def test_broken_proxy_does_not_attempt_direct_route(self):
         import httpx
 
+        proxy_url = "socks5://user:secret@127.0.0.1:1080"
         broken = Mock()
-        broken.post.side_effect = httpx.ConnectError("unreachable")
-        broken_context = Mock()
-        broken_context.__enter__ = Mock(return_value=broken)
-        broken_context.__exit__ = Mock(return_value=None)
-
-        healthy = Mock()
-        healthy_response = Mock()
-        healthy_response.content = b"ID3-fallback"
-        healthy_response.raise_for_status.return_value = None
-        healthy.post.return_value = healthy_response
-        healthy_context = Mock()
-        healthy_context.__enter__ = Mock(return_value=healthy)
-        healthy_context.__exit__ = Mock(return_value=None)
+        broken.post.side_effect = httpx.ConnectError("unreachable-diagnostic-private")
+        proxy_context = Mock()
+        proxy_context.__enter__ = Mock(return_value=broken)
+        proxy_context.__exit__ = Mock(return_value=None)
 
         with patch.dict(os.environ, {
             "ELEVENLABS_API_KEY": "testing-key",
-            "ELEVENLABS_PROXY": "socks5://127.0.0.1:1080",
+            "ELEVENLABS_PROXY": proxy_url,
         }):
-            with patch("httpx.Client", side_effect=[broken_context, healthy_context]) as factory:
-                result = render_narration_sample(SAMPLE_TEXT, VOICE_PRESETS[0][2])
-
-        self.assertEqual(result, b"ID3-fallback")
-        self.assertEqual(factory.call_count, 2)
-        self.assertEqual(factory.call_args_list[0].kwargs["proxy"], "socks5://127.0.0.1:1080")
-        self.assertIsNone(factory.call_args_list[1].kwargs["proxy"])
-        self.assertIs(factory.call_args_list[1].kwargs["trust_env"], False)
-
-    def test_both_routes_fail_with_safe_diagnostics(self):
-        import httpx
-
-        with patch.dict(os.environ, {
-            "ELEVENLABS_API_KEY": "testing-key",
-            "ELEVENLABS_PROXY": "socks5://user:secret@127.0.0.1:1080",
-        }):
-            with patch("httpx.Client", side_effect=httpx.ConnectError("credentials-should-not-leak")):
+            with patch("httpx.Client", return_value=proxy_context) as factory:
                 with self.assertRaises(RuntimeError) as raised:
                     render_narration_sample(SAMPLE_TEXT, VOICE_PRESETS[0][2])
 
         result = str(raised.exception)
-        self.assertIn("прокси: ConnectError", result)
-        self.assertIn("прямое подключение: ConnectError", result)
+        self.assertEqual(factory.call_count, 1)
+        self.assertEqual(factory.call_args.kwargs["proxy"], proxy_url)
+        self.assertIn("прокси Timeweb: ConnectError", result)
         self.assertNotIn("secret", result)
-        self.assertNotIn("credentials-should-not-leak", result)
+        self.assertNotIn("unreachable-diagnostic-private", result)
 
     def test_provider_error_code_reported_without_leaking_message(self):
         import httpx
@@ -104,13 +91,14 @@ class ParusVoiceoverTests(unittest.TestCase):
         manager.__exit__ = Mock(return_value=None)
         with patch.dict(os.environ, {
             "ELEVENLABS_API_KEY": "testing-key",
-            "ELEVENLABS_PROXY": "",
+            "ELEVENLABS_PROXY": "socks5://127.0.0.1:1080",
         }):
             with patch("httpx.Client", return_value=manager):
                 with self.assertRaises(RuntimeError) as raised:
                     render_narration_sample(SAMPLE_TEXT, VOICE_PRESETS[0][2])
         safe_error = str(raised.exception)
         self.assertIn("HTTP 400 / invalid_language_code", safe_error)
+        self.assertIn("прокси Timeweb", safe_error)
         self.assertNotIn("private customer", safe_error)
 
     def test_request_uses_existing_proxy_and_russian_model(self):

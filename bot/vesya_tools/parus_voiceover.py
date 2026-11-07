@@ -41,70 +41,60 @@ def render_narration_sample(text: str, voice_id: str) -> bytes:
     if not key:
         raise RuntimeError("Не настроен ELEVENLABS_API_KEY у Веси.")
 
-    proxy = (os.getenv("ELEVENLABS_PROXY") or "").strip() or None
+    proxy = (os.getenv("ELEVENLABS_PROXY") or "").strip()
+    if not proxy:
+        # Direct Render -> ElevenLabs requests are not an acceptable fallback.
+        raise RuntimeError("Не настроен ELEVENLABS_PROXY для Timeweb. Прямой запрос заблокирован.")
 
     import httpx
 
-    # The existing ElevenLabs proxy can become unreachable. Try it first,
-    # then fall back to a truly direct connection (trust_env=False prevents
-    # an inherited HTTPS_PROXY from silently routing back through the same
-    # unavailable proxy). Only retry connection/proxy failures: do not
-    # resubmit after a read timeout, since synthesis may already be billable.
-    routes = [("прокси", proxy)] if proxy else []
-    routes.append(("прямое подключение", None))
-    errors = []
-
-    for route_name, route_proxy in routes:
+    # Use exactly the same proxy route and httpx defaults as Vesya's existing
+    # Telegram voice replies. Never fall back to a direct ElevenLabs request:
+    # it bypasses the Timeweb exit route and may be refused by the provider.
+    try:
+        with httpx.Client(proxy=proxy, timeout=75.0) as client:
+            response = client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                params={"output_format": "mp3_44100_128"},
+                headers={
+                    "xi-api-key": key,
+                    "Content-Type": "application/json",
+                    "Accept": "audio/mpeg",
+                },
+                json={
+                    "text": phrase,
+                    "model_id": "eleven_multilingual_v2",
+                    "voice_settings": {
+                        "stability": 0.72,
+                        "similarity_boost": 0.78,
+                        "style": 0.0,
+                        "use_speaker_boost": True,
+                    },
+                },
+            )
+            response.raise_for_status()
+            audio = bytes(response.content)
+            if not audio:
+                raise RuntimeError("ElevenLabs вернул пустой аудиофайл.")
+            return audio
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError) as exc:
+        # Do not expose proxy URL (which may contain credentials) or API key.
+        raise RuntimeError(
+            f"Не удалось соединиться через прокси Timeweb: {type(exc).__name__}. "
+            "Проверьте SOCKS-сервис, адрес/порт и доступность сервера."
+        ) from None
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        provider_code = ""
         try:
-            with httpx.Client(proxy=route_proxy, timeout=75.0, trust_env=False) as client:
-                response = client.post(
-                    f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
-                    params={"output_format": "mp3_44100_128"},
-                    headers={
-                        "xi-api-key": key,
-                        "Content-Type": "application/json",
-                        "Accept": "audio/mpeg",
-                    },
-                    json={
-                        "text": phrase,
-                        "model_id": "eleven_multilingual_v2",
-                        "voice_settings": {
-                            "stability": 0.72,
-                            "similarity_boost": 0.78,
-                            "style": 0.0,
-                            "use_speaker_boost": True,
-                        },
-                    },
-                )
-                response.raise_for_status()
-                audio = bytes(response.content)
-                if not audio:
-                    raise RuntimeError("ElevenLabs вернул пустой аудиофайл.")
-                return audio
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError) as exc:
-            # Never expose proxy URL, credentials, API key, or provider body.
-            errors.append(f"{route_name}: {type(exc).__name__}")
-            continue
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            # Include only the documented machine-readable error code, not
-            # arbitrary provider messages, response headers or account data.
-            provider_code = ""
-            try:
-                details = exc.response.json().get("detail", {})
-                if isinstance(details, dict):
-                    candidate = details.get("code") or details.get("status") or ""
-                    if isinstance(candidate, str):
-                        import re
-                        if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", candidate):
-                            provider_code = candidate
-            except (ValueError, AttributeError, TypeError):
-                pass
-            detail = f"HTTP {status}" + (f" / {provider_code}" if provider_code else "")
-            # An intermediary can reject requests; try the direct route.
-            if route_proxy and status in (403, 407, 502, 503, 504):
-                errors.append(f"{route_name}: {detail}")
-                continue
-            raise RuntimeError(f"ElevenLabs: {detail} ({route_name}).") from None
-
-    raise RuntimeError("ElevenLabs недоступен: " + "; ".join(errors))
+            details = exc.response.json().get("detail", {})
+            if isinstance(details, dict):
+                candidate = details.get("code") or details.get("status") or ""
+                if isinstance(candidate, str):
+                    import re
+                    if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", candidate):
+                        provider_code = candidate
+        except (ValueError, AttributeError, TypeError):
+            pass
+        detail = f"HTTP {status}" + (f" / {provider_code}" if provider_code else "")
+        raise RuntimeError(f"ElevenLabs через прокси Timeweb: {detail}.") from None
