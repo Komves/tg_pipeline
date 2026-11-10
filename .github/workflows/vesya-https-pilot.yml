@@ -20,7 +20,7 @@ jobs:
           for path in ["ops/install_vesya_https_us.sh","ops/install_vesya_https_ru.sh"]:
               s=pathlib.Path(path).read_text()
               chunks=re.findall(r"<<'PY'\n(.*?)\nPY",s,re.S)
-              assert len(chunks)==2,(path,len(chunks))
+              assert len(chunks)==(3 if path.endswith("_ru.sh") else 2),(path,len(chunks))
               for n,x in enumerate(chunks):
                   ast.parse(x,filename=f"{path} embedded python {n}")
               assert "vesya-https-" in s
