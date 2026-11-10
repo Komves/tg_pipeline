@@ -74,7 +74,7 @@ stream {
 EOF
 
 # This installer is intentionally limited to a fresh Ubuntu Nginx installation.
-if grep -Eq '^[[:space:]]*stream[[:space:]]*\\{' /etc/nginx/nginx.conf; then
+if grep -Eq '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
   echo "REFUSED: an existing stream block was found; do not override it."
   exit 1
 fi
