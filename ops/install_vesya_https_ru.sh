@@ -92,7 +92,8 @@ if [[ "$GOT" != "$US_IP" ]]; then
  echo "ERROR: tunnel not confirmed, got: $GOT (Nginx unchanged)"; exit 1
 fi
 if ! grep -Fq "listen 0.0.0.0:$PUBLIC_PORT ssl;" "$NGINX"; then
- cp -p "$NGINX" "$NGINX.before-https-$(date +%Y%m%d-%H%M%S)"
+ BACKUP="$NGINX.before-https-$(date +%Y%m%d-%H%M%S)"
+ cp -p "$NGINX" "$BACKUP"
  NGINX="$NGINX" PUBLIC_PORT="$PUBLIC_PORT" LOCAL_PORT="$LOCAL_PORT" CERT="$CERT" python3 - <<'PY'
 from pathlib import Path
 import os
@@ -113,10 +114,17 @@ block="""
 i=s.rfind("}");p.write_text(s[:i]+block+s[i:])
 PY
  if ! nginx -t; then
-   echo "ERROR: nginx validation failed. Recover from .before-https backup."
+   echo "ERROR: nginx validation failed; restoring previous configuration"
+   cp -p "$BACKUP" "$NGINX"
+   nginx -t || true
    exit 1
  fi
- systemctl reload nginx
+ if ! systemctl reload nginx; then
+   echo "ERROR: Nginx reload failed; reverting configuration"
+   cp -p "$BACKUP" "$NGINX"
+   nginx -t && systemctl reload nginx || true
+   exit 1
+ fi
 fi
 echo "SUCCESS: Chrome HTTPS ru.paruslegal.ru:$PUBLIC_PORT -> REALITY -> US $GOT"
 echo "External check: curl -x https://ru.paruslegal.ru:$PUBLIC_PORT https://api.ipify.org"
