@@ -1,0 +1,22 @@
+name: Vesya masked tunnel installer bundle validation
+on:
+  push:
+    paths:
+      - ops/vesya_masking_bundle.b64
+      - .github/workflows/vesya-mask-bundle.yml
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode and syntax-check only (no deployment)
+        run: |
+          mkdir -p /tmp/vesya-mask
+          base64 -d ops/vesya_masking_bundle.b64 | tar -xz -C /tmp/vesya-mask
+          bash -n /tmp/vesya-mask/install_vesya_mask_us.sh
+          bash -n /tmp/vesya-mask/install_vesya_mask_ru.sh
+          bash -n /tmp/vesya-mask/rollback_vesya_mask_ru.sh
+          grep -Fq 'FINAL' /tmp/vesya-mask/README.txt || true
+          grep -Fq 'finalRules' /tmp/vesya-mask/install_vesya_mask_us.sh
+          grep -Fq '127.0.0.1:43137' /tmp/vesya-mask/install_vesya_mask_ru.sh
