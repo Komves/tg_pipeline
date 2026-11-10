@@ -1,0 +1,28 @@
+name: RU HTTPS REALITY pilot script validation
+on:
+  push:
+    paths:
+      - ops/install_vesya_https_us.sh
+      - ops/install_vesya_https_ru.sh
+      - .github/workflows/vesya-https-pilot.yml
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Bash and embedded Python
+        run: |
+          bash -n ops/install_vesya_https_us.sh
+          bash -n ops/install_vesya_https_ru.sh
+          python3 - <<'PY'
+          import pathlib,re,ast
+          for path in ["ops/install_vesya_https_us.sh","ops/install_vesya_https_ru.sh"]:
+              s=pathlib.Path(path).read_text()
+              chunks=re.findall(r"<<'PY'\n(.*?)\nPY",s,re.S)
+              assert len(chunks)==2,(path,len(chunks))
+              for n,x in enumerate(chunks):
+                  ast.parse(x,filename=f"{path} embedded python {n}")
+              assert "vesya-https-" in s
+              print("Syntax OK:",path)
+          PY
