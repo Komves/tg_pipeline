@@ -1,0 +1,19 @@
+name: Russian gateway installer syntax
+on:
+  push:
+    paths:
+      - 'ops/install_ru_guest_gateway.sh'
+      - '.github/workflows/ru-gateway-validation.yml'
+  workflow_dispatch:
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax check
+        run: bash -n ops/install_ru_guest_gateway.sh
+      - name: Safety guard presence
+        run: |
+          grep -Fq 'CONFIRM_NEW_RU_VPS' ops/install_ru_guest_gateway.sh
+          grep -Fq 'proxy_ssl_verify on;' ops/install_ru_guest_gateway.sh
+          grep -Fq '186.246.18.103' ops/install_ru_guest_gateway.sh
