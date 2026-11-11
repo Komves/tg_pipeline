@@ -21,7 +21,7 @@ jobs:
           for n in ("us","ru"):
               s=Path("ops/install_vesya_universal_"+n+".sh").read_text()
               py=re.findall(r"<<'PY'\n(.*?)\nPY",s,re.S)
-              assert len(py)==2,(n,len(py))
+              assert len(py)==(3 if n=="ru" else 2),(n,len(py))
               for i,c in enumerate(py):ast.parse(c,filename=n+str(i))
               assert "vesya-universal" in s
               assert "run -test" in s
