@@ -12,7 +12,15 @@ HTTP_UNIT=/etc/systemd/system/vesya-universal-http.service
 XRAY=/opt/vesya-mask/bin/xray
 
 [[ $EUID -eq 0 ]] || { echo "ERROR: root required"; exit 1; }
-ip -4 -o addr show | grep -Fq "$IP/" || { echo "ERROR: wrong server; expected US $IP"; exit 1; }
+# Enumerate every IPv4 address first. Avoid grep -q in a pipefail pipeline:
+# it may close early (SIGPIPE), falsely rejecting a multi-address server.
+IP_ADDRESSES=$(ip -4 -o addr show | awk '{split($4, a, "/"); print a[1]}')
+if ! printf '%s\n' "$IP_ADDRESSES" | grep -Fx "$IP" >/dev/null; then
+  echo "ERROR: wrong server; expected US $IP"
+  echo "Local IPv4 addresses:"
+  printf '%s\n' "$IP_ADDRESSES"
+  exit 1
+fi
 [[ -s "$CFG" && -f "$HTTP_UNIT" && -x "$XRAY" ]] || { echo "ERROR: universal US installation missing"; exit 1; }
 systemctl is-active --quiet "$XUNIT" || { echo "ERROR: universal US Xray not active"; exit 1; }
 systemctl is-active --quiet vesya-universal-http.service || { echo "ERROR: dedicated HTTP 3proxy not active"; exit 1; }
