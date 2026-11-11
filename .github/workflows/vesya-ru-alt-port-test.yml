@@ -1,0 +1,48 @@
+name: Vesya RU alternate HTTPS port validation
+on:
+  push:
+    paths:
+      - ops/add_vesya_ru_alt_https_ports.sh
+      - .github/workflows/vesya-ru-alt-port-test.yml
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell, Python, simulated Nginx edits
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n ops/add_vesya_ru_alt_https_ports.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          import ast,re,os,tempfile,subprocess
+          s=Path("ops/add_vesya_ru_alt_https_ports.sh").read_text()
+          blocks=re.findall(r"<<'PY'\n(.*?)\nPY",s,re.S)
+          assert len(blocks)==2,len(blocks)
+          for b in blocks:ast.parse(b)
+          assert "VESYA_RU_GUARD" in s and "4453,4454,43127,4443" in s
+          assert "proxy_pass 127.0.0.1:43142" in s
+          original="""stream {
+              server {
+                  listen 0.0.0.0:4454 ssl;
+                  ssl_certificate /test/fullchain.pem;
+                  proxy_pass 127.0.0.1:43142;
+              }
+          }
+          """
+          with tempfile.TemporaryDirectory() as root:
+              target=Path(root)/"nginx.conf";target.write_text(original)
+              env={**os.environ,"CONF":str(target),"CERT":"/test"}
+              for block in blocks:
+                  subprocess.run(["python3","-c",block],env=env,check=True)
+              once=target.read_text()
+              assert once.count("listen 0.0.0.0:4454 ssl;")==1
+              assert once.count("proxy_pass 127.0.0.1:43142;")==5
+              for port in (8443,2053,2083,2096):
+                  assert once.count(f"listen 0.0.0.0:{port} ssl;")==1
+              subprocess.run(["python3","-c",blocks[1]],env=env,check=True)
+              assert target.read_text()==once
+          print("PASS: all four HTTPS listeners, idempotence, original gateway unchanged")
+          PY
