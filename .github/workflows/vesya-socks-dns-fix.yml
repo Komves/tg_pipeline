@@ -1,0 +1,29 @@
+name: Vesya SOCKS DNS repair syntax validation
+on:
+  push:
+    paths:
+      - ops/fix_vesya_universal_socks_dns.sh
+      - .github/workflows/vesya-socks-dns-fix.yml
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash and embedded Python syntax validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n ops/fix_vesya_universal_socks_dns.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,ast
+          x=Path("ops/fix_vesya_universal_socks_dns.sh").read_text()
+          parts=re.findall(r"<<'PY'\n(.*?)\nPY",x,re.S)
+          assert len(parts)==2,len(parts)
+          for block in parts:ast.parse(block)
+          assert 'targetStrategy"]="UseIPv4"' in x
+          assert 'personal-socks' in x
+          assert 'systemctl restart "$UNIT"' in x
+          print("PASS: script syntax and DNS strategy verified")
+          PY
