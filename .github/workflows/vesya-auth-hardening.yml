@@ -1,0 +1,27 @@
+name: Vesya authenticated RU proxy hardening validation
+on:
+  push:
+    paths:
+      - ops/harden_vesya_universal_ru.sh
+      - .github/workflows/vesya-auth-hardening.yml
+  workflow_dispatch:
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash, embedded Python and safety checks
+        run: |
+          bash -n ops/harden_vesya_universal_ru.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,ast
+          s=Path("ops/harden_vesya_universal_ru.sh").read_text()
+          chunks=re.findall(r"<<'PY'\n(.*?)\nPY",s,re.S)
+          assert len(chunks)==3,len(chunks)
+          for n,src in enumerate(chunks):
+              ast.parse(src,filename=f"inline{n}")
+          for term in ("PREPARE SUCCESS","ACTIVATION SUCCESS","ROLLBACK OK","nginx -t","auth","limit_conn"):
+              assert term in s,term
+          print("Hardening syntax and safety markers OK")
+          PY
