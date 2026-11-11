@@ -1,0 +1,30 @@
+name: Vesya separate SOCKS5 backend validation
+on:
+  push:
+    paths:
+      - ops/replace_universal_socks_microsocks_with_3proxy.sh
+      - .github/workflows/vesya-new-socks-check.yml
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Bash, embedded Python, and non-destructive guardrails
+        run: |
+          set -euo pipefail
+          bash -n ops/replace_universal_socks_microsocks_with_3proxy.sh
+          python3 - <<'PY'
+          import pathlib,re,ast
+          p=pathlib.Path("ops/replace_universal_socks_microsocks_with_3proxy.sh")
+          src=p.read_text()
+          blocks=re.findall(r"<<'PY'\n(.*?)\nPY",src,re.S)
+          assert len(blocks)==2,len(blocks)
+          for b in blocks:ast.parse(b)
+          assert "socks -p$PORT -i127.0.0.1" in src
+          assert 'ss -lnt' in src and 'curl -4 -fsS' in src
+          assert 'personal-socks' in src and 'rollback()' in src
+          assert "systemctl restart microsocks" not in src
+          assert "systemctl restart vesya-universal-http" not in src
+          print("PASS: script syntax, localhost binding, preflight tests and isolation checked")
+          PY
