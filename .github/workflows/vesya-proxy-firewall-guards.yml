@@ -1,0 +1,32 @@
+name: Vesya proxy firewall guard validation
+on:
+  push:
+    paths:
+      - ops/guard_vesya_ru_trial.sh
+      - ops/rollback_vesya_ru_guard.sh
+      - ops/guard_vesya_us_trial.sh
+      - ops/rollback_vesya_us_guard.sh
+      - .github/workflows/vesya-proxy-firewall-guards.yml
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and safety invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in ops/guard_vesya_{ru,us}_trial.sh ops/rollback_vesya_{ru,us}_guard.sh; do
+            bash -n "$script"
+            ! grep -E 'iptables[^#]* -[FPX] (INPUT|OUTPUT|FORWARD)' "$script"
+            ! grep -E 'iptables[^#]* -P (INPUT|OUTPUT|FORWARD)' "$script"
+          done
+          grep -Fq '129.101.115.213' ops/guard_vesya_ru_trial.sh
+          grep -Fq '129.101.115.213' ops/guard_vesya_us_trial.sh
+          grep -Fq '186.246.18.103' ops/guard_vesya_us_trial.sh
+          grep -Fq '4453,4454,43127,4443' ops/guard_vesya_ru_trial.sh
+          grep -Fq '24446' ops/guard_vesya_us_trial.sh
+          grep -Fq -- '--syn' ops/guard_vesya_ru_trial.sh
+          grep -Fq -- '--syn' ops/guard_vesya_us_trial.sh
+          echo "PASS: syntax and scoped rules verified; no firewall changes made"
