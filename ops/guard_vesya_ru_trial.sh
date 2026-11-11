@@ -36,7 +36,7 @@ rollback() {
 trap 'echo "ERROR: Guard setup failed; removing trial rules"; rollback' ERR
 # Limit ONLY new connections: throughput/large file transfers are not throttled.
 # 80 simultaneous TCP connections and a generous initial burst of 100 new SYNs per source IP.
-iptables -w -A "$CHAIN" -m connlimit --connlimit-above 80 --connlimit-mask 32 -j REJECT --reject-with tcp-reset
+iptables -w -A "$CHAIN" -p tcp -m connlimit --connlimit-above 80 --connlimit-mask 32 -j REJECT --reject-with tcp-reset
 iptables -w -A "$CHAIN" -m hashlimit --hashlimit-above 60/minute --hashlimit-burst 100 \
   --hashlimit-mode srcip --hashlimit-name vesya_ru_new_syn -j DROP
 iptables -w -A "$CHAIN" -j RETURN
