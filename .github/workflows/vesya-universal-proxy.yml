@@ -1,0 +1,30 @@
+name: Vesya Universal proxy installer validation
+on:
+  push:
+    paths:
+      - ops/install_vesya_universal_us.sh
+      - ops/install_vesya_universal_ru.sh
+      - .github/workflows/vesya-universal-proxy.yml
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate both server installers (no deployment)
+        run: |
+          bash -n ops/install_vesya_universal_us.sh
+          bash -n ops/install_vesya_universal_ru.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,ast
+          for n in ("us","ru"):
+              s=Path("ops/install_vesya_universal_"+n+".sh").read_text()
+              py=re.findall(r"<<'PY'\n(.*?)\nPY",s,re.S)
+              assert len(py)==2,(n,len(py))
+              for i,c in enumerate(py):ast.parse(c,filename=n+str(i))
+              assert "vesya-universal" in s
+              assert "run -test" in s
+              assert "24446" in s
+              print(n.upper(),": shell + embedded Python syntax OK")
+          PY
