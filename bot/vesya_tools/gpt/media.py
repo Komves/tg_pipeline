@@ -53,8 +53,9 @@ async def handle_gpt_media(message) -> bool:
             return True
 
         # Owner is notified and sent original BEFORE the user is provisioned.
-        await _notify_owner(
-            message.bot,
+        try:
+            await _notify_owner(
+                message.bot,
             f"Новая квитанция по консультации GPT.\nTelegram ID: {uid}\n"
             f"Сумма: {amount} ₽\n"
             f"Дата: {str(extracted.get('date') or 'не указана')[:50]}\n"
@@ -64,10 +65,15 @@ async def handle_gpt_media(message) -> bool:
             f"Квитанция: {'принята' if accepted else 'нужна ручная проверка'}.\n"
             "Поступление ещё не сверено! Чек НПД оформить вручную."
         )
-        if message.photo:
-            await message.bot.send_photo(owner_id(), item.file_id)
-        else:
-            await message.bot.send_document(owner_id(), item.file_id)
+            if message.photo:
+                await message.bot.send_photo(owner_id(), item.file_id)
+            else:
+                await message.bot.send_document(owner_id(), item.file_id)
+        except Exception:
+            # Do not issue access if the mandatory owner notification failed.
+            registry().set_stage(uid, "receipt_review")
+            await message.answer("Квитанция сохранена, но уведомить владельца не удалось. Повторно платить не нужно.")
+            return True
         if accepted:
             await message.answer("Квитанция принята. Поступление и чек НПД владелец сверит отдельно. Подготавливаю GPT.")
             await _provision(message, uid)
