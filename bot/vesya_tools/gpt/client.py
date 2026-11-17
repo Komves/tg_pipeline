@@ -1,8 +1,9 @@
 """mTLS-only client for Novosibirsk's independent GPT account API.
 
 Not used by the running Vesya bot until explicitly wired and deployed.
-All operations require a HTTPS endpoint, a pinned CA file, a client certificate,
-a client private key, and a separate application token.
+All operations require a HTTPS endpoint, a client certificate, a client
+private key, and a separate application token. Server certificate verification
+uses system trust (Let's Encrypt); a CA bundle override is optional.
 """
 from __future__ import annotations
 
@@ -43,7 +44,7 @@ class GPTAgentConfig:
             raise ValueError("GPT agent requires a dedicated HTTPS host:port endpoint")
         if not self.token or len(self.token) < 32:
             raise ValueError("GPT agent token is missing or too short")
-        if not all((self.ca_file, self.client_cert_file, self.client_key_file)):
+        if not all((self.client_cert_file, self.client_key_file)):
             raise ValueError("GPT agent mTLS certificate paths are required")
 
     @classmethod
@@ -63,12 +64,11 @@ class GPTAgentClient:
 
     def _tls_context(self) -> ssl.SSLContext:
         for path in (
-            self.config.ca_file, self.config.client_cert_file,
-            self.config.client_key_file,
+            self.config.client_cert_file, self.config.client_key_file,
         ):
             if not Path(path).is_file():
                 raise GPTAgentError("GPT agent mTLS credentials are unavailable")
-        context = ssl.create_default_context(cafile=self.config.ca_file)
+        # The server uses a public Let's Encrypt certificate. The private\n        # Vesya client CA is trusted by Nginx, not by the client for the server.\n        context = ssl.create_default_context(cafile=self.config.ca_file or None)
         context.check_hostname = True
         context.verify_mode = ssl.CERT_REQUIRED
         context.load_cert_chain(
