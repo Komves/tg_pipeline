@@ -68,7 +68,9 @@ class GPTAgentClient:
         ):
             if not Path(path).is_file():
                 raise GPTAgentError("GPT agent mTLS credentials are unavailable")
-        # The server uses a public Let's Encrypt certificate. The private\n        # Vesya client CA is trusted by Nginx, not by the client for the server.\n        context = ssl.create_default_context(cafile=self.config.ca_file or None)
+        # Server has a public Let's Encrypt certificate; system CA trust is correct.
+        # Nginx's private client CA is NOT used for verifying the TLS server.
+        context = ssl.create_default_context(cafile=self.config.ca_file or None)
         context.check_hostname = True
         context.verify_mode = ssl.CERT_REQUIRED
         context.load_cert_chain(
