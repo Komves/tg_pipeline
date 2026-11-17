@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-USERS_PATH = Path(os.getenv("GPT_AGENT_USERS_PATH", "/etc/squid-gpt/users"))
+USERS_PATH = Path(os.getenv("GPT_AGENT_USERS_PATH", "/var/lib/squid-gpt-agent/projection/users"))
 DB_PATH = Path(os.getenv("GPT_AGENT_DB_PATH", "/var/lib/squid-gpt-agent/accounts.sqlite3"))
 TOKEN_PATH = Path(os.getenv("GPT_AGENT_TOKEN_PATH", "/etc/squid-gpt-agent/token"))
 HOST = "127.0.0.1"  # Never bind this prototype on a public interface.
@@ -50,10 +50,28 @@ class AccountManager:
         self.users_path = Path(users_path)
         self.db_path = Path(db_path)
         self._lock = threading.RLock()
+        self._init_projection()
         self._init_db()
         # The committed registry is authoritative; repair interrupted file writes.
         with self._lock, self._file_lock(), closing(self._connect()) as db:
             self._reconcile_file(db)
+
+    def _init_projection(self):
+        """Create an agent-owned staging file, NOT Squid's live htpasswd."""
+        self.users_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            fd = os.open(
+                self.users_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600
+            )
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+        if self.users_path.is_symlink():
+            raise RuntimeError("projection file must not be symlink")
+        st = self.users_path.stat()
+        if st.st_uid != os.geteuid() or not stat.S_ISREG(st.st_mode):
+            raise RuntimeError("projection must be owned by agent and regular")
 
     def _connect(self):
         db = sqlite3.connect(self.db_path, timeout=15)
@@ -92,7 +110,7 @@ class AccountManager:
         return self.users_path.read_text(encoding="ascii"), st
 
     def _write_users(self, contents: str, original: os.stat_result):
-        """Atomic write to only /etc/squid-gpt/users; preserve user and group."""
+        """Atomic write to the unprivileged agent-owned projection."""
         if self.users_path.is_symlink():
             raise RuntimeError("users file changed to symlink")
         fd, tmp = tempfile.mkstemp(prefix=".gpt-users-", dir=self.users_path.parent)
@@ -101,8 +119,8 @@ class AccountManager:
                 f.write(contents)
                 f.flush()
                 os.fsync(f.fileno())
-            os.chown(tmp, original.st_uid, original.st_gid)
-            os.chmod(tmp, 0o640)
+            # Agent owns this private projection; no privileges to the live Squid file.
+            os.chmod(tmp, 0o600)
             os.replace(tmp, self.users_path)
             dirfd = os.open(self.users_path.parent, os.O_RDONLY | os.O_DIRECTORY)
             try:
