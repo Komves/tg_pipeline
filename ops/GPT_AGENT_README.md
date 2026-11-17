@@ -56,9 +56,9 @@ Connect the prepared mTLS client in bot/vesya_tools/gpt to a GPT-specific custom
 ## Prepared mTLS gateway and Vesya client (not deployed)
 
 - ops/gpt_mtls_gateway.nginx.example is an intentionally invalid **example**, with REVIEW_NEW_PORT / MANAGEMENT_ONLY_FQDN placeholders. Do not include it in a running Nginx configuration.
-- bot/vesya_tools/gpt/client.py uses verified TLS server identity, a dedicated CA trust file, a Render client certificate+private key, an application token, no redirects, no inherited proxy environment, and sanitized errors.
+- bot/vesya_tools/gpt/client.py uses verified TLS server identity (system public CA trust for the Let's Encrypt server certificate), a Render client certificate+private key, an application token, no redirects, no inherited proxy environment, and sanitized errors. GPT_AGENT_CA_FILE is an optional public-server-CA override, not the Nginx private client CA.
 - The agent binds only to 127.0.0.1:43143. It does not open a public HTTP port; the separate HTTPS/mTLS gateway must be reviewed and deployed independently.
-- Render credentials should be supplied as restricted secret files, never committed. Expected variables: GPT_AGENT_API_URL, GPT_AGENT_API_TOKEN, GPT_AGENT_CA_FILE, GPT_AGENT_CLIENT_CERT_FILE, GPT_AGENT_CLIENT_KEY_FILE.
+- Render credentials should be supplied as restricted secret files, never committed. Expected variables: GPT_AGENT_API_URL, GPT_AGENT_API_TOKEN, GPT_AGENT_CLIENT_CERT_FILE, GPT_AGENT_CLIENT_KEY_FILE. Optionally GPT_AGENT_CA_FILE for a public server CA bundle override. The private client CA certificate stays at Nginx. Never upload the private client CA key to Render.
 - Do not reuse credentials for the older guest-proxy agent. No Vesya message handlers call the new client yet.
 - Before enabling a public management endpoint: verify port availability; procure a suitable DNS name and server certificate; create a private client CA and issue a tightly scoped client certificate; apply request limits; verify TLS and token rejection tests; and inspect logs for credential leakage.
 - The new agent requires carefully sandboxed permissions to replace only /etc/squid-gpt/users while maintaining root:proxy ownership/mode. Running the Python API as root or giving it broad filesystem permissions is **not approved** by this prototype.
