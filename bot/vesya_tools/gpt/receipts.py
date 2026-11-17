@@ -40,10 +40,14 @@ def _extract_sync(raw: bytes, filename: str, mime: str) -> dict:
         ],
     )
     raw_text = (response.choices[0].message.content or "").strip()
-    if raw_text.startswith("json\n"):
-        raw_text = raw_text[5:]
-    if raw_text.startswith("'''"):
-        raw_text = raw_text.strip("' \n")
+    # Some vision models wrap JSON with Markdown fences.
+    fence = chr(96) * 3
+    if raw_text.startswith(fence):
+        raw_text = raw_text[len(fence):].strip()
+        if raw_text.startswith("json"):
+            raw_text = raw_text[4:].strip()
+        if raw_text.endswith(fence):
+            raw_text = raw_text[:-len(fence)].strip()
     result = json.loads(raw_text)
     if not isinstance(result, dict):
         raise ValueError("Invalid receipt extraction")
