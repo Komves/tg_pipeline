@@ -82,7 +82,7 @@ def _read_manifest(path: Path) -> set[str]:
 
 def _store_manifest(path: Path, names: set[str]):
     payload = (json.dumps(sorted(names), separators=(",", ":")) + "\n").encode("ascii")
-    _atomic_write(path, payload, uid=0, gid=0, mode=0o600)
+    _atomic_write(path, payload, uid=os.geteuid(), gid=os.getegid(), mode=0o600)
 
 
 def sync_accounts(projection: Path, target: Path, state_dir: Path) -> bool:
