@@ -7352,6 +7352,10 @@ async def main() -> None:
     asyncio.create_task(gmail_poll_loop())
     asyncio.create_task(parus_contact_loop())
     asyncio.create_task(calendar_loop(bot, CALENDAR_STORAGE))
+    # Startup read-only health check: no user creation and no startup failure.
+    if os.getenv("GPT_AGENT_API_URL"):
+        from vesya_tools.gpt.check_connection import main as gpt_check_connection
+        asyncio.create_task(gpt_check_connection())
     await dp.start_polling(bot)
 
 @dp.callback_query(F.data.startswith("sec:"))
