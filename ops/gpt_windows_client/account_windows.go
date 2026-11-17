@@ -65,8 +65,7 @@ func validAccount(a account)bool{
  for _,r:=range a.Username[4:]{
   if !strings.ContainsRune("0123456789abcdef",r){return false}
  }
- return len(a.Password)>=16&&len(a.Password)<=256&&!strings.ContainsAny(a.Password,"
-")
+ return len(a.Password)>=16&&len(a.Password)<=256&&!strings.ContainsAny(a.Password,"\r\n")
 }
 func readAccount(base string)(account,error){
  var a account
@@ -123,11 +122,7 @@ func verifyAccount(a account)error{
  defer connection.Close()
  _=connection.SetDeadline(time.Now().Add(12*time.Second))
  authorization:=base64.StdEncoding.EncodeToString([]byte(a.Username+":"+a.Password))
- request:=fmt.Sprintf("CONNECT chatgpt.com:443 HTTP/1.1
-Host: chatgpt.com:443
-Proxy-Authorization: Basic %s
-
-",authorization)
+ request:=fmt.Sprintf("CONNECT chatgpt.com:443 HTTP/1.1\r\nHost: chatgpt.com:443\r\nProxy-Authorization: Basic %s\r\n\r\n",authorization)
  if _,err=io.WriteString(connection,request);err!=nil{return errors.New("Нет связи с прокси GPT")}
  response,err:=http.ReadResponse(bufio.NewReader(connection),&http.Request{Method:http.MethodConnect})
  if err!=nil{return errors.New("Нет ответа от прокси GPT")}
