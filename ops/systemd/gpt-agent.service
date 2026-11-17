@@ -10,7 +10,7 @@ Group=gpt-agent
 Environment=GPT_AGENT_USERS_PATH=/var/lib/squid-gpt-agent/projection/users
 Environment=GPT_AGENT_DB_PATH=/var/lib/squid-gpt-agent/accounts.sqlite3
 Environment=GPT_AGENT_TOKEN_PATH=/etc/squid-gpt-agent/token
-Environment=GPT_AGENT_PORT=43141
+Environment=GPT_AGENT_PORT=43143
 ExecStart=/usr/bin/python3 /opt/vesya-gpt-agent/gpt_proxy_agent.py
 Restart=on-failure
 RestartSec=3s
