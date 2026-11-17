@@ -1,0 +1,12 @@
+# REVIEW ONLY: periodic recovery if a FS event was missed
+[Unit]
+Description=Periodic GPT account projection reconciliation
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=30s
+Unit=gpt-squid-sync.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

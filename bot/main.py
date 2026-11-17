@@ -37,6 +37,12 @@ import c_youtube_fetcher
 # =========================
 # 🧭 VESYA ROUTE TRACE
 # =========================
+def _redact_gpt_tokens(value):
+    if value is None:
+        return value
+    return re.sub(r"(?i)GPT-[A-Z0-9-]{8,45}", "[GPT_SECRET_REDACTED]", str(value))
+
+
 def trace(step: str, message=None, extra=None):
     try:
         text = getattr(message, "text", None) if message else None
@@ -44,7 +50,7 @@ def trace(step: str, message=None, extra=None):
         chat_id = getattr(chat, "id", None) if chat else None
 
         print(
-            f"[TRACE] {step} | chat={chat_id} | text={text!r} | extra={extra}",
+            f"[TRACE] {step} | chat={chat_id} | text={_redact_gpt_tokens(text)!r} | extra={_redact_gpt_tokens(extra)}",
             flush=True
         )
     except Exception:
@@ -4797,6 +4803,10 @@ async def _send_content(message: Message, *, user_id: int, ingest_hours_n: int |
 
 @dp.message(F.photo)
 async def on_photo(message: Message) -> None:
+    if _chat_allowed(message):
+        from vesya_tools.gpt.media import handle_gpt_media
+        if await handle_gpt_media(message):
+            return
     print("[IMG] photo handler triggered", flush=True)
 
     if _relay_is_armed(message):
@@ -4926,6 +4936,9 @@ async def on_photo(message: Message) -> None:
 @dp.message(F.document)
 async def on_document(message: Message) -> None:
     if not _chat_allowed(message):
+        return
+    from vesya_tools.gpt.media import handle_gpt_media
+    if await handle_gpt_media(message):
         return
 
     if _relay_is_armed(message):
@@ -5853,14 +5866,20 @@ async def cmd_parus_narration_samples(message: Message) -> None:
 
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
-    print("[TYPE DEBUG]", type(message.text), message.text)
+    # Route sensitive GPT codes before legacy raw-message debug tracing.
+    # The existing /proxy flow remains below and is never modified.
+    if _chat_allowed(message):
+        from vesya_tools.gpt.handler import handle_gpt_message
+        if await handle_gpt_message(message, message.text or "", is_admin=_is_admin_user(message)):
+            return
+    print("[TYPE DEBUG]", type(message.text), _redact_gpt_tokens(message.text))
 
     trace("ENTER_HANDLER", message)
     # =========================
     # 🧪 FULL DEBUG LAYER (SAFE)
     # =========================
     print("\n[DEBUG RAW MESSAGE]")
-    print("text:", message.text)
+    print("text:", _redact_gpt_tokens(message.text))
     print("chat_id:", message.chat.id)
     print("user_id:", message.from_user.id if message.from_user else None)
     print("chat_type:", message.chat.type)
@@ -5881,7 +5900,7 @@ async def vesya_handler(message: Message) -> None:
         return
 
     text = (message.text or "").strip()
-    print("[DEBUG NORMALIZED TEXT]:", text)
+    print("[DEBUG NORMALIZED TEXT]:", _redact_gpt_tokens(text))
     orig_text = text
 
     chat_id = int(message.chat.id)
@@ -5914,7 +5933,7 @@ async def vesya_handler(message: Message) -> None:
     print(
         "[TEXT_DEBUG] "
         f"chat_type={message.chat.type!r} "
-        f"text={text!r} "
+        f"text={_redact_gpt_tokens(text)!r} "
         f"forward_origin={getattr(message, 'forward_origin', None)!r} "
         f"forward_date={getattr(message, 'forward_date', None)!r} "
         f"forward_from={getattr(message, 'forward_from', None)!r} "
@@ -7333,6 +7352,10 @@ async def main() -> None:
     asyncio.create_task(gmail_poll_loop())
     asyncio.create_task(parus_contact_loop())
     asyncio.create_task(calendar_loop(bot, CALENDAR_STORAGE))
+    # Startup read-only health check: no user creation and no startup failure.
+    if os.getenv("GPT_AGENT_API_URL"):
+        from vesya_tools.gpt.check_connection import main as gpt_check_connection
+        asyncio.create_task(gpt_check_connection())
     await dp.start_polling(bot)
 
 @dp.callback_query(F.data.startswith("sec:"))
@@ -7383,6 +7406,12 @@ async def on_parus_contact_send(cb):
         reply_markup=_parus_confirm_keyboard(contact_id, str(contact["draft_text"])),
     )
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("gpt:"))
+async def on_gpt_consultation_callback(cb):
+    from vesya_tools.gpt.handler import handle_gpt_callback
+    await handle_gpt_callback(cb, is_admin=_is_admin_user(cb))
 
 
 @dp.callback_query(F.data.startswith("parus_custom:"))

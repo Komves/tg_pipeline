@@ -1,0 +1,34 @@
+# REVIEW ONLY: never install without preflight and approval
+[Unit]
+Description=Vesya GPT account API (isolated, unprivileged)
+After=network.target
+
+[Service]
+Type=simple
+User=gpt-agent
+Group=gpt-agent
+Environment=GPT_AGENT_USERS_PATH=/var/lib/squid-gpt-agent/projection/users
+Environment=GPT_AGENT_DB_PATH=/var/lib/squid-gpt-agent/accounts.sqlite3
+Environment=GPT_AGENT_TOKEN_PATH=/etc/squid-gpt-agent/token
+Environment=GPT_AGENT_PORT=43143
+ExecStart=/usr/bin/python3 /opt/vesya-gpt-agent/gpt_proxy_agent.py
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadWritePaths=/var/lib/squid-gpt-agent
+CapabilityBoundingSet=
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+# REVIEW ONLY — NGINX STREAM SERVER BLOCK, NOT HTTP.
+# The live /etc/nginx/ru-guest-gateway.conf is included by nginx.conf
+# inside stream { ... }. Do NOT insert into http { ... } or enable yet.
+# Requires trusted private client CA before nginx -t can pass.
+# Keep 443, 4453, 4454, 4455, 3132, 3133 and Xray entirely unchanged.
+#
+# Two layers of authentication:
+# 1. TLS client certificate verified by Nginx stream.
+# 2. X-GPT-Agent-Token checked by loopback-only Python GPT API.
+# The stream module forwards TCP/TLS-terminated HTTP bytes transparently.
+# The Python API rejects unknown methods and paths.
+server {
+    listen 0.0.0.0:4460 ssl;
+
+    ssl_certificate /etc/letsencrypt/live/ru.paruslegal.ru/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ru.paruslegal.ru/privkey.pem;
+
+    # Must be a private CA issued solely for Vesya management.
+    ssl_client_certificate /etc/nginx/gpt-mtls/client-ca.pem;
+    ssl_verify_client on;
+    ssl_verify_depth 1;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # No public access without verified client certificate.
+    proxy_pass 127.0.0.1:43143;
+    proxy_connect_timeout 3s;
+    proxy_timeout 20s;
+
+    access_log off;
+}
