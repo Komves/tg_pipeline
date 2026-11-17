@@ -5,7 +5,7 @@
 ## New isolated architecture
 
 - Vesya on Render (Oregon) calls a dedicated **HTTPS + mTLS** gateway, with an additional private X-GPT-Agent-Token.
-- Gateway: **as-yet-unselected** management hostname and new port. ops/gpt_mtls_gateway.nginx.example contains intentionally invalid placeholders. It forwards only the six allowlisted account operations to 127.0.0.1:43141.
+- Gateway: **as-yet-unselected** management hostname and new port. ops/gpt_mtls_gateway.nginx.example contains intentionally invalid placeholders. It forwards only the six allowlisted account operations to 127.0.0.1:43143.
 - gpt-agent.service: **unprivileged** OS user gpt-agent. It writes only to its private SQLite DB and an account projection in /var/lib/squid-gpt-agent/projection/users. It CANNOT write /etc/squid-gpt/users.
 - gpt-squid-sync.path monitors changes to that projection; gpt-squid-sync.timer periodically reconciles if a filesystem event was missed. They trigger gpt-squid-sync.service.
 - gpt-squid-sync.service: **offline** root-owned oneshot with no network access. It validates only gpt_[16 hexadecimal digits] accounts with bcrypt hashes. It updates only /etc/squid-gpt/users, preserves root:proxy 0640, and preserves unknown accounts including gpt-test.
@@ -21,7 +21,7 @@ Run ops/gpt_preflight_readonly.sh on Novosibirsk with sufficient permissions and
 
 Verify:
 - Nginx GPT port 4454 routes to Squid GPT 3133, existing Chrome port 4455 stays on Squid 3132. Do not edit 443 or 4453.
-- Proposed loopback port 43141 is free; an independently selected new management TLS port is free.
+- Proposed loopback port 43143 is free; an independently selected new management TLS port is free.
 - /etc/squid-gpt/users is still root:proxy mode 0640, and Squid 7.7 reloads authenticator credentials as expected.
 - Python3 and htpasswd exist. The systemd version and sandbox capabilities are sufficient.
 - Before any activation, new dedicated user gpt-agent and directories are provisioned securely and back-ups exist.
