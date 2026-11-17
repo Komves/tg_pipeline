@@ -6,7 +6,8 @@ NOT DEPLOYED: review service privileges and private channel before production.
 """
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
+import fcntl
 import hmac
 import json
 import os
@@ -50,6 +51,9 @@ class AccountManager:
         self.db_path = Path(db_path)
         self._lock = threading.RLock()
         self._init_db()
+        # The committed registry is authoritative; repair interrupted file writes.
+        with self._lock, self._file_lock(), closing(self._connect()) as db:
+            self._reconcile_file(db)
 
     def _connect(self):
         db = sqlite3.connect(self.db_path, timeout=15)
@@ -142,80 +146,113 @@ class AccountManager:
             "status": row["status"],
         }
 
+    @contextmanager
+    def _file_lock(self):
+        """Cross-process lock for registry+htpasswd writes on this GPT-only agent."""
+        path = self.db_path.parent / ".accounts.lock"
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def _reconcile_file(self, db: sqlite3.Connection):
+        """Recover file projection from committed SQLite after a process crash.
+
+        Preserve all non-agent entries, including the existing gpt-test user.
+        """
+        original, st = self._read_users()
+        updated = original
+        for row in db.execute("SELECT username, password_hash, status FROM accounts"):
+            updated = self._set_entry(
+                updated, row["username"],
+                row["password_hash"] if row["status"] == "active" else None,
+            )
+        if updated != original:
+            self._write_users(updated, st)
+
     def dispatch(self, action: str, payload: dict) -> dict:
-        if action not in {"create_user", "get_user_status", "disable_user", "enable_user"}:
+        if action not in {
+            "create_user", "get_user_status", "disable_user", "enable_user",
+            "rotate_password", "get_service_status",
+        }:
             raise ApiError(404, "unknown action")
+        if action == "get_service_status":
+            with self._lock, self._file_lock(), closing(self._connect()) as db:
+                self._reconcile_file(db)
+                count = db.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+                return {"status": "ok", "managed_accounts": count}
         uid = telegram_id(payload.get("telegram_id"))
-        with self._lock, closing(self._connect()) as db, db:
-            db.execute("BEGIN IMMEDIATE")
+        with self._lock, self._file_lock(), closing(self._connect()) as db:
+            # Reconcile *before* processing a retried request following a crash.
+            self._reconcile_file(db)
             row = db.execute(
                 "SELECT * FROM accounts WHERE telegram_id=?", (uid,)
             ).fetchone()
             if action == "get_user_status":
                 return self._public(row) if row else {"status": "not_found"}
+            if action == "create_user" and row:
+                return {**self._public(row), "created": False}
+            if action != "create_user" and row is None:
+                raise ApiError(404, "user not found")
 
+            now = int(time.time())
+            initial_password = None
+            db.execute("BEGIN IMMEDIATE")
             if action == "create_user":
-                if row:
-                    # Retried requests must not reissue the plaintext password.
-                    return {**self._public(row), "created": False}
-                contents, st = self._read_users()
+                original, _ = self._read_users()
                 username = "gpt_" + secrets.token_hex(8)
-                while db.execute(
-                    "SELECT 1 FROM accounts WHERE username=?", (username,)
-                ).fetchone() or any(
-                    line.startswith(username + ":") for line in contents.splitlines()
+                while db.execute("SELECT 1 FROM accounts WHERE username=?", (username,)).fetchone() or any(
+                    line.startswith(username + ":") for line in original.splitlines()
                 ):
                     username = "gpt_" + secrets.token_hex(8)
-                password = secrets.token_urlsafe(24)
-                password_hash = self._hash_password(password, username)
-                now = int(time.time())
+                initial_password = secrets.token_urlsafe(24)
+                hashed = self._hash_password(initial_password, username)
                 db.execute(
                     """INSERT INTO accounts
                        (telegram_id, username, password_hash, status, created_at, updated_at)
                        VALUES (?, ?, ?, 'active', ?, ?)""",
-                    (uid, username, password_hash, now, now)
+                    (uid, username, hashed, now, now),
                 )
+                outcome = "created"
+            elif action == "rotate_password":
+                username = row["username"]
+                initial_password = secrets.token_urlsafe(24)
+                hashed = self._hash_password(initial_password, username)
                 db.execute(
-                    "INSERT INTO audit (timestamp, action, telegram_id, outcome) VALUES (?, ?, ?, ?)",
-                    (now, action, uid, "created")
+                    "UPDATE accounts SET password_hash=?, updated_at=? WHERE telegram_id=?",
+                    (hashed, now, uid),
                 )
-                self._write_users(self._set_entry(contents, username, password_hash), st)
-                try:
-                    db.commit()
-                except Exception:
-                    self._write_users(contents, st)
-                    raise
-                return {
-                    "telegram_id": uid, "username": username, "status": "active",
-                    "created": True, "initial_password": password,
-                }
-
-            if row is None:
-                raise ApiError(404, "user not found")
-            desired = "disabled" if action == "disable_user" else "active"
-            if row["status"] == desired:
-                return self._public(row)
-            contents, st = self._read_users()
-            updated = self._set_entry(
-                contents, row["username"],
-                row["password_hash"] if desired == "active" else None,
-            )
-            now = int(time.time())
-            db.execute(
-                "UPDATE accounts SET status=?, updated_at=? WHERE telegram_id=?",
-                (desired, now, uid)
-            )
+                outcome = "rotated"
+            else:
+                username = row["username"]
+                desired = "disabled" if action == "disable_user" else "active"
+                if row["status"] == desired:
+                    db.rollback()
+                    return self._public(row)
+                db.execute(
+                    "UPDATE accounts SET status=?, updated_at=? WHERE telegram_id=?",
+                    (desired, now, uid),
+                )
+                outcome = desired
             db.execute(
                 "INSERT INTO audit (timestamp, action, telegram_id, outcome) VALUES (?, ?, ?, ?)",
-                (now, action, uid, desired)
+                (now, action, uid, outcome),
             )
-            self._write_users(updated, st)
-            try:
-                db.commit()
-            except Exception:
-                self._write_users(contents, st)
-                raise
-            return {"telegram_id": uid, "username": row["username"], "status": desired}
+            # Commit first. If process crashes before file update, next request
+            # or service startup deterministically reprojects from SQLite.
+            db.commit()
+            self._reconcile_file(db)
+            result = self._public(
+                db.execute("SELECT * FROM accounts WHERE telegram_id=?", (uid,)).fetchone()
+            )
+            if action == "create_user":
+                result["created"] = True
+            if initial_password is not None:
+                result["initial_password"] = initial_password
+            return result
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -247,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(401, {"error": "unauthorized"})
             return
         match = re.fullmatch(
-            r"/v1/(create_user|get_user_status|disable_user|enable_user)", self.path
+            r"/v1/(create_user|get_user_status|disable_user|enable_user|rotate_password|get_service_status)", self.path
         )
         if not match:
             self._reply(404, {"error": "not found"})
