@@ -144,8 +144,8 @@ async def _register(message):
 
 
 async def _admin(message, text: str, is_admin: bool):
-    if not is_admin:
-        await message.answer("Команда только для администратора.")
+    if not is_admin or int(message.from_user.id) != owner_id():
+        await message.answer("Команда только для владельца.")
         return
     parts = text.strip().split()
     command = parts[0].split("@", 1)[0].lower()
@@ -223,7 +223,7 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
         await callback.answer("Только личный чат", show_alert=True)
         return True
     if data.startswith("gpt:issue:"):
-        if not is_admin:
+        if not is_admin or int(callback.from_user.id) != owner_id():
             await callback.answer("Нет доступа", show_alert=True)
             return True
         try:
