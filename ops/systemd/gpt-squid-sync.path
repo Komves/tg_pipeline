@@ -1,0 +1,10 @@
+# REVIEW ONLY: watches staged projection directory
+[Unit]
+Description=Watch isolated GPT account projection
+
+[Path]
+PathChanged=/var/lib/squid-gpt-agent/projection
+Unit=gpt-squid-sync.service
+
+[Install]
+WantedBy=multi-user.target
