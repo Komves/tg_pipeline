@@ -4,7 +4,7 @@
 
 ## Scope
 
-The Python file ops/gpt_proxy_agent.py is a **loopback-only** HTTP service on proposed port 43141. It manages accounts in **only** the dedicated GPT Squid at 127.0.0.1:3133:
+The Python file ops/gpt_proxy_agent.py is a **loopback-only** HTTP service on proposed port 43143. It manages accounts in **only** the dedicated GPT Squid at 127.0.0.1:3133:
 
 - htpasswd users file: /etc/squid-gpt/users (existing root:proxy 0640)
 - private SQLite registry: /var/lib/squid-gpt-agent/accounts.sqlite3
@@ -38,7 +38,7 @@ The tests use a temporary directory. They do not contact live servers.
 
 Before authorizing a deployment, confirm:
 
-1. The real Vesya hosting/service in Render and a secure channel to Novosibirsk. Do not publicly expose port 43141. Use a separately authenticated and TLS-protected internal tunnel or a strictly isolated gateway after review.
+1. The real Vesya hosting/service in Render and a secure channel to Novosibirsk. Do not publicly expose port 43143. Use a separately authenticated and TLS-protected internal tunnel or a strictly isolated gateway after review.
 2. A dedicated systemd unit with restrictive sandboxing and **only** necessary write access to /etc/squid-gpt/users and the new registry. Vesya must never receive SSH/root access.
 3. A backup of GPT-only files, correct permissions, and htpasswd/bcrypt compatibility on Novosibirsk.
 4. That squid-gpt at 3133 observes file changes, including authentication caches; disabling an account may **not** immediately close existing HTTPS CONNECT tunnels.
@@ -57,7 +57,7 @@ Connect the prepared mTLS client in bot/vesya_tools/gpt to a GPT-specific custom
 
 - ops/gpt_mtls_gateway.nginx.example is an intentionally invalid **example**, with REVIEW_NEW_PORT / MANAGEMENT_ONLY_FQDN placeholders. Do not include it in a running Nginx configuration.
 - bot/vesya_tools/gpt/client.py uses verified TLS server identity, a dedicated CA trust file, a Render client certificate+private key, an application token, no redirects, no inherited proxy environment, and sanitized errors.
-- The agent binds only to 127.0.0.1:43141. It does not open a public HTTP port; the separate HTTPS/mTLS gateway must be reviewed and deployed independently.
+- The agent binds only to 127.0.0.1:43143. It does not open a public HTTP port; the separate HTTPS/mTLS gateway must be reviewed and deployed independently.
 - Render credentials should be supplied as restricted secret files, never committed. Expected variables: GPT_AGENT_API_URL, GPT_AGENT_API_TOKEN, GPT_AGENT_CA_FILE, GPT_AGENT_CLIENT_CERT_FILE, GPT_AGENT_CLIENT_KEY_FILE.
 - Do not reuse credentials for the older guest-proxy agent. No Vesya message handlers call the new client yet.
 - Before enabling a public management endpoint: verify port availability; procure a suitable DNS name and server certificate; create a private client CA and issue a tightly scoped client certificate; apply request limits; verify TLS and token rejection tests; and inspect logs for credential leakage.
