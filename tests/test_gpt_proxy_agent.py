@@ -68,3 +68,51 @@ class AccountTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CrashRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.users = root / "users"
+        self.users.write_text("gpt-test:hashunchanged\n")
+        self.db_path = root / "state.sqlite3"
+        self.manager = module.AccountManager(self.users, self.db_path)
+
+    def test_crash_after_committed_create_recovers_on_restart(self):
+        original = self.manager._write_users
+        failure = {"count": 0}
+        def fail_once(*args):
+            if failure["count"] == 0:
+                failure["count"] += 1
+                raise OSError("simulated disk failure after SQLite commit")
+            return original(*args)
+        self.manager._write_users = fail_once
+        with self.assertRaises(OSError):
+            self.manager.dispatch("create_user", {"telegram_id": 81})
+        self.assertEqual(self.users.read_text(), "gpt-test:hashunchanged\n")
+        recovered = module.AccountManager(self.users, self.db_path)
+        status = recovered.dispatch("get_user_status", {"telegram_id": 81})
+        self.assertEqual(status["status"], "active")
+        self.assertIn(status["username"] + ":", self.users.read_text())
+        self.assertIn("gpt-test:hashunchanged", self.users.read_text())
+        self.assertNotIn("initial_password", recovered.dispatch("create_user", {"telegram_id": 81}))
+        new = recovered.dispatch("rotate_password", {"telegram_id": 81})
+        self.assertIn("initial_password", new)
+        self.assertNotIn(new["initial_password"], self.users.read_text())
+
+    def test_committed_disable_recovers_on_restart(self):
+        account = self.manager.dispatch("create_user", {"telegram_id": 82})
+        username = account["username"]
+        self.assertIn(username + ":", self.users.read_text())
+        self.manager._write_users = lambda *args: (_ for _ in ()).throw(OSError("crash"))
+        with self.assertRaises(OSError):
+            self.manager.dispatch("disable_user", {"telegram_id": 82})
+        recovered = module.AccountManager(self.users, self.db_path)
+        self.assertEqual(recovered.dispatch("get_user_status", {"telegram_id": 82})["status"], "disabled")
+        self.assertNotIn(username + ":", self.users.read_text())
+        self.assertIn("gpt-test:hashunchanged", self.users.read_text())
+
+    def test_service_status_does_not_require_user_id(self):
+        self.assertEqual(self.manager.dispatch("get_service_status", {})["status"], "ok")
