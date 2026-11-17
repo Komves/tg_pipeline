@@ -26,7 +26,7 @@ USERS_PATH = Path(os.getenv("GPT_AGENT_USERS_PATH", "/var/lib/squid-gpt-agent/pr
 DB_PATH = Path(os.getenv("GPT_AGENT_DB_PATH", "/var/lib/squid-gpt-agent/accounts.sqlite3"))
 TOKEN_PATH = Path(os.getenv("GPT_AGENT_TOKEN_PATH", "/etc/squid-gpt-agent/token"))
 HOST = "127.0.0.1"  # Never bind this prototype on a public interface.
-PORT = int(os.getenv("GPT_AGENT_PORT", "43141"))
+PORT = int(os.getenv("GPT_AGENT_PORT", "43143"))
 MAX_REQUEST = 4096
 
 
