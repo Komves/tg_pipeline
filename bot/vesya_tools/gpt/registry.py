@@ -110,8 +110,9 @@ class GPTRegistry:
 
     def issue_free_code(self, applicant_id: int, admin_id: int) -> str:
         with self.tx() as db:
-            if not db.execute("SELECT 1 FROM applications WHERE telegram_id=?", (applicant_id,)).fetchone():
-                raise ValueError("unknown application")
+            app = db.execute("SELECT stage FROM applications WHERE telegram_id=?", (applicant_id,)).fetchone()
+            if not app or app["stage"] not in ("awaiting_choice", "awaiting_receipt", "receipt_review"):
+                raise ValueError("no pending application")
             ts = now()
             db.execute(
                 "UPDATE invitation_codes SET revoked_at=? WHERE applicant_id=? AND redeemed_at IS NULL AND revoked_at IS NULL",
@@ -129,6 +130,9 @@ class GPTRegistry:
         if not code.startswith("GPT-") or len(code) != 29:
             return False
         with self.tx() as db:
+            app = db.execute("SELECT stage FROM applications WHERE telegram_id=?", (uid,)).fetchone()
+            if not app or app["stage"] not in ("awaiting_choice", "awaiting_receipt", "receipt_review"):
+                return False
             ts = now()
             row = db.execute(
                 """UPDATE invitation_codes SET redeemed_at=? WHERE digest=? AND applicant_id=?
