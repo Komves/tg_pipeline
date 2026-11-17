@@ -1,0 +1,49 @@
+name: GPT Windows installer
+on:
+  push:
+    branches:
+      - feature/gpt-windows-installer
+      - master
+    paths:
+      - 'ops/gpt_windows_client/**'
+      - '.github/workflows/gpt-windows-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ops/gpt_windows_client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ops/gpt_windows_client/go.mod
+      - name: Cross-compile GPT.exe
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gofmt -w *.go
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -H windowsgui" -o dist/GPT.exe .
+          test -s dist/GPT.exe
+          file dist/GPT.exe
+          sha256sum dist/GPT.exe | tee dist/SHA256SUMS.txt
+      - name: Publish a versioned public release
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view gpt-windows-v1 >/dev/null 2>&1 || gh release create gpt-windows-v1 --title 'GPT Windows launcher v1' --notes 'Generic self-installing GPT Chrome launcher for customers. No credentials are embedded.'
+          gh release upload gpt-windows-v1 dist/GPT.exe dist/SHA256SUMS.txt --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT-Windows-installer
+          path: |
+            ops/gpt_windows_client/dist/GPT.exe
+            ops/gpt_windows_client/dist/SHA256SUMS.txt
+          retention-days: 14
