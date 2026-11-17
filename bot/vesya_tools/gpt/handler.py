@@ -82,6 +82,9 @@ async def _provision(message, uid: int):
     app = reg.get(uid)
     if not app or app["stage"] != "provisioning" or app.get("method") not in ("paid", "free"):
         return
+    if app.get("method") == "paid" and not app.get("payment_confirmed"):
+        # Defense in depth: the account must never be created on receipt OCR alone.
+        return
     try:
         client = GPTAgentClient(GPTAgentConfig.from_env())
         result = await client.create_user(uid)
@@ -170,12 +173,38 @@ async def _admin(message, text: str, is_admin: bool):
         await message.answer(f"Бесплатный код GPT для Telegram ID {uid}:\n{code}\n\nОдноразовый, действует 7 дней. Передай лично.")
     elif command == "/gpt_approve":
         if reg.mark_receipt_review_approved(uid):
-            await message.answer("Квитанция одобрена. Попроси клиента написать /gpt — подключение продолжится.")
+            await message.answer(
+                "Реквизиты квитанции одобрены. Доступ НЕ выдан. "
+                f"После проверки поступления денег в банке напиши /gpt_paid_confirm {uid}."
+            )
         else:
             await message.answer("Квитанция на ручной проверке не найдена.")
-    elif command in ("/gpt_paid_confirm", "/gpt_npd"):
-        ok = reg.mark_payment(uid, tax=command == "/gpt_npd")
-        await message.answer("Отметка сохранена." if ok else "Платная заявка не найдена.")
+    elif command == "/gpt_paid_confirm":
+        ok = reg.mark_payment(uid)
+        if not ok:
+            await message.answer(
+                "Подтвердить нельзя: нет проверенной квитанции, уже отмечено "
+                "поступление либо заявка не ожидает сверки."
+            )
+        else:
+            await message.answer(
+                "Поступление отмечено как сверенное. Клиенту направлено "
+                "приглашение завершить настройку (если Telegram доступен)."
+            )
+            try:
+                await message.bot.send_message(
+                    uid,
+                    "Владелец подтвердил поступление оплаты. Напиши /gpt, "
+                    "чтобы получить доступ и инструкцию.",
+                )
+            except Exception:
+                LOG.warning("GPT bank confirmation client notification failed")
+    elif command == "/gpt_npd":
+        ok = reg.mark_payment(uid, tax=True)
+        await message.answer(
+            "Выдача чека НПД отмечена." if ok
+            else "Сначала подтверди поступление денег; либо отметка уже сохранена."
+        )
     elif command in ("/gpt_disable", "/gpt_enable"):
         app = reg.get(uid)
         if not app or not app.get("proxy_username"):
