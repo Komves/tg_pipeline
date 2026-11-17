@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from .handler import _notify_owner, _provision, owner_id, registry
+from .handler import _notify_owner, owner_id, registry
 from .receipts import MAX_BYTES, analyze_receipt, extract_receipt
 
 LOG = logging.getLogger("vesya.gpt.receipts")
@@ -62,8 +62,10 @@ async def handle_gpt_media(message) -> bool:
             f"Банк: {str(extracted.get('bank') or 'не указан')[:100]}\n"
             f"Номер операции: {str(extracted.get('transaction_id') or 'не указан')[:100]}\n"
             f"Получатель: {str(extracted.get('recipient') or 'не указан')[:100]}\n"
-            f"Квитанция: {'принята' if accepted else 'нужна ручная проверка'}.\n"
-            "Поступление ещё не сверено! Чек НПД оформить вручную."
+            f"Проверка реквизитов: {'совпадают' if accepted else 'требуют ручной проверки'}.\n"
+            "ДЕНЬГИ НЕ ПОДТВЕРЖДЕНЫ. Проверь банк; если реквизиты сомнительны, "
+            "сначала /gpt_approve TELEGRAM_ID, затем /gpt_paid_confirm TELEGRAM_ID. "
+            "Чек НПД оформляется отдельно."
         )
             if message.photo:
                 await message.bot.send_photo(owner_id(), item.file_id)
@@ -75,12 +77,15 @@ async def handle_gpt_media(message) -> bool:
             await message.answer("Квитанция сохранена, но уведомить владельца не удалось. Повторно платить не нужно.")
             return True
         if accepted:
-            await message.answer("Квитанция принята. Поступление и чек НПД владелец сверит отдельно. Подготавливаю GPT.")
-            await _provision(message, uid)
+            await message.answer(
+                "Квитанция получена и передана владельцу. "
+                "Доступ будет выдан только после подтверждения поступления денег в банке. "
+                "Повторно платить не нужно."
+            )
         else:
             await message.answer(
-                "Квитанция получена и передана владельцу. Требуется проверка реквизитов. "
-                "Повторная оплата не нужна."
+                "Квитанция получена и передана владельцу. Нужна ручная проверка "
+                "реквизитов и фактического поступления. Повторная оплата не нужна."
             )
     except Exception:
         LOG.warning("GPT receipt error; no banking data or receipt bytes logged")

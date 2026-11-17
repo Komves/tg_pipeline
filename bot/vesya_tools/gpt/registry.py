@@ -161,7 +161,7 @@ class GPTRegistry:
                 """UPDATE applications SET method='paid',stage=?,receipt_file_id=?,receipt_kind=?,
                   receipt_hash=?,receipt_txn=?,receipt_bank=?,receipt_date=?,receipt_amount=?,
                   receipt_recipient=?,receipt_review=?,updated_at=? WHERE telegram_id=?""",
-                ("provisioning" if accepted else "receipt_review", file_id, kind, sha256,
+                ("receipt_review", file_id, kind, sha256,
                  txn, bank[:100], date[:50], amount, recipient[:150],
                  "accepted" if accepted else "manual_review", timestamp, uid),
             )
@@ -180,17 +180,43 @@ class GPTRegistry:
     def mark_receipt_review_approved(self, uid: int) -> bool:
         with self.tx() as db:
             cur = db.execute(
-                """UPDATE applications SET receipt_review='accepted',stage='provisioning',updated_at=?
+                """UPDATE applications SET receipt_review='accepted',updated_at=?
                    WHERE telegram_id=? AND stage='receipt_review' AND receipt_file_id IS NOT NULL""",
                 (now(),uid),
             )
             return cur.rowcount == 1
 
     def mark_payment(self, uid: int, *, tax: bool = False) -> bool:
+        """Only an explicit owner bank reconciliation may authorize paid access.
+
+        Receipt OCR, even with a matching amount and payee, is never evidence
+        of settled funds. NPD receipt recording is a separate later action.
+        """
         with self.tx() as db:
-            name = "npd_receipt_issued" if tax else "payment_confirmed"
-            cur = db.execute(
-                f"UPDATE applications SET {name}=1,updated_at=? WHERE telegram_id=? AND method='paid'",
-                (now(),uid),
-            )
+            ts = now()
+            if tax:
+                cur = db.execute(
+                    """UPDATE applications SET npd_receipt_issued=1,updated_at=?
+                       WHERE telegram_id=? AND method='paid'
+                       AND payment_confirmed=1 AND npd_receipt_issued=0""",
+                    (ts, uid),
+                )
+                event = "npd_receipt_marked"
+            else:
+                cur = db.execute(
+                    """UPDATE applications SET payment_confirmed=1,
+                       stage=CASE WHEN stage='receipt_review' THEN 'provisioning' ELSE stage END,
+                       updated_at=?
+                       WHERE telegram_id=? AND method='paid'
+                       AND receipt_review='accepted' AND receipt_file_id IS NOT NULL
+                       AND stage IN ('receipt_review','active')
+                       AND payment_confirmed=0""",
+                    (ts, uid),
+                )
+                event = "bank_payment_confirmed"
+            if cur.rowcount:
+                db.execute(
+                    "INSERT INTO audit(ts,telegram_id,event) VALUES(?,?,?)",
+                    (ts,uid,event),
+                )
             return cur.rowcount == 1
