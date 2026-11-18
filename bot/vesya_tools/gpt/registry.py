@@ -181,7 +181,8 @@ class GPTRegistry:
         with self.tx() as db:
             cur = db.execute(
                 """UPDATE applications SET receipt_review='accepted',updated_at=?
-                   WHERE telegram_id=? AND stage='receipt_review' AND receipt_file_id IS NOT NULL""",
+                   WHERE telegram_id=? AND stage='receipt_review' AND receipt_file_id IS NOT NULL
+                   AND receipt_review='manual_review'""",
                 (now(),uid),
             )
             return cur.rowcount == 1
