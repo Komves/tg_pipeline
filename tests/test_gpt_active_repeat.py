@@ -92,7 +92,7 @@ class ExistingCustomerTests(unittest.IsolatedAsyncioTestCase):
         second = msg.answer.await_args_list[1].args[0]
         self.assertEqual(first, second)
         self.assertIn("same-password-forever", first)
-        self.assertIn("повторная оплата не нужна", first)
+        self.assertIn("повторная оплата не нужна", first.lower())
         self.assertIn(url, first)
         self.assertIn("gpt_0123456789abcdef", first)
         client.rotate_password.assert_not_awaited()
