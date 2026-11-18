@@ -64,7 +64,7 @@ async def handle_gpt_media(message) -> bool:
             kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
                     text="Подтвердить подключение",
-                    callback_data=f"gpt:payapprove:{uid}",
+                    callback_data=f"gpt:payapprove:{uid}:{digest[:16]}",
                 )
             ]])
             await _notify_owner(
