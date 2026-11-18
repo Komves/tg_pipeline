@@ -1,12 +1,14 @@
 """Receive payment receipts in a GPT-only private conversation.
 
 Telegram file ID is preserved so the owner receives the original receipt.
-No bank transfer is claimed as settled until manually reconciled.
+Only the owner's explicit one-click approval permits issuing paid access.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .handler import _notify_owner, owner_id, registry
 from .receipts import MAX_BYTES, analyze_receipt, extract_receipt
@@ -52,41 +54,43 @@ async def handle_gpt_media(message) -> bool:
             await message.answer("Квитанция уже использовалась или заявка закрыта. Свяжись с владельцем.")
             return True
 
-        # Owner is notified and sent original BEFORE the user is provisioned.
+        # Original receipt reaches the owner before the approval button.
+        # OCR is advisory; it NEVER authorizes paid access on its own.
         try:
-            await _notify_owner(
-                message.bot,
-            f"Новая квитанция по консультации GPT.\nTelegram ID: {uid}\n"
-            f"Сумма: {amount} ₽\n"
-            f"Дата: {str(extracted.get('date') or 'не указана')[:50]}\n"
-            f"Банк: {str(extracted.get('bank') or 'не указан')[:100]}\n"
-            f"Номер операции: {str(extracted.get('transaction_id') or 'не указан')[:100]}\n"
-            f"Получатель: {str(extracted.get('recipient') or 'не указан')[:100]}\n"
-            f"Проверка реквизитов: {'совпадают' if accepted else 'требуют ручной проверки'}.\n"
-            "ДЕНЬГИ НЕ ПОДТВЕРЖДЕНЫ. Проверь банк; если реквизиты сомнительны, "
-            "сначала /gpt_approve TELEGRAM_ID, затем /gpt_paid_confirm TELEGRAM_ID. "
-            "Чек НПД оформляется отдельно."
-        )
             if message.photo:
                 await message.bot.send_photo(owner_id(), item.file_id)
             else:
                 await message.bot.send_document(owner_id(), item.file_id)
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="Подтвердить подключение",
+                    callback_data=f"gpt:payapprove:{uid}",
+                )
+            ]])
+            await _notify_owner(
+                message.bot,
+                f"Новая квитанция по консультации GPT.\nTelegram ID: {uid}\n"
+                f"Сумма по квитанции: {amount} ₽\n"
+                f"Дата: {str(extracted.get('date') or 'не указана')[:50]}\n"
+                f"Банк: {str(extracted.get('bank') or 'не указан')[:100]}\n"
+                f"Номер операции: {str(extracted.get('transaction_id') or 'не указан')[:100]}\n"
+                f"Получатель: {str(extracted.get('recipient') or 'не указан')[:100]}\n"
+                f"Проверка реквизитов: {'совпадают' if accepted else 'требуют проверки'}.\n\n"
+                "Проверь поступление самостоятельно. Нажатие кнопки одобряет "
+                "подключение клиента и выдаёт ему доступ. Чек НПД отдельно.",
+                reply_markup=kb,
+            )
         except Exception:
-            # Do not issue access if the mandatory owner notification failed.
-            registry().set_stage(uid, "receipt_review")
-            await message.answer("Квитанция сохранена, но уведомить владельца не удалось. Повторно платить не нужно.")
-            return True
-        if accepted:
             await message.answer(
-                "Квитанция получена и передана владельцу. "
-                "Доступ будет выдан только после подтверждения поступления денег в банке. "
+                "Квитанция сохранена, но уведомить владельца не удалось. "
                 "Повторно платить не нужно."
             )
-        else:
-            await message.answer(
-                "Квитанция получена и передана владельцу. Нужна ручная проверка "
-                "реквизитов и фактического поступления. Повторная оплата не нужна."
-            )
+            return True
+        await message.answer(
+            "Квитанция получена и направлена владельцу. "
+            "Подключение выполняется только после его подтверждения. "
+            "Повторная оплата не нужна."
+        )
     except Exception:
         LOG.warning("GPT receipt error; no banking data or receipt bytes logged")
         await message.answer(
