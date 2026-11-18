@@ -62,7 +62,7 @@ var
   I: Integer;
   ExeName, Args, ProfileFlag: String;
   ShouldClose: Boolean;
-  Status: Integer;
+  Status, ProcessId: Integer;
 begin
   Locator := CreateOleObject('WbemScripting.SWbemLocator');
   Service := Locator.ConnectServer('.', 'root\CIMV2');
@@ -77,9 +77,15 @@ begin
     ExeName := '';
     Args := '';
     if not VarIsNull(Proc.ExecutablePath) then
-      ExeName := Lowercase(Trim(VarToStr(Proc.ExecutablePath)));
+      begin
+      ExeName := Proc.ExecutablePath;
+      ExeName := Lowercase(Trim(ExeName));
+    end;
     if not VarIsNull(Proc.CommandLine) then
-      Args := Lowercase(VarToStr(Proc.CommandLine));
+      begin
+      Args := Proc.CommandLine;
+      Args := Lowercase(Args);
+    end;
     { The Go launcher may quote an entire command-line argument. }
     StringChangeEx(Args, '"', '', True);
 
@@ -90,7 +96,8 @@ begin
 
     if ShouldClose then
     begin
-      Log('Closing prior GPT-owned process PID ' + IntToStr(Integer(Proc.ProcessId)) +
+      ProcessId := Proc.ProcessId;
+      Log('Closing prior GPT-owned process PID ' + IntToStr(ProcessId) +
         ' before upgrade (image: ' + ProcessName + ')');
       Status := Proc.Terminate();
       if Status <> 0 then
