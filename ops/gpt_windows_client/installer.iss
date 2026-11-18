@@ -77,9 +77,9 @@ begin
     ExeName := '';
     Args := '';
     if not VarIsNull(Proc.ExecutablePath) then
-      ExeName := Lowercase(Trim(Proc.ExecutablePath));
+      ExeName := Lowercase(Trim(VarToStr(Proc.ExecutablePath)));
     if not VarIsNull(Proc.CommandLine) then
-      Args := Lowercase(Proc.CommandLine);
+      Args := Lowercase(VarToStr(Proc.CommandLine));
     { The Go launcher may quote an entire command-line argument. }
     StringChangeEx(Args, '"', '', True);
 
@@ -90,7 +90,7 @@ begin
 
     if ShouldClose then
     begin
-      Log('Closing prior GPT-owned process PID ' + IntToStr(Proc.ProcessId) +
+      Log('Closing prior GPT-owned process PID ' + IntToStr(Integer(Proc.ProcessId)) +
         ' before upgrade (image: ' + ProcessName + ')');
       Status := Proc.Terminate();
       if Status <> 0 then
