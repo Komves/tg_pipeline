@@ -6,12 +6,12 @@ Changing GPT_AGENT_API_TOKEN requires re-encrypting existing credentials first.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
 
 _HEADER = b"GPT1"
 
@@ -56,5 +56,5 @@ def unseal(uid: int, data: bytes) -> tuple[str, str]:
         if not isinstance(username, str) or not username.startswith("gpt_") or not isinstance(password, str) or not password:
             raise VaultError("Invalid decrypted credential")
         return username, password
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, InvalidTag):
         raise VaultError("Unable to decrypt GPT credentials") from None
