@@ -65,7 +65,8 @@ class InviteTests(unittest.TestCase):
         ))
         self.assertTrue(self.reg.mark_receipt_review_approved(111))
         self.assertFalse(self.reg.mark_receipt_review_approved(111))
-        self.assertEqual(self.reg.get(111)["stage"],"provisioning")
+        self.assertEqual(self.reg.get(111)["stage"], "receipt_review")
+        self.assertFalse(self.reg.get(111)["payment_confirmed"])
 
 
 class ReceiptRulesTests(unittest.TestCase):
