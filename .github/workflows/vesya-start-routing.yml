@@ -1,0 +1,25 @@
+name: Vesya start routing
+on:
+  push:
+    paths:
+      - 'bot/vesya_tools/start_command.py'
+      - 'bot/main.py'
+      - 'tests/test_vesya_start_command.py'
+      - '.github/workflows/vesya-start-routing.yml'
+  pull_request:
+    paths:
+      - 'bot/vesya_tools/start_command.py'
+      - 'bot/main.py'
+      - 'tests/test_vesya_start_command.py'
+      - '.github/workflows/vesya-start-routing.yml'
+
+jobs:
+  start-command:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s tests -p 'test_vesya_start_command.py' -v
+      - run: python -m py_compile bot/vesya_tools/start_command.py bot/main.py
