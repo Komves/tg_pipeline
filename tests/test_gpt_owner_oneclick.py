@@ -76,7 +76,7 @@ class OwnerApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.reg.mark_payment(self.uid, receipt_prefix="aaaaaaaaaaaaaaaa"))
         self.assertEqual(self.reg.get(self.uid)["stage"], "provisioning")
         self.assertFalse(self.reg.mark_payment(self.uid))
-        self.assertFalse(self.reg.mark_payment(self.uid, tax=True) is False)
+        self.assertTrue(self.reg.mark_payment(self.uid, tax=True))
 
     async def test_no_receipt_never_approves(self):
         self.reg.register(4567)
