@@ -11,7 +11,6 @@ import (
  "net"
  "net/http"
  "os"
- "os/exec"
  "path/filepath"
  "strings"
  "syscall"
@@ -135,6 +134,10 @@ func verifyAccount(a account)error{
 func loadAccount()(Config,error){
  c:=Config{Host:"ru.paruslegal.ru",Port:4454}
  base,err:=localDir();if err!=nil{return c,err}
+ // Only an explicit --reset drops a saved credential. Installation does not.
+ if len(os.Args)>1 && os.Args[1]=="--reset" {
+  if err:=os.Remove(accountFile(base));err!=nil&&!os.IsNotExist(err){return c,err}
+ }
  a,err:=readAccount(base)
  if err!=nil{
   a,err=promptAccount();if err!=nil{return c,err}
@@ -145,40 +148,6 @@ func loadAccount()(Config,error){
  c.Password=a.Password
  return c,nil
 }
-func psQuote(raw string)string{return strings.ReplaceAll(raw,"'","''")}
-func shortcut(program string)error{
- script:="$ErrorActionPreference='Stop';"+
-  "$desk=[Environment]::GetFolderPath('Desktop');"+
-  "$shell=New-Object -ComObject WScript.Shell;"+
-  "$s=$shell.CreateShortcut((Join-Path $desk 'GPT.lnk'));"+
-  "$s.TargetPath='"+psQuote(program)+"';"+
-  "$s.WorkingDirectory='"+psQuote(filepath.Dir(program))+"';"+
-  "$s.Description='GPT - отдельный Chrome';"+
-  "$s.Save()"
- cmd:=exec.Command("powershell.exe","-NoProfile","-NonInteractive","-WindowStyle","Hidden","-Command",script)
- cmd.SysProcAttr=&syscall.SysProcAttr{HideWindow:true}
- return cmd.Run()
-}
-func installToLocalAppData()(bool,error){
- base,err:=localDir();if err!=nil{return false,err}
- if len(os.Args)>1&&os.Args[1]=="--reset"{_ = os.Remove(accountFile(base))}
- source,err:=os.Executable();if err!=nil{return false,err}
- installed:=filepath.Join(base,"GPT.exe")
- if !strings.EqualFold(filepath.Clean(source),filepath.Clean(installed)){
-  input,err:=os.Open(source);if err!=nil{return false,err};defer input.Close()
-  output,err:=os.OpenFile(installed,os.O_CREATE|os.O_TRUNC|os.O_WRONLY,0700)
-  if err!=nil{return false,err}
-  if _,err=io.Copy(output,input);err!=nil{output.Close();return false,err}
-  if err=output.Close();err!=nil{return false,err}
-  if err=shortcut(installed);err!=nil{return false,errors.New("Не удалось создать ярлык GPT")}
-  child:=exec.Command(installed)
-  if err=child.Start();err!=nil{return false,err}
-  _=child.Process.Release()
-  return true,nil
- }
- if err=shortcut(installed);err!=nil{return false,errors.New("Не удалось создать ярлык GPT")}
- return false,nil
-}
 
-// This is not a VPN, nor an app-wide Windows proxy; only the isolated Chrome
-// launched by GPT.exe uses the loopback helper. Old Vesya /proxy is untouched.
+// Setup.exe handles installation, shortcuts and uninstall.
+// The launcher never copies itself or calls PowerShell.
