@@ -113,6 +113,73 @@ async def _notify_owner(bot, text: str, reply_markup=None):
     await bot.send_message(uid, text, reply_markup=reply_markup)
 
 
+def _credential_instructions(login: str, password: str, *, repeat: bool = False) -> str:
+    """Send identical, valid connection details without changing the password."""
+    url = _installer_url()
+    return (
+        ("GPT уже подключён. Повторная оплата не нужна.\\n\\n" if repeat
+         else "Индивидуальное подключение GPT создано.\\n\\n")
+        + f"Логин: {login}\\nПароль: {password}\\n\\n"
+        + (f"Скачать GPT.exe:\\n{url}\\n\\n"
+           if url else "Установщик пока не опубликован.\\n\\n")
+        + "Запусти GPT.exe, введи логин и пароль один раз. "
+          "Программа создаст отдельный ярлык GPT и профиль Chrome. "
+          "При следующих запусках используй ярлык GPT.\\n\\n"
+          "Не пересылай пароль другим людям."
+    )
+
+
+async def _send_active_details(message, app, reg):
+    """Send the SAME active password if it was securely saved at issue time."""
+    uid = int(message.from_user.id)
+    login = str(app.get("proxy_username") or "")
+    if not login.startswith("gpt_"):
+        await message.answer("Доступ GPT отмечен как оформленный, но логин не найден. Обратись к владельцу.")
+        return
+    try:
+        saved = reg.get_credential(uid)
+    except Exception:
+        LOG.warning("GPT credential vault unavailable; no credentials logged")
+        await message.answer(
+            "Не удалось безопасно получить сохранённые данные GPT. "
+            "Обратись к владельцу. Повторная оплата не требуется."
+        )
+        return
+    if saved is not None:
+        username, password = saved
+        try:
+            status = await GPTAgentClient(GPTAgentConfig.from_env()).get_user_status(uid)
+        except Exception:
+            LOG.warning("GPT account verification failed on repeat request")
+            await message.answer("Не удалось проверить действующий доступ GPT. Повтори запрос позже.")
+            return
+        if status.get("status") != "active" or status.get("username") != username or username != login:
+            await message.answer(
+                "Доступ GPT сейчас неактивен или изменён. Обратись к владельцу."
+            )
+            return
+        await message.answer(
+            _credential_instructions(username, password, repeat=True),
+            reply_markup=_active_keyboard(),
+        )
+        return
+
+    # Account was issued before we started securely escrowing credentials.
+    # Never silently rotate: that would disrupt existing Windows installations.
+    url = _installer_url()
+    await message.answer(
+        "GPT уже подключён. Повторная оплата не нужна.\\n\\n"
+        f"Твой логин: {login}\\n\\n"
+        + (f"Скачать GPT.exe:\\n{url}\\n\\n" if url else "")
+        + "Этот аккаунт создан до внедрения повторной выдачи пароля. "
+          "Прежний пароль зашифрованным способом не сохранялся, поэтому "
+          "вернуть его из хеша невозможно. Один раз нажми «Получить новый пароль GPT»: "
+          "после этого Веся будет показывать один и тот же действующий пароль "
+          "при каждом повторном запросе. Старый пароль перестанет работать.",
+        reply_markup=_active_keyboard(),
+    )
+
+
 async def _provision(message, uid: int, *, owner_approved: bool = False):
     reg = registry()
     app = reg.get(uid)
@@ -123,26 +190,25 @@ async def _provision(message, uid: int, *, owner_approved: bool = False):
         return
     try:
         client = GPTAgentClient(GPTAgentConfig.from_env())
-        result = await client.create_user(uid)
-        password = result.get("initial_password")
-        if not password:
-            # Recover lost first-time response with a controlled rotation.
-            result = await client.rotate_password(uid)
+        stored = reg.get_credential(uid)
+        if stored:
+            login, password = stored
+            status = await client.get_user_status(uid)
+            if status.get("status") != "active" or status.get("username") != login:
+                raise ValueError("Previously escrowed GPT credentials are no longer active")
+        else:
+            result = await client.create_user(uid)
             password = result.get("initial_password")
-        login = str(result.get("username") or "")
-        if not login.startswith("gpt_") or not password:
-            raise ValueError("Missing credentials")
-        url = (os.getenv("GPT_INSTALLER_URL") or "").strip()
-        if not url or urlsplit(url).scheme != "https":
-            url = ""
-        instructions = (
-            "Индивидуальное подключение GPT создано.\n\n"
-            f"Логин прокси: {login}\nПервичный пароль: {password}\n\n"
-            + (f"Скачать установщик GPT:\n{url}\n\n"
-               "Запусти скачанный GPT.exe. Он создаст ярлык GPT, попросит логин и пароль в окне Windows и откроет отдельный Chrome. При следующем запуске используй ярлык GPT."
-               if url else "Установщик пока не опубликован. Ссылка появится после проверки пакета.")
-            + "\n\nНе пересылай пароль другим людям."
-        )
+            if not password:
+                # Agent lost the one-time initial secret; recover ONCE, then escrow.
+                result = await client.rotate_password(uid)
+                password = result.get("initial_password")
+            login = str(result.get("username") or "")
+            if not login.startswith("gpt_") or not password:
+                raise ValueError("Missing credentials")
+            # Persist encrypted BEFORE Telegram delivery; retry uses this password.
+            reg.save_credential(uid, login, password)
+        instructions = _credential_instructions(login, password)
         # Owner callback runs in the OWNER chat, but credentials must go
         # exclusively to the client's private Telegram ID.
         if owner_approved:
@@ -192,26 +258,7 @@ async def _register(message):
         except Exception:
             LOG.warning("GPT registration owner notification failed")
     if app["stage"] == "active":
-        login = str(app.get("proxy_username") or "")
-        url = _installer_url()
-        if not login.startswith("gpt_"):
-            await message.answer(
-                "GPT отмечен как оформленный, но учётные данные в реестре не найдены. "
-                "Обратись к владельцу: повторно оплачивать не нужно."
-            )
-            return
-        instructions = (
-            "GPT уже оформлен — повторная оплата не нужна.\n\n"
-            f"Твой логин: {login}\n\n"
-            + (f"Скачать установщик GPT.exe:\n{url}\n\n" if url
-               else "Установщик пока не опубликован.\n\n")
-            + "Если GPT уже настроен на этом компьютере — просто запускай ярлык GPT: "
-            "пароль повторно вводить не нужно.\n\n"
-            "Если устанавливаешь GPT на другом компьютере или потерял первоначальный "
-            "пароль, нажми «Получить новый пароль GPT». Старый пароль при этом "
-            "перестанет действовать и на уже подключённых компьютерах."
-        )
-        await message.answer(instructions, reply_markup=_active_keyboard())
+        await _send_active_details(message, app, reg)
     elif app["stage"] == "provisioning":
         await _provision(message, uid)
     elif app["stage"] == "receipt_review":
@@ -285,32 +332,11 @@ async def handle_gpt_message(message, raw_text: str, *, is_admin: bool = False) 
     elif intent == "password_help":
         app = registry().get(uid)
         if not app:
-            await message.answer(
-                "GPT ещё не оформлен. Напиши «Веся, подключи мне GPT», "
-                "чтобы начать подключение."
-            )
+            await message.answer("GPT ещё не оформлен. Напиши «Веся, подключи мне GPT».")
         elif app.get("stage") != "active":
-            await message.answer(
-                "Подключение GPT ещё не завершено. "
-                "Напиши /gpt, чтобы узнать состояние заявки. "
-                "Повторно оплачивать ничего не нужно."
-            )
+            await message.answer("Подключение GPT ещё не завершено. Напиши /gpt. Повторная оплата не нужна.")
         else:
-            login = str(app.get("proxy_username") or "")
-            if not login.startswith("gpt_"):
-                await message.answer("Данные доступа не найдены. Свяжись с владельцем.")
-            else:
-                await message.answer(
-                    f"Твой логин GPT: {login}\n\n"
-                    "Первоначальный пароль хранится только у тебя в сообщении "
-                    "о подключении и в защищённых настройках установленной программы. "
-                    "Я не могу повторно показать тот же пароль.\n\n"
-                    "Если ярлык GPT уже работает — ничего менять не нужно. "
-                    "Если устанавливаешь GPT на другой компьютер или потерял пароль, "
-                    "нажми «Получить новый пароль GPT». "
-                    "Старый пароль перестанет действовать.",
-                    reply_markup=_active_keyboard(),
-                )
+            await _send_active_details(message, app, registry())
     elif intent == "admin":
         await _admin(message, raw_text, is_admin)
     elif intent == "redeem":
@@ -415,6 +441,8 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
                 login = result.get("username")
                 if result.get("status") != "active" or login != app.get("proxy_username") or not password:
                     raise ValueError("Unexpected password rotation response")
+                # Make subsequent /gpt requests return this exact password.
+                registry().save_credential(uid, login, password)
                 await callback.message.answer(
                     f"Новый пароль GPT для {login}:\n{password}\n\n"
                     "Старый пароль больше не действует.\n\n"
