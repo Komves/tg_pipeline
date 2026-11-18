@@ -3,7 +3,7 @@
 ; hidden commands, registry autorun, self-copy, service or driver.
 
 #define MyAppName "GPT"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "GPT Setup"
 
 [Setup]
@@ -22,10 +22,11 @@ SolidCompression=yes
 OutputDir=dist
 OutputBaseFilename=GPT-Setup
 UninstallDisplayName=GPT
-UninstallDisplayIcon={app}\GPT.ico
+UninstallDisplayIcon={app}\GPT-v1.1.2.ico
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
+SetupIconFile=GPT-v1.1.2.ico
 ; Unsigned build. AV checks are mandatory before public publishing.
 
 [Languages]
@@ -34,11 +35,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "dist\GPT.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "GPT.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "GPT-v1.1.2.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{userdesktop}\GPT"; Filename: "{app}\GPT.exe"; IconFilename: "{app}\GPT.ico"; WorkingDir: "{app}"; Comment: "GPT — отдельный профиль Chrome"
-Name: "{userprograms}\GPT"; Filename: "{app}\GPT.exe"; IconFilename: "{app}\GPT.ico"; WorkingDir: "{app}"
+Name: "{userdesktop}\GPT"; Filename: "{app}\GPT.exe"; IconFilename: "{app}\GPT-v1.1.2.ico"; WorkingDir: "{app}"; Comment: "GPT — отдельный профиль Chrome"
+Name: "{userprograms}\GPT"; Filename: "{app}\GPT.exe"; IconFilename: "{app}\GPT-v1.1.2.ico"; WorkingDir: "{app}"
 
 [Run]
 Filename: "{app}\GPT.exe"; Description: "Запустить GPT после установки"; Flags: postinstall nowait skipifsilent unchecked

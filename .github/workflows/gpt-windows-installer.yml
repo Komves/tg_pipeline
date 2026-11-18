@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - master
-      - feature/gpt-clean-windows-installer-20261118
+      - fix/gpt-desktop-icon-20261118
     paths:
       - 'ops/gpt_windows_client/**'
       - '.github/workflows/gpt-windows-installer.yml'
@@ -70,6 +70,21 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
           }
 
+      - name: Generate genuine Windows ICO from approved GPT artwork
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install 'Pillow>=11,<13'
+          python ops/gpt_windows_client/build_icon.py
+          if ($LASTEXITCODE -ne 0) { throw 'GPT ICO generation or validation failed' }
+          $path = (Resolve-Path ops/gpt_windows_client/GPT-v1.1.2.ico).Path
+          Add-Type -AssemblyName System.Drawing
+          $icon = [System.Drawing.Icon]::new($path)
+          try {
+            if ($icon.Width -lt 16) { throw 'Native Windows API rejected GPT ICO' }
+            Write-Host "Native Windows icon loaded: $($icon.Width)x$($icon.Height)"
+          } finally { $icon.Dispose() }
+
       - name: Package standard per-user setup with desktop shortcut
         shell: pwsh
         run: |
@@ -125,11 +140,11 @@ jobs:
           $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'GPT.lnk'
           if (!(Test-Path $target)) { throw 'GPT.exe not installed' }
           if (!(Test-Path $desktop)) { throw 'GPT desktop shortcut missing' }
-          $iconPath = Join-Path $env:LOCALAPPDATA 'GPT\GPT.ico'
+          $iconPath = Join-Path $env:LOCALAPPDATA 'GPT\GPT-v1.1.2.ico'
           if (!(Test-Path $iconPath)) { throw 'Approved GPT icon file missing' }
           $wsh = New-Object -ComObject WScript.Shell
           $shortcut = $wsh.CreateShortcut($desktop)
-          if ($shortcut.IconLocation -notlike '*GPT.ico*') { throw 'Shortcut missing approved GPT icon' }
+          if ($shortcut.IconLocation -notlike '*GPT-v1.1.2.ico*') { throw 'Shortcut missing approved GPT icon' }
           $uninstaller = Join-Path $env:LOCALAPPDATA 'GPT\unins000.exe'
           if (!(Test-Path $uninstaller)) { throw 'Uninstaller missing' }
           $p = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait
@@ -144,12 +159,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = 'gpt-windows-v1.1.1'
+          $tag = 'gpt-windows-v1.1.2'
           $setup = 'ops/gpt_windows_client/dist/GPT-Setup.exe'
           if (!(Test-Path $setup)) { throw 'No verified installer to release' }
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
           "$hash  GPT-Setup.exe" | Set-Content -Encoding ascii ops/gpt_windows_client/dist/SHA256SUMS.txt
-          gh release create $tag $setup ops/gpt_windows_client/dist/SHA256SUMS.txt --title 'GPT Windows Setup v1.1.1' --notes 'Standard per-user Windows installer with custom GPT shortcut. Removed self-copy and hidden PowerShell. Scanned with Microsoft Defender and verified on Windows. Unsigned; Windows may show a publisher warning.'
+          gh release create $tag $setup ops/gpt_windows_client/dist/SHA256SUMS.txt --title 'GPT Windows Setup v1.1.2' --notes 'Standard per-user Windows installer with custom GPT shortcut. Removed self-copy and hidden PowerShell. Scanned with Microsoft Defender and verified on Windows. Unsigned; Windows may show a publisher warning.'
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }
 
       - name: Save verified installer build artifact
