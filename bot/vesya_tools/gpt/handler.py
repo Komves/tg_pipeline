@@ -117,14 +117,14 @@ def _credential_instructions(login: str, password: str, *, repeat: bool = False)
     """Send identical, valid connection details without changing the password."""
     url = _installer_url()
     return (
-        ("GPT уже подключён. Повторная оплата не нужна.\\n\\n" if repeat
-         else "Индивидуальное подключение GPT создано.\\n\\n")
-        + f"Логин: {login}\\nПароль: {password}\\n\\n"
-        + (f"Скачать GPT.exe:\\n{url}\\n\\n"
-           if url else "Установщик пока не опубликован.\\n\\n")
+        ("GPT уже подключён. Повторная оплата не нужна.\n\n" if repeat
+         else "Индивидуальное подключение GPT создано.\n\n")
+        + f"Логин: {login}\nПароль: {password}\n\n"
+        + (f"Скачать GPT.exe:\n{url}\n\n"
+           if url else "Установщик пока не опубликован.\n\n")
         + "Запусти GPT.exe, введи логин и пароль один раз. "
           "Программа создаст отдельный ярлык GPT и профиль Chrome. "
-          "При следующих запусках используй ярлык GPT.\\n\\n"
+          "При следующих запусках используй ярлык GPT.\n\n"
           "Не пересылай пароль другим людям."
     )
 
@@ -168,9 +168,9 @@ async def _send_active_details(message, app, reg):
     # Never silently rotate: that would disrupt existing Windows installations.
     url = _installer_url()
     await message.answer(
-        "GPT уже подключён. Повторная оплата не нужна.\\n\\n"
-        f"Твой логин: {login}\\n\\n"
-        + (f"Скачать GPT.exe:\\n{url}\\n\\n" if url else "")
+        "GPT уже подключён. Повторная оплата не нужна.\n\n"
+        f"Твой логин: {login}\n\n"
+        + (f"Скачать GPT.exe:\n{url}\n\n" if url else "")
         + "Этот аккаунт создан до внедрения повторной выдачи пароля. "
           "Прежний пароль зашифрованным способом не сохранялся, поэтому "
           "вернуть его из хеша невозможно. Один раз нажми «Получить новый пароль GPT»: "
