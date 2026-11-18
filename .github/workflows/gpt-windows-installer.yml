@@ -145,7 +145,7 @@ jobs:
           [System.IO.File]::WriteAllText($account,$keep)
           # Simulate an old GPT launcher which keeps its own EXE open.
           # The fake program is installed only on the isolated CI runner.
-          $fake = Join-Path $env:TEMP 'gpt_old_process_test.go'
+          $fake = Join-Path $env:TEMP 'gpt_old_process_hold.go'
           Set-Content $fake 'package main; import "time"; func main(){for {time.Sleep(time.Second)}}'
           go build -o $target $fake
           if ($LASTEXITCODE -ne 0) { throw 'Could not build old running GPT test process' }
