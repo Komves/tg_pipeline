@@ -60,8 +60,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $paths = @(
-            "\${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-            "\${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
             "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
           )
           if (-not ($paths | Where-Object { Test-Path $_ })) {
@@ -74,8 +74,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $paths = @(
-            "\${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-            "\${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
             "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
           )
           $iscc = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
