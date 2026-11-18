@@ -63,10 +63,12 @@ class InviteTests(unittest.TestCase):
             111,file_id="f",kind="photo",sha256="sha",txn=None,bank="",
             date="",amount=2990,recipient="",accepted=False,
         ))
-        self.assertTrue(self.reg.mark_receipt_review_approved(111))
-        self.assertFalse(self.reg.mark_receipt_review_approved(111))
         self.assertEqual(self.reg.get(111)["stage"], "receipt_review")
         self.assertFalse(self.reg.get(111)["payment_confirmed"])
+        self.assertTrue(self.reg.mark_payment(111))
+        self.assertFalse(self.reg.mark_payment(111))
+        self.assertEqual(self.reg.get(111)["stage"], "provisioning")
+        self.assertTrue(self.reg.get(111)["payment_confirmed"])
 
 
 class ReceiptRulesTests(unittest.TestCase):
