@@ -296,14 +296,20 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
             await callback.answer("Нет доступа", show_alert=True)
             return True
         try:
-            uid = int(data.rsplit(":", 1)[1])
+            _, _, uid_text, receipt_prefix = data.split(":")
+            uid = int(uid_text)
         except (ValueError, IndexError):
             await callback.answer("Неверная заявка", show_alert=True)
             return True
-        if uid <= 0 or uid >= 2**63:
+        if uid <= 0 or uid >= 2**63 or not re.fullmatch(r"[0-9a-f]{16}", receipt_prefix):
             await callback.answer("Неверная заявка", show_alert=True)
             return True
-        if not registry().mark_payment(uid):
+        reg = registry()
+        app = reg.get(uid)
+        if not app or not str(app.get("receipt_hash") or "").startswith(receipt_prefix):
+            await callback.answer("Квитанция уже заменена. Проверь новую.", show_alert=True)
+            return True
+        if not reg.mark_payment(uid, receipt_prefix=receipt_prefix):
             await callback.answer("Уже одобрено или нет ожидающей квитанции", show_alert=True)
             return True
         try:
