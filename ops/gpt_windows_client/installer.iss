@@ -23,7 +23,6 @@ OutputDir=dist
 OutputBaseFilename=GPT-Setup
 UninstallDisplayName=GPT
 UninstallDisplayIcon={app}\GPT.ico
-SetupIconFile=GPT.ico
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
