@@ -1,6 +1,7 @@
 """Independent persistent GPT consultations, receipts and one-time invitation codes.
 
 Stores no plaintext invitation codes, proxy passwords, API secrets or bank card numbers.
+The encrypted credential_vault stores recoverable passwords only after issuance.
 A separate SQLite database lives on Vesya's persistent /data disk.
 """
 from __future__ import annotations
@@ -49,6 +50,13 @@ class GPTRegistry:
                     proxy_username TEXT,
                     access_issued_at INTEGER,
                     installer_sent_at INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS credential_vault (
+                    telegram_id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    encrypted_password BLOB NOT NULL,
+                    saved_at INTEGER NOT NULL,
+                    FOREIGN KEY (telegram_id) REFERENCES applications(telegram_id)
                 );
                 CREATE TABLE IF NOT EXISTS invitation_codes (
                     digest TEXT PRIMARY KEY,
@@ -176,6 +184,53 @@ class GPTRegistry:
                 (username, now(), now(), uid),
             )
             db.execute("INSERT INTO audit(ts,telegram_id,event) VALUES(?,?,'access_issued')", (now(), uid))
+
+    def save_credential(self, uid: int, username: str, password: str) -> None:
+        """Escrow the actual server-issued password with authenticated encryption."""
+        from .credential_vault import seal
+
+        # Encrypt outside SQLite; never write the plaintext or expose it in SQL.
+        encrypted = seal(uid, username, password)
+        with self.tx() as db:
+            app = db.execute(
+                "SELECT stage, proxy_username FROM applications WHERE telegram_id=?", (uid,)
+            ).fetchone()
+            if not app or app["stage"] not in ("active", "provisioning"):
+                raise ValueError("GPT access is not authorized")
+            if app["stage"] == "active" and app["proxy_username"] != username:
+                raise ValueError("GPT username mismatch")
+            db.execute(
+                """INSERT INTO credential_vault(telegram_id,username,encrypted_password,saved_at)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(telegram_id) DO UPDATE SET
+                     username=excluded.username,
+                     encrypted_password=excluded.encrypted_password,
+                     saved_at=excluded.saved_at""",
+                (uid, username, encrypted, now()),
+            )
+
+    def get_credential(self, uid: int) -> tuple[str, str] | None:
+        """Return the user-specific current password if it was escrowed.
+
+        Never fall back to a guessed password or create a new one.
+        """
+        from .credential_vault import unseal
+
+        with self.tx() as db:
+            row = db.execute(
+                """SELECT a.stage,a.proxy_username,v.username,v.encrypted_password
+                   FROM applications a JOIN credential_vault v
+                   ON a.telegram_id=v.telegram_id WHERE a.telegram_id=?""",
+                (uid,),
+            ).fetchone()
+        if not row or row["stage"] not in ("active", "provisioning"):
+            return None
+        username, password = unseal(uid, bytes(row["encrypted_password"]))
+        if username != row["username"]:
+            raise ValueError("GPT vault username mismatch")
+        if row["stage"] == "active" and row["proxy_username"] != username:
+            raise ValueError("GPT active username mismatch")
+        return username, password
 
     def mark_payment(self, uid: int, *, tax: bool = False, receipt_prefix: str | None = None) -> bool:
         """One owner approval authorizes paid access after the receipt is stored.
