@@ -1,4 +1,4 @@
-name: GPT Windows installer security review
+name: GPT Windows installer release checks
 
 on:
   push:
@@ -14,9 +14,10 @@ on:
       - '.github/workflows/gpt-windows-installer.yml'
   workflow_dispatch:
 
-# REVIEW ONLY. No public release. No automatic Render configuration changes.
+# Publish only on master after Defender scans and install/uninstall checks.
+# Render environment configuration is updated separately.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows-security-review:
@@ -82,11 +83,11 @@ jobs:
           if (-not $iscc) { throw 'Inno Setup compiler not found' }
           Push-Location ops/gpt_windows_client
           & $iscc installer.iss
-          if ($LASTEXITCODE -ne 0 -or !(Test-Path dist/GPT-Setup-Review.exe)) {
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path dist/GPT-Setup.exe)) {
             throw 'Inno Setup build failed'
           }
           Get-FileHash dist/GPT.exe -Algorithm SHA256 | Format-List
-          Get-FileHash dist/GPT-Setup-Review.exe -Algorithm SHA256 | Format-List
+          Get-FileHash dist/GPT-Setup.exe -Algorithm SHA256 | Format-List
           Pop-Location
 
       - name: Require active Microsoft Defender and scan both binaries
@@ -100,7 +101,7 @@ jobs:
           }
           $files = @(
             (Resolve-Path ops/gpt_windows_client/dist/GPT.exe).Path,
-            (Resolve-Path ops/gpt_windows_client/dist/GPT-Setup-Review.exe).Path
+            (Resolve-Path ops/gpt_windows_client/dist/GPT-Setup.exe).Path
           )
           $scanStart = Get-Date
           foreach ($file in $files) {
@@ -117,13 +118,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $setup = (Resolve-Path ops/gpt_windows_client/dist/GPT-Setup-Review.exe).Path
+          $setup = (Resolve-Path ops/gpt_windows_client/dist/GPT-Setup.exe).Path
           $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "Setup exited $($p.ExitCode)" }
           $target = Join-Path $env:LOCALAPPDATA 'GPT\GPT.exe'
           $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'GPT.lnk'
           if (!(Test-Path $target)) { throw 'GPT.exe not installed' }
           if (!(Test-Path $desktop)) { throw 'GPT desktop shortcut missing' }
+          $iconPath = Join-Path $env:LOCALAPPDATA 'GPT\GPT.ico'
+          if (!(Test-Path $iconPath)) { throw 'Approved GPT icon file missing' }
+          $wsh = New-Object -ComObject WScript.Shell
+          $shortcut = $wsh.CreateShortcut($desktop)
+          if ($shortcut.IconLocation -notlike '*GPT.ico*') { throw 'Shortcut missing approved GPT icon' }
           $uninstaller = Join-Path $env:LOCALAPPDATA 'GPT\unins000.exe'
           if (!(Test-Path $uninstaller)) { throw 'Uninstaller missing' }
           $p = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait
@@ -131,11 +137,28 @@ jobs:
           if (Test-Path $target) { throw 'GPT.exe remained after uninstall' }
           Write-Host 'Install/shortcut/uninstall checks passed.'
 
-      - name: Save unsigned review artifact only (NOT for customers)
+      - name: Publish production GPT Setup release after checks
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = 'gpt-windows-v1.1.1'
+          $setup = 'ops/gpt_windows_client/dist/GPT-Setup.exe'
+          if (!(Test-Path $setup)) { throw 'No verified installer to release' }
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          "$hash  GPT-Setup.exe" | Set-Content -Encoding ascii ops/gpt_windows_client/dist/SHA256SUMS.txt
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists: refusing overwrite" }
+          gh release create $tag $setup ops/gpt_windows_client/dist/SHA256SUMS.txt --title 'GPT Windows Setup v1.1.1' --notes 'Standard per-user Windows installer with custom GPT shortcut. Removed self-copy and hidden PowerShell. Scanned with Microsoft Defender and verified on Windows. Unsigned; Windows may show a publisher warning.'
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }
+
+      - name: Save verified installer build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GPT-Setup-Review-UNSIGNED-NOT-FOR-CUSTOMERS
+          name: GPT-Setup-Verified-Unsigned
           path: |
-            ops/gpt_windows_client/dist/GPT-Setup-Review.exe
+            ops/gpt_windows_client/dist/GPT-Setup.exe
             ops/gpt_windows_client/dist/GPT.exe
           retention-days: 3
