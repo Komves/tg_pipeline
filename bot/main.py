@@ -5866,6 +5866,15 @@ async def cmd_parus_narration_samples(message: Message) -> None:
 
 @dp.message(F.text)
 async def vesya_handler(message: Message) -> None:
+    # A bare Telegram /start is a bot command, never a user prompt for the
+    # research/dialog LLM. Preserve /start proxy deep links and all other routes.
+    if _chat_allowed(message):
+        from vesya_tools.start_command import is_bare_start, START_GREETING
+        if is_bare_start(message.text or ""):
+            if message.chat.type == "private":
+                await message.answer(START_GREETING)
+            return
+
     # Route sensitive GPT codes before legacy raw-message debug tracing.
     # The existing /proxy flow remains below and is never modified.
     if _chat_allowed(message):
