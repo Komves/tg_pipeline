@@ -16,7 +16,7 @@ def app(stage="active", login="gpt_0123456789abcdef"):
 
 
 def message(uid=101):
-    return SimpleNamespace(from_user=SimpleNamespace(id=uid), answer=AsyncMock())
+    return SimpleNamespace(from_user=SimpleNamespace(id=uid), chat=SimpleNamespace(type="private"), answer=AsyncMock())
 
 
 def callback(action, uid=101):
