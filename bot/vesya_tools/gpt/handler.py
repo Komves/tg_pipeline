@@ -103,7 +103,7 @@ async def _notify_owner(bot, text: str, reply_markup=None):
     await bot.send_message(uid, text, reply_markup=reply_markup)
 
 
-async def _provision(message, uid: int):
+async def _provision(message, uid: int, *, owner_approved: bool = False):
     reg = registry()
     app = reg.get(uid)
     if not app or app["stage"] != "provisioning" or app.get("method") not in ("paid", "free"):
@@ -133,7 +133,12 @@ async def _provision(message, uid: int):
                if url else "Установщик пока не опубликован. Ссылка появится после проверки пакета.")
             + "\n\nНе пересылай пароль другим людям."
         )
-        await message.answer(instructions)
+        # Owner callback runs in the OWNER chat, but credentials must go
+        # exclusively to the client's private Telegram ID.
+        if owner_approved:
+            await message.bot.send_message(uid, instructions)
+        else:
+            await message.answer(instructions)
         reg.note_provisioned(uid, login)
         try:
             await _notify_owner(
@@ -144,7 +149,21 @@ async def _provision(message, uid: int):
             LOG.warning("GPT owner notification failed after provisioning")
     except Exception:
         LOG.warning("GPT provisioning error, no credentials logged")
-        await message.answer("Заявка сохранена, но подключение пока не завершилось. Напиши /gpt позже — повторная оплата не требуется.")
+        if owner_approved:
+            try:
+                await message.bot.send_message(
+                    uid,
+                    "Владелец одобрил подключение, но выдача пока не завершилась. "
+                    "Напиши /gpt, повторная оплата не требуется.",
+                )
+            except Exception:
+                LOG.warning("GPT failed provisioning client notification")
+            await message.answer(
+                f"Подключение GPT для {uid} одобрено, но выдача пока не удалась. "
+                "Клиент может повторить /gpt без оплаты."
+            )
+        else:
+            await message.answer("Заявка сохранена, но подключение пока не завершилось. Напиши /gpt позже — повторная оплата не требуется.")
 
 
 async def _register(message):
@@ -214,34 +233,12 @@ async def _admin(message, text: str, is_admin: bool):
             await message.answer("Сначала человек должен обратиться к Весе с /gpt.")
             return
         await message.answer(f"Бесплатный код GPT для Telegram ID {uid}:\n{code}\n\nОдноразовый, действует 7 дней. Передай лично.")
-    elif command == "/gpt_approve":
-        if reg.mark_receipt_review_approved(uid):
-            await message.answer(
-                "Реквизиты квитанции одобрены. Доступ НЕ выдан. "
-                f"После проверки поступления денег в банке напиши /gpt_paid_confirm {uid}."
-            )
-        else:
-            await message.answer("Квитанция на ручной проверке не найдена.")
-    elif command == "/gpt_paid_confirm":
-        ok = reg.mark_payment(uid)
-        if not ok:
-            await message.answer(
-                "Подтвердить нельзя: нет проверенной квитанции, уже отмечено "
-                "поступление либо заявка не ожидает сверки."
-            )
-        else:
-            await message.answer(
-                "Поступление отмечено как сверенное. Клиенту направлено "
-                "приглашение завершить настройку (если Telegram доступен)."
-            )
-            try:
-                await message.bot.send_message(
-                    uid,
-                    "Владелец подтвердил поступление оплаты. Напиши /gpt, "
-                    "чтобы получить доступ и инструкцию.",
-                )
-            except Exception:
-                LOG.warning("GPT bank confirmation client notification failed")
+    elif command in ("/gpt_approve", "/gpt_paid_confirm"):
+        if not reg.mark_payment(uid):
+            await message.answer("Подтверждение не принято: квитанции нет или доступ уже одобрен.")
+            return
+        await message.answer(f"Подключение GPT для {uid} одобрено. Создаю доступ.")
+        await _provision(message, uid, owner_approved=True)
     elif command == "/gpt_npd":
         ok = reg.mark_payment(uid, tax=True)
         await message.answer(
@@ -293,6 +290,29 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
         return False
     if not callback.from_user or callback.message.chat.type != "private":
         await callback.answer("Только личный чат", show_alert=True)
+        return True
+    if data.startswith("gpt:payapprove:"):
+        if not is_admin or int(callback.from_user.id) != owner_id():
+            await callback.answer("Нет доступа", show_alert=True)
+            return True
+        try:
+            uid = int(data.rsplit(":", 1)[1])
+        except (ValueError, IndexError):
+            await callback.answer("Неверная заявка", show_alert=True)
+            return True
+        if uid <= 0 or uid >= 2**63:
+            await callback.answer("Неверная заявка", show_alert=True)
+            return True
+        if not registry().mark_payment(uid):
+            await callback.answer("Уже одобрено или нет ожидающей квитанции", show_alert=True)
+            return True
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            LOG.warning("GPT owner approval markup not updated")
+        await callback.answer("Подключение одобрено")
+        await callback.message.answer(f"Подключение GPT для {uid} одобрено. Создаю доступ.")
+        await _provision(callback.message, uid, owner_approved=True)
         return True
     if data.startswith("gpt:issue:"):
         if not is_admin or int(callback.from_user.id) != owner_id():
