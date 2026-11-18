@@ -328,6 +328,12 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
             )
             await callback.answer()
             return True
+        # Prevent a second tap on an old confirmation button from rotating
+        # the just-issued password again.
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         try:
             client = GPTAgentClient(GPTAgentConfig.from_env())
             status = await client.get_user_status(uid)
@@ -350,7 +356,7 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
                     "Если GPT уже работал на компьютере: перезагрузи Windows "
                     "(чтобы закрыть старый прокси), затем открой PowerShell "
                     "и выполни команду:\n"
-                    "& \"$env:LOCALAPPDATA\GPT\GPT.exe\" --reset\n\n"
+                    "& \"$env:LOCALAPPDATA\\GPT\\GPT.exe\" --reset\n\n"
                     "Введи логин и новый пароль. Не пересылай их посторонним."
                 )
         except Exception:
