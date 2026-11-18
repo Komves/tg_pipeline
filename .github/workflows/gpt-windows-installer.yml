@@ -149,8 +149,6 @@ jobs:
           if (!(Test-Path $setup)) { throw 'No verified installer to release' }
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
           "$hash  GPT-Setup.exe" | Set-Content -Encoding ascii ops/gpt_windows_client/dist/SHA256SUMS.txt
-          gh release view $tag 2>$null
-          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists: refusing overwrite" }
           gh release create $tag $setup ops/gpt_windows_client/dist/SHA256SUMS.txt --title 'GPT Windows Setup v1.1.1' --notes 'Standard per-user Windows installer with custom GPT shortcut. Removed self-copy and hidden PowerShell. Scanned with Microsoft Defender and verified on Windows. Unsigned; Windows may show a publisher warning.'
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }
 
