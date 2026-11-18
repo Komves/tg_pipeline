@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   windows-installer:
@@ -32,14 +32,8 @@ jobs:
           test -s dist/GPT.exe
           file dist/GPT.exe
           sha256sum dist/GPT.exe | tee dist/SHA256SUMS.txt
-      - name: Publish a versioned public release
-        if: github.ref == 'refs/heads/master'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh release view gpt-windows-v1 >/dev/null 2>&1 || gh release create gpt-windows-v1 --title 'GPT Windows launcher v1' --notes 'Generic self-installing GPT Chrome launcher for customers. No credentials are embedded.'
-          gh release upload gpt-windows-v1 dist/GPT.exe dist/SHA256SUMS.txt --clobber
+      # Public release disabled pending Windows security review and AV testing.
+      # CI only builds a short-lived artifact for isolated inspection.
       - uses: actions/upload-artifact@v4
         with:
           name: GPT-Windows-installer

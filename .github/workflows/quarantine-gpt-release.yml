@@ -1,0 +1,30 @@
+name: Quarantine flagged GPT Windows release
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/quarantine-gpt-release.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  remove-flagged-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete public release containing AV-flagged GPT.exe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view gpt-windows-v1 >/dev/null 2>&1; then
+            gh release delete gpt-windows-v1 --cleanup-tag --yes
+          fi
+          if gh release view gpt-windows-v1 >/dev/null 2>&1; then
+            echo 'QUARANTINE FAILED: release is still public' >&2
+            exit 1
+          fi
+          echo 'Quarantined public GPT.exe release'
