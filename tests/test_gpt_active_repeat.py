@@ -28,7 +28,42 @@ def callback(action, uid=101):
     )
 
 
+class PasswordIntentTests(unittest.TestCase):
+    def test_natural_language_password_request_is_not_sent_to_llm(self):
+        for prompt in (
+            "Покажи пароль gpt", "Веся, покажи пароль GPT",
+            "Дай мне пароль чатгпт", "Я забыл пароль GPT",
+            "Где мой пароль GPT?", "Как восстановить пароль GPT?",
+            "/gpt_password",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(handler.parse_intent(prompt), "password_help")
+
+    def test_general_password_mention_not_hijacked(self):
+        self.assertIsNone(handler.parse_intent("Покажи пароль от Wi-Fi"))
+        self.assertEqual(handler.parse_intent("Подключи GPT"), "register")
+
+
 class ExistingCustomerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_password_help_requires_registered_active_user(self):
+        msg = message()
+        with patch.object(handler, "registry", return_value=SimpleNamespace(get=lambda uid: None)):
+            handled = await handler.handle_gpt_message(msg, "Покажи пароль GPT")
+        self.assertTrue(handled)
+        self.assertIn("ещё не оформлен", msg.answer.await_args.args[0])
+
+    async def test_password_help_existing_user_does_not_rotate(self):
+        msg = message()
+        registry = SimpleNamespace(get=lambda uid: app())
+        with patch.object(handler, "registry", return_value=registry):
+            handled = await handler.handle_gpt_message(msg, "Веся, покажи пароль GPT")
+        self.assertTrue(handled)
+        answer = msg.answer.await_args.args[0]
+        self.assertIn("не могу повторно показать", answer)
+        self.assertIn("Старый пароль перестанет действовать", answer)
+        markup = msg.answer.await_args.kwargs["reply_markup"]
+        self.assertEqual(markup.inline_keyboard[-1][0].callback_data, "gpt:reset")
+
     async def test_existing_customer_gets_link_without_second_provision(self):
         msg = message()
         registry = SimpleNamespace(register=lambda uid: (app(), False))
@@ -42,6 +77,7 @@ class ExistingCustomerTests(unittest.IsolatedAsyncioTestCase):
         markup = msg.answer.await_args.kwargs["reply_markup"]
         self.assertEqual(markup.inline_keyboard[0][0].url, url)
         self.assertEqual(markup.inline_keyboard[1][0].callback_data, "gpt:reset")
+        self.assertIn("получить новый пароль", markup.inline_keyboard[1][0].text.lower())
 
     async def test_missing_existing_login_cannot_reset(self):
         msg = message()
