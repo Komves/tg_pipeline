@@ -35,19 +35,20 @@ class PaidReceiptTests(unittest.TestCase):
         self.assertEqual(self.db.get(self.uid)["payment_confirmed"], 1)
         self.assertFalse(self.db.mark_payment(self.uid))
 
-    def test_suspicious_receipt_requires_two_owner_actions(self):
+    def test_unreadable_receipt_requires_one_owner_action(self):
         self.assertTrue(self.receipt(accepted=False))
-        self.assertFalse(self.db.mark_payment(self.uid))
-        self.assertEqual(self.db.get(self.uid)["stage"], "receipt_review")
-        self.assertTrue(self.db.mark_receipt_review_approved(self.uid))
         self.assertEqual(self.db.get(self.uid)["stage"], "receipt_review")
         self.assertEqual(self.db.get(self.uid)["payment_confirmed"], 0)
+        # Owner has personally reviewed the original and can approve even
+        # if OCR could not parse all fields. Only ONE owner action is needed.
         self.assertTrue(self.db.mark_payment(self.uid))
         self.assertEqual(self.db.get(self.uid)["stage"], "provisioning")
+        self.assertEqual(self.db.get(self.uid)["payment_confirmed"], 1)
+        self.assertEqual(self.db.get(self.uid)["receipt_review"], "accepted")
+        self.assertFalse(self.db.mark_payment(self.uid))
 
     def test_no_receipt_cannot_be_confirmed(self):
         self.assertFalse(self.db.mark_payment(self.uid))
-        self.assertFalse(self.db.mark_receipt_review_approved(self.uid))
         self.assertFalse(self.db.mark_payment(self.uid, tax=True))
 
     def test_npd_recording_is_separate_from_bank_confirmation(self):

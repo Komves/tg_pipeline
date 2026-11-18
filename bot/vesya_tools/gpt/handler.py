@@ -37,6 +37,32 @@ def _payment_text() -> str:
     return base + "Реквизиты:\n" + details[:700] + "\n\nПосле оплаты загрузи банковскую квитанцию PDF или фото."
 
 
+def _installer_url() -> str:
+    """Return only a valid HTTPS download URL, never an unchecked relative link."""
+    raw = (os.getenv("GPT_INSTALLER_URL") or "").strip()
+    url = urlsplit(raw)
+    if url.scheme != "https" or not url.hostname or url.username or url.password:
+        return ""
+    return raw
+
+
+def _active_keyboard() -> InlineKeyboardMarkup:
+    """Existing customer can download the app or explicitly reset lost credentials."""
+    rows = []
+    url = _installer_url()
+    if url:
+        rows.append([InlineKeyboardButton(text="Скачать GPT.exe", url=url)])
+    rows.append([InlineKeyboardButton(text="Восстановить пароль GPT", callback_data="gpt:reset")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _reset_confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Да, изменить пароль", callback_data="gpt:reset_confirm")],
+        [InlineKeyboardButton(text="Отмена", callback_data="gpt:reset_cancel")],
+    ])
+
+
 def _choice() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Я оплатил — загрузить квитанцию", callback_data="gpt:paid")],
@@ -77,7 +103,7 @@ async def _notify_owner(bot, text: str, reply_markup=None):
     await bot.send_message(uid, text, reply_markup=reply_markup)
 
 
-async def _provision(message, uid: int):
+async def _provision(message, uid: int, *, owner_approved: bool = False):
     reg = registry()
     app = reg.get(uid)
     if not app or app["stage"] != "provisioning" or app.get("method") not in ("paid", "free"):
@@ -107,7 +133,12 @@ async def _provision(message, uid: int):
                if url else "Установщик пока не опубликован. Ссылка появится после проверки пакета.")
             + "\n\nНе пересылай пароль другим людям."
         )
-        await message.answer(instructions)
+        # Owner callback runs in the OWNER chat, but credentials must go
+        # exclusively to the client's private Telegram ID.
+        if owner_approved:
+            await message.bot.send_message(uid, instructions)
+        else:
+            await message.answer(instructions)
         reg.note_provisioned(uid, login)
         try:
             await _notify_owner(
@@ -118,7 +149,21 @@ async def _provision(message, uid: int):
             LOG.warning("GPT owner notification failed after provisioning")
     except Exception:
         LOG.warning("GPT provisioning error, no credentials logged")
-        await message.answer("Заявка сохранена, но подключение пока не завершилось. Напиши /gpt позже — повторная оплата не требуется.")
+        if owner_approved:
+            try:
+                await message.bot.send_message(
+                    uid,
+                    "Владелец одобрил подключение, но выдача пока не завершилась. "
+                    "Напиши /gpt, повторная оплата не требуется.",
+                )
+            except Exception:
+                LOG.warning("GPT failed provisioning client notification")
+            await message.answer(
+                f"Подключение GPT для {uid} одобрено, но выдача пока не удалась. "
+                "Клиент может повторить /gpt без оплаты."
+            )
+        else:
+            await message.answer("Заявка сохранена, но подключение пока не завершилось. Напиши /gpt позже — повторная оплата не требуется.")
 
 
 async def _register(message):
@@ -137,7 +182,24 @@ async def _register(message):
         except Exception:
             LOG.warning("GPT registration owner notification failed")
     if app["stage"] == "active":
-        await message.answer("GPT уже оформлен. Если нужна повторная настройка, напиши мне.")
+        login = str(app.get("proxy_username") or "")
+        url = _installer_url()
+        if not login.startswith("gpt_"):
+            await message.answer(
+                "GPT отмечен как оформленный, но учётные данные в реестре не найдены. "
+                "Обратись к владельцу: повторно оплачивать не нужно."
+            )
+            return
+        instructions = (
+            "GPT уже оформлен — повторная оплата не нужна.\n\n"
+            f"Твой логин: {login}\n\n"
+            + (f"Скачать установщик GPT.exe:\n{url}\n\n" if url
+               else "Установщик пока не опубликован.\n\n")
+            + "После установки запускай отдельный ярлык GPT. "
+            "Если пароль из предыдущего сообщения потерян, нажми "
+            "«Восстановить пароль GPT» — старый пароль перестанет работать."
+        )
+        await message.answer(instructions, reply_markup=_active_keyboard())
     elif app["stage"] == "provisioning":
         await _provision(message, uid)
     elif app["stage"] == "receipt_review":
@@ -171,34 +233,12 @@ async def _admin(message, text: str, is_admin: bool):
             await message.answer("Сначала человек должен обратиться к Весе с /gpt.")
             return
         await message.answer(f"Бесплатный код GPT для Telegram ID {uid}:\n{code}\n\nОдноразовый, действует 7 дней. Передай лично.")
-    elif command == "/gpt_approve":
-        if reg.mark_receipt_review_approved(uid):
-            await message.answer(
-                "Реквизиты квитанции одобрены. Доступ НЕ выдан. "
-                f"После проверки поступления денег в банке напиши /gpt_paid_confirm {uid}."
-            )
-        else:
-            await message.answer("Квитанция на ручной проверке не найдена.")
-    elif command == "/gpt_paid_confirm":
-        ok = reg.mark_payment(uid)
-        if not ok:
-            await message.answer(
-                "Подтвердить нельзя: нет проверенной квитанции, уже отмечено "
-                "поступление либо заявка не ожидает сверки."
-            )
-        else:
-            await message.answer(
-                "Поступление отмечено как сверенное. Клиенту направлено "
-                "приглашение завершить настройку (если Telegram доступен)."
-            )
-            try:
-                await message.bot.send_message(
-                    uid,
-                    "Владелец подтвердил поступление оплаты. Напиши /gpt, "
-                    "чтобы получить доступ и инструкцию.",
-                )
-            except Exception:
-                LOG.warning("GPT bank confirmation client notification failed")
+    elif command in ("/gpt_approve", "/gpt_paid_confirm"):
+        if not reg.mark_payment(uid):
+            await message.answer("Подтверждение не принято: квитанции нет или доступ уже одобрен.")
+            return
+        await message.answer(f"Подключение GPT для {uid} одобрено. Создаю доступ.")
+        await _provision(message, uid, owner_approved=True)
     elif command == "/gpt_npd":
         ok = reg.mark_payment(uid, tax=True)
         await message.answer(
@@ -251,6 +291,35 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
     if not callback.from_user or callback.message.chat.type != "private":
         await callback.answer("Только личный чат", show_alert=True)
         return True
+    if data.startswith("gpt:payapprove:"):
+        if not is_admin or int(callback.from_user.id) != owner_id():
+            await callback.answer("Нет доступа", show_alert=True)
+            return True
+        try:
+            _, _, uid_text, receipt_prefix = data.split(":")
+            uid = int(uid_text)
+        except (ValueError, IndexError):
+            await callback.answer("Неверная заявка", show_alert=True)
+            return True
+        if uid <= 0 or uid >= 2**63 or not re.fullmatch(r"[0-9a-f]{16}", receipt_prefix):
+            await callback.answer("Неверная заявка", show_alert=True)
+            return True
+        reg = registry()
+        app = reg.get(uid)
+        if not app or not str(app.get("receipt_hash") or "").startswith(receipt_prefix):
+            await callback.answer("Квитанция уже заменена. Проверь новую.", show_alert=True)
+            return True
+        if not reg.mark_payment(uid, receipt_prefix=receipt_prefix):
+            await callback.answer("Уже одобрено или нет ожидающей квитанции", show_alert=True)
+            return True
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            LOG.warning("GPT owner approval markup not updated")
+        await callback.answer("Подключение одобрено")
+        await callback.message.answer(f"Подключение GPT для {uid} одобрено. Создаю доступ.")
+        await _provision(callback.message, uid, owner_approved=True)
+        return True
     if data.startswith("gpt:issue:"):
         if not is_admin or int(callback.from_user.id) != owner_id():
             await callback.answer("Нет доступа", show_alert=True)
@@ -266,6 +335,63 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
             "Действует 7 дней. Передай лично. Предыдущий код отозван."
         )
         await callback.answer("Код создан")
+        return True
+    if data in ("gpt:reset", "gpt:reset_confirm", "gpt:reset_cancel"):
+        uid = int(callback.from_user.id)
+        app = registry().get(uid)
+        if not app or app["stage"] != "active" or not str(app.get("proxy_username") or "").startswith("gpt_"):
+            await callback.answer("Действующий GPT-доступ не найден", show_alert=True)
+            return True
+        if data == "gpt:reset_cancel":
+            await callback.answer("Отменено")
+            return True
+        if data == "gpt:reset":
+            await callback.message.answer(
+                "Восстановление доступа заменит текущий пароль GPT новым. "
+                "Старый перестанет работать, а на компьютере придётся ввести новый пароль. "
+                "Продолжить?",
+                reply_markup=_reset_confirmation_keyboard(),
+            )
+            await callback.answer()
+            return True
+        # Prevent a second tap on an old confirmation button from rotating
+        # the just-issued password again.
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        try:
+            client = GPTAgentClient(GPTAgentConfig.from_env())
+            status = await client.get_user_status(uid)
+            if status.get("status") != "active" or status.get("username") != app.get("proxy_username"):
+                await callback.message.answer(
+                    "GPT-доступ отключён либо данные не совпадают. "
+                    "Для восстановления обратитесь к владельцу."
+                )
+            else:
+                result = await client.rotate_password(uid)
+                password = result.get("initial_password")
+                login = result.get("username")
+                if result.get("status") != "active" or login != app.get("proxy_username") or not password:
+                    raise ValueError("Unexpected password rotation response")
+                await callback.message.answer(
+                    f"Новый пароль GPT для {login}:\n{password}\n\n"
+                    "Старый пароль больше не действует.\n\n"
+                    "Если GPT ещё не установлен, просто запусти скачанный GPT.exe "
+                    "и введи новый пароль.\n\n"
+                    "Если GPT уже работал на компьютере: перезагрузи Windows "
+                    "(чтобы закрыть старый прокси), затем открой PowerShell "
+                    "и выполни команду:\n"
+                    "& \"$env:LOCALAPPDATA\\GPT\\GPT.exe\" --reset\n\n"
+                    "Введи логин и новый пароль. Не пересылай их посторонним."
+                )
+        except Exception:
+            LOG.warning("GPT password recovery failed; no credentials logged")
+            await callback.message.answer(
+                "Не удалось подтвердить восстановление пароля. "
+                "Если пароль уже изменился, повтори восстановление."
+            )
+        await callback.answer()
         return True
     if data not in ("gpt:paid", "gpt:code"):
         await callback.answer("Неизвестное действие", show_alert=True)

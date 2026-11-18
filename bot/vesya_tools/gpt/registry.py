@@ -177,20 +177,10 @@ class GPTRegistry:
             )
             db.execute("INSERT INTO audit(ts,telegram_id,event) VALUES(?,?,'access_issued')", (now(), uid))
 
-    def mark_receipt_review_approved(self, uid: int) -> bool:
-        with self.tx() as db:
-            cur = db.execute(
-                """UPDATE applications SET receipt_review='accepted',updated_at=?
-                   WHERE telegram_id=? AND stage='receipt_review' AND receipt_file_id IS NOT NULL""",
-                (now(),uid),
-            )
-            return cur.rowcount == 1
+    def mark_payment(self, uid: int, *, tax: bool = False, receipt_prefix: str | None = None) -> bool:
+        """One owner approval authorizes paid access after the receipt is stored.
 
-    def mark_payment(self, uid: int, *, tax: bool = False) -> bool:
-        """Only an explicit owner bank reconciliation may authorize paid access.
-
-        Receipt OCR, even with a matching amount and payee, is never evidence
-        of settled funds. NPD receipt recording is a separate later action.
+        OCR alone cannot issue access. NPD receipt recording stays independent.
         """
         with self.tx() as db:
             ts = now()
@@ -203,17 +193,24 @@ class GPTRegistry:
                 )
                 event = "npd_receipt_marked"
             else:
+                # A clicked button must authorize exactly the receipt the
+                # owner saw; an old button cannot approve a replacement.
+                if receipt_prefix is not None:
+                    row = db.execute(
+                        "SELECT receipt_hash FROM applications WHERE telegram_id=?",
+                        (uid,),
+                    ).fetchone()
+                    if not row or not str(row["receipt_hash"] or "").startswith(receipt_prefix):
+                        return False
                 cur = db.execute(
                     """UPDATE applications SET payment_confirmed=1,
-                       stage=CASE WHEN stage='receipt_review' THEN 'provisioning' ELSE stage END,
-                       updated_at=?
+                       receipt_review='accepted',stage='provisioning',updated_at=?
                        WHERE telegram_id=? AND method='paid'
-                       AND receipt_review='accepted' AND receipt_file_id IS NOT NULL
-                       AND stage IN ('receipt_review','active')
+                       AND receipt_file_id IS NOT NULL AND stage='receipt_review'
                        AND payment_confirmed=0""",
                     (ts, uid),
                 )
-                event = "bank_payment_confirmed"
+                event = "owner_approved_paid_connection"
             if cur.rowcount:
                 db.execute(
                     "INSERT INTO audit(ts,telegram_id,event) VALUES(?,?,?)",
