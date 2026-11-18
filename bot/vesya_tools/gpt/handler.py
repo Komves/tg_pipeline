@@ -51,7 +51,7 @@ def _active_keyboard() -> InlineKeyboardMarkup:
     rows = []
     url = _installer_url()
     if url:
-        rows.append([InlineKeyboardButton(text="Скачать GPT.exe", url=url)])
+        rows.append([InlineKeyboardButton(text="Скачать установщик GPT", url=url)])
     rows.append([InlineKeyboardButton(text="Получить новый пароль GPT", callback_data="gpt:reset")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -120,10 +120,10 @@ def _credential_instructions(login: str, password: str, *, repeat: bool = False)
         ("GPT уже подключён. Повторная оплата не нужна.\n\n" if repeat
          else "Индивидуальное подключение GPT создано.\n\n")
         + f"Логин: {login}\nПароль: {password}\n\n"
-        + (f"Скачать GPT.exe:\n{url}\n\n"
+        + (f"Скачать GPT-Setup.exe:\n{url}\n\n"
            if url else "Установщик пока не опубликован.\n\n")
-        + "Запусти GPT.exe, введи логин и пароль один раз. "
-          "Программа создаст отдельный ярлык GPT и профиль Chrome. "
+        + "Запусти GPT-Setup.exe и установи программу. Затем открой ярлык GPT, "
+          "введи логин и пароль один раз. Программа использует отдельный профиль Chrome. "
           "При следующих запусках используй ярлык GPT.\n\n"
           "Не пересылай пароль другим людям."
     )
@@ -170,7 +170,7 @@ async def _send_active_details(message, app, reg):
     await message.answer(
         "GPT уже подключён. Повторная оплата не нужна.\n\n"
         f"Твой логин: {login}\n\n"
-        + (f"Скачать GPT.exe:\n{url}\n\n" if url else "")
+        + (f"Скачать GPT-Setup.exe:\n{url}\n\n" if url else "")
         + "Этот аккаунт создан до внедрения повторной выдачи пароля. "
           "Прежний пароль зашифрованным способом не сохранялся, поэтому "
           "вернуть его из хеша невозможно. Один раз нажми «Получить новый пароль GPT»: "
@@ -446,7 +446,7 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
                 await callback.message.answer(
                     f"Новый пароль GPT для {login}:\n{password}\n\n"
                     "Старый пароль больше не действует.\n\n"
-                    "Если GPT ещё не установлен, просто запусти скачанный GPT.exe "
+                    "Если GPT ещё не установлен, запусти GPT-Setup.exe, затем ярлык GPT "
                     "и введи новый пароль.\n\n"
                     "Если GPT уже работал на компьютере: перезагрузи Windows "
                     "(чтобы закрыть старый прокси), затем открой PowerShell "

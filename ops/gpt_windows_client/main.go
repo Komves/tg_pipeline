@@ -1,5 +1,5 @@
-// Vesya personal Chrome launcher for Windows.
-// The private download endpoint appends JSON configuration after CONFIG_MAGIC.
+// GPT private Chrome launcher for Windows. Installed by a standard installer.
+// No self-installation, autorun persistence, scripts or embedded credentials.
 package main
 
 import (
@@ -27,7 +27,7 @@ import (
 )
 
 const localAddr = "127.0.0.1:43139"
-const clientVersion = "gpt-v1.0"
+const clientVersion = "gpt-v1.1-security-review"
 
 type Config struct {
  Host string
@@ -179,9 +179,9 @@ func(p *Proxy) connect(w http.ResponseWriter,r *http.Request){
 }
 
 func main(){
- installed,err:=installToLocalAppData()
- if err!=nil{notice("Установка GPT не удалась: "+err.Error());return}
- if installed{return}
+ // Installation and shortcut creation are performed by Inno Setup.
+ // This process only opens Chrome through the user's explicitly
+ // configured GPT proxy; it never installs or copies itself.
  config,err:=load()
  if err!=nil{notice("Не удалось подключиться: "+err.Error());return}
  p:=newProxy(config)
