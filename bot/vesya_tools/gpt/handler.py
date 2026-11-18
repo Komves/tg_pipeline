@@ -37,6 +37,32 @@ def _payment_text() -> str:
     return base + "Реквизиты:\n" + details[:700] + "\n\nПосле оплаты загрузи банковскую квитанцию PDF или фото."
 
 
+def _installer_url() -> str:
+    """Return only a valid HTTPS download URL, never an unchecked relative link."""
+    raw = (os.getenv("GPT_INSTALLER_URL") or "").strip()
+    url = urlsplit(raw)
+    if url.scheme != "https" or not url.hostname or url.username or url.password:
+        return ""
+    return raw
+
+
+def _active_keyboard() -> InlineKeyboardMarkup:
+    """Existing customer can download the app or explicitly reset lost credentials."""
+    rows = []
+    url = _installer_url()
+    if url:
+        rows.append([InlineKeyboardButton(text="Скачать GPT.exe", url=url)])
+    rows.append([InlineKeyboardButton(text="Восстановить пароль GPT", callback_data="gpt:reset")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _reset_confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Да, изменить пароль", callback_data="gpt:reset_confirm")],
+        [InlineKeyboardButton(text="Отмена", callback_data="gpt:reset_cancel")],
+    ])
+
+
 def _choice() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Я оплатил — загрузить квитанцию", callback_data="gpt:paid")],
@@ -137,7 +163,24 @@ async def _register(message):
         except Exception:
             LOG.warning("GPT registration owner notification failed")
     if app["stage"] == "active":
-        await message.answer("GPT уже оформлен. Если нужна повторная настройка, напиши мне.")
+        login = str(app.get("proxy_username") or "")
+        url = _installer_url()
+        if not login.startswith("gpt_"):
+            await message.answer(
+                "GPT отмечен как оформленный, но учётные данные в реестре не найдены. "
+                "Обратись к владельцу: повторно оплачивать не нужно."
+            )
+            return
+        instructions = (
+            "GPT уже оформлен — повторная оплата не нужна.\n\n"
+            f"Твой логин: {login}\n\n"
+            + (f"Скачать установщик GPT.exe:\n{url}\n\n" if url
+               else "Установщик пока не опубликован.\n\n")
+            + "После установки запускай отдельный ярлык GPT. "
+            "Если пароль из предыдущего сообщения потерян, нажми "
+            "«Восстановить пароль GPT» — старый пароль перестанет работать."
+        )
+        await message.answer(instructions, reply_markup=_active_keyboard())
     elif app["stage"] == "provisioning":
         await _provision(message, uid)
     elif app["stage"] == "receipt_review":
@@ -266,6 +309,52 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
             "Действует 7 дней. Передай лично. Предыдущий код отозван."
         )
         await callback.answer("Код создан")
+        return True
+    if data in ("gpt:reset", "gpt:reset_confirm", "gpt:reset_cancel"):
+        uid = int(callback.from_user.id)
+        app = registry().get(uid)
+        if not app or app["stage"] != "active" or not str(app.get("proxy_username") or "").startswith("gpt_"):
+            await callback.answer("Действующий GPT-доступ не найден", show_alert=True)
+            return True
+        if data == "gpt:reset_cancel":
+            await callback.answer("Отменено")
+            return True
+        if data == "gpt:reset":
+            await callback.message.answer(
+                "Восстановление доступа заменит текущий пароль GPT новым. "
+                "Старый перестанет работать, а на компьютере придётся ввести новый пароль. "
+                "Продолжить?",
+                reply_markup=_reset_confirmation_keyboard(),
+            )
+            await callback.answer()
+            return True
+        try:
+            client = GPTAgentClient(GPTAgentConfig.from_env())
+            status = await client.get_user_status(uid)
+            if status.get("status") != "active" or status.get("username") != app.get("proxy_username"):
+                await callback.message.answer(
+                    "GPT-доступ отключён либо данные не совпадают. "
+                    "Для восстановления обратитесь к владельцу."
+                )
+            else:
+                result = await client.rotate_password(uid)
+                password = result.get("initial_password")
+                login = result.get("username")
+                if result.get("status") != "active" or login != app.get("proxy_username") or not password:
+                    raise ValueError("Unexpected password rotation response")
+                await callback.message.answer(
+                    f"Новый пароль GPT для {login}:\n{password}\n\n"
+                    "Старый пароль больше не действует. "
+                    "На компьютере запусти GPT.exe с параметром --reset, "
+                    "чтобы ввести новые данные. Не пересылай пароль посторонним."
+                )
+        except Exception:
+            LOG.warning("GPT password recovery failed; no credentials logged")
+            await callback.message.answer(
+                "Не удалось подтвердить восстановление пароля. "
+                "Если пароль уже изменился, повтори восстановление."
+            )
+        await callback.answer()
         return True
     if data not in ("gpt:paid", "gpt:code"):
         await callback.answer("Неизвестное действие", show_alert=True)
