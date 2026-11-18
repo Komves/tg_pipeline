@@ -1,43 +1,141 @@
-name: GPT Windows installer
+name: GPT Windows installer security review
+
 on:
   push:
     branches:
-      - feature/gpt-windows-installer
       - master
+      - feature/gpt-clean-windows-installer-20261118
+    paths:
+      - 'ops/gpt_windows_client/**'
+      - '.github/workflows/gpt-windows-installer.yml'
+  pull_request:
     paths:
       - 'ops/gpt_windows_client/**'
       - '.github/workflows/gpt-windows-installer.yml'
   workflow_dispatch:
 
+# REVIEW ONLY. No public release. No automatic Render configuration changes.
 permissions:
   contents: read
 
 jobs:
-  windows-installer:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ops/gpt_windows_client
+  windows-security-review:
+    runs-on: windows-2022
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: ops/gpt_windows_client/go.mod
-      - name: Cross-compile GPT.exe
+
+      - name: Check no self-copy or hidden command execution
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p dist
-          gofmt -w *.go
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -H windowsgui" -o dist/GPT.exe .
-          test -s dist/GPT.exe
-          file dist/GPT.exe
-          sha256sum dist/GPT.exe | tee dist/SHA256SUMS.txt
-      # Public release disabled pending Windows security review and AV testing.
-      # CI only builds a short-lived artifact for isolated inspection.
-      - uses: actions/upload-artifact@v4
+          $ErrorActionPreference = 'Stop'
+          $src = (Get-Content ops/gpt_windows_client/main.go -Raw) + (Get-Content ops/gpt_windows_client/account_windows.go -Raw)
+          foreach ($pattern in @('powershell[.]exe','installToLocalAppData','os[.]Executable[(]','CreateShortcut[(]','exec[.]Command[(]installed')) {
+            if ($src -match $pattern) { throw "Legacy installer behavior still present: $pattern" }
+          }
+          if ($src -notmatch '--disable-http2') { throw 'Required Chrome flag missing' }
+          if ($src -notmatch '127[.]0[.]0[.]1:43139') { throw 'Local proxy endpoint changed' }
+
+      - name: Compile the GPT launcher natively on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location ops/gpt_windows_client
+          gofmt -w main.go account_windows.go
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { throw 'go vet failed' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $env:CGO_ENABLED = '0'
+          $env:GOOS = 'windows'
+          $env:GOARCH = 'amd64'
+          go build -trimpath -ldflags '-H windowsgui' -o dist/GPT.exe .
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path dist/GPT.exe)) { throw 'Windows Go build failed' }
+          Pop-Location
+
+      - name: Install Inno Setup compiler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $paths = @(
+            "\${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "\${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          if (-not ($paths | Where-Object { Test-Path $_ })) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+          }
+
+      - name: Package standard per-user setup with desktop shortcut
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $paths = @(
+            "\${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "\${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw 'Inno Setup compiler not found' }
+          Push-Location ops/gpt_windows_client
+          & $iscc installer.iss
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path dist/GPT-Setup-Review.exe)) {
+            throw 'Inno Setup build failed'
+          }
+          Get-FileHash dist/GPT.exe -Algorithm SHA256 | Format-List
+          Get-FileHash dist/GPT-Setup-Review.exe -Algorithm SHA256 | Format-List
+          Pop-Location
+
+      - name: Require active Microsoft Defender and scan both binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $status = Get-MpComputerStatus -ErrorAction Stop
+          Write-Host "Defender enabled=$($status.AntivirusEnabled), service=$($status.AMServiceEnabled), signatures=$($status.AntivirusSignatureVersion)"
+          if (!$status.AntivirusEnabled -or !$status.AMServiceEnabled) {
+            throw 'Defender unavailable on runner: no trusted scan result'
+          }
+          $files = @(
+            (Resolve-Path ops/gpt_windows_client/dist/GPT.exe).Path,
+            (Resolve-Path ops/gpt_windows_client/dist/GPT-Setup-Review.exe).Path
+          )
+          $scanStart = Get-Date
+          foreach ($file in $files) {
+            Start-MpScan -ScanType CustomScan -ScanPath $file -ErrorAction Stop
+            if (!(Test-Path $file)) { throw "Defender quarantined: $file" }
+          }
+          $threats = @(Get-MpThreatDetection -ErrorAction Stop | Where-Object {
+            $_.InitialDetectionTime -ge $scanStart
+          })
+          if ($threats.Count -gt 0) { throw "Defender detected $($threats.Count) threats" }
+          Write-Host 'Microsoft Defender custom scans complete with no detections.'
+
+      - name: Validate silent installation and standard uninstall on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path ops/gpt_windows_client/dist/GPT-Setup-Review.exe).Path
+          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Setup exited $($p.ExitCode)" }
+          $target = Join-Path $env:LOCALAPPDATA 'GPT\GPT.exe'
+          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'GPT.lnk'
+          if (!(Test-Path $target)) { throw 'GPT.exe not installed' }
+          if (!(Test-Path $desktop)) { throw 'GPT desktop shortcut missing' }
+          $uninstaller = Join-Path $env:LOCALAPPDATA 'GPT\unins000.exe'
+          if (!(Test-Path $uninstaller)) { throw 'Uninstaller missing' }
+          $p = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Uninstall exited $($p.ExitCode)" }
+          if (Test-Path $target) { throw 'GPT.exe remained after uninstall' }
+          Write-Host 'Install/shortcut/uninstall checks passed.'
+
+      - name: Save unsigned review artifact only (NOT for customers)
+        uses: actions/upload-artifact@v4
         with:
-          name: GPT-Windows-installer
+          name: GPT-Setup-Review-UNSIGNED-NOT-FOR-CUSTOMERS
           path: |
+            ops/gpt_windows_client/dist/GPT-Setup-Review.exe
             ops/gpt_windows_client/dist/GPT.exe
-            ops/gpt_windows_client/dist/SHA256SUMS.txt
-          retention-days: 14
+          retention-days: 3
