@@ -177,7 +177,7 @@ class GPTRegistry:
             )
             db.execute("INSERT INTO audit(ts,telegram_id,event) VALUES(?,?,'access_issued')", (now(), uid))
 
-    def mark_payment(self, uid: int, *, tax: bool = False) -> bool:
+    def mark_payment(self, uid: int, *, tax: bool = False, receipt_prefix: str | None = None) -> bool:
         """One owner approval authorizes paid access after the receipt is stored.
 
         OCR alone cannot issue access. NPD receipt recording stays independent.
@@ -193,6 +193,15 @@ class GPTRegistry:
                 )
                 event = "npd_receipt_marked"
             else:
+                # A clicked button must authorize exactly the receipt the
+                # owner saw; an old button cannot approve a replacement.
+                if receipt_prefix is not None:
+                    row = db.execute(
+                        "SELECT receipt_hash FROM applications WHERE telegram_id=?",
+                        (uid,),
+                    ).fetchone()
+                    if not row or not str(row["receipt_hash"] or "").startswith(receipt_prefix):
+                        return False
                 cur = db.execute(
                     """UPDATE applications SET payment_confirmed=1,
                        receipt_review='accepted',stage='provisioning',updated_at=?
