@@ -9,7 +9,7 @@ from PIL import Image, IcoImagePlugin
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "GPT_source.png"
-OUTPUT = ROOT / "GPT.ico"
+OUTPUT = ROOT / "GPT-v1.1.2.ico"
 SIZES = {(16, 16), (24, 24), (32, 32), (48, 48), (64, 64)}
 
 with Image.open(SOURCE) as original:
