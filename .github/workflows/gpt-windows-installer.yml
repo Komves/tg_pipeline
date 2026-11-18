@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - master
-      - fix/gpt-desktop-icon-20261118
+      - fix/gpt-upgrade-close-running-20261118
     paths:
       - 'ops/gpt_windows_client/**'
       - '.github/workflows/gpt-windows-installer.yml'
@@ -129,6 +129,63 @@ jobs:
           if ($threats.Count -gt 0) { throw "Defender detected $($threats.Count) threats" }
           Write-Host 'Microsoft Defender custom scans complete with no detections.'
 
+      - name: Test automatic update with active old GPT and isolated Chrome
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path ops/gpt_windows_client/dist/GPT-Setup.exe).Path
+          $target = Join-Path $env:LOCALAPPDATA 'GPT\GPT.exe'
+          $privateProfile = Join-Path $env:LOCALAPPDATA 'GPT\ChromeProfile'
+          $ordinaryProfile = Join-Path $env:TEMP 'UnrelatedChromeProfile'
+          # A complete, silent initial install.
+          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Initial setup exited $($p.ExitCode)" }
+          $account = Join-Path $env:LOCALAPPDATA 'GPT\account.dat'
+          $keep = 'fake-DPAPI-test-data-not-credentials'
+          [System.IO.File]::WriteAllText($account,$keep)
+          # Simulate an old GPT launcher which keeps its own EXE open.
+          # The fake program is installed only on the isolated CI runner.
+          $fake = Join-Path $env:TEMP 'gpt_old_process_hold.go'
+          Set-Content $fake 'package main; import "time"; func main(){for {time.Sleep(time.Second)}}'
+          go build -o $target $fake
+          if ($LASTEXITCODE -ne 0) { throw 'Could not build old running GPT test process' }
+          $ordinaryChromeExe = Join-Path $env:TEMP 'chrome.exe'
+          Copy-Item $target $ordinaryChromeExe
+          $old = $null
+          $gptChrome = $null
+          $ordinaryChrome = $null
+          try {
+            $old = Start-Process -FilePath $target -PassThru -WindowStyle Hidden
+            $gptChrome = Start-Process -FilePath $ordinaryChromeExe -ArgumentList "--user-data-dir=$privateProfile" -PassThru -WindowStyle Hidden
+            $ordinaryChrome = Start-Process -FilePath $ordinaryChromeExe -ArgumentList "--user-data-dir=$ordinaryProfile" -PassThru -WindowStyle Hidden
+            Start-Sleep -Seconds 2
+            if ($old.HasExited -or $gptChrome.HasExited -or $ordinaryChrome.HasExited) {
+              throw 'Test processes exited before upgrade: invalid test'
+            }
+            # Overwrite must complete without any manual "Try again" dialog.
+            $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait
+            if ($p.ExitCode -ne 0) { throw "Upgrade with running GPT failed: $($p.ExitCode)" }
+            Start-Sleep -Milliseconds 800
+            $old.Refresh()
+            $gptChrome.Refresh()
+            $ordinaryChrome.Refresh()
+            if (-not $old.HasExited) { throw 'Previous GPT.exe is still running' }
+            if (-not $gptChrome.HasExited) { throw 'GPT-specific Chrome was not closed' }
+            if ($ordinaryChrome.HasExited) { throw 'Unrelated Chrome was incorrectly closed' }
+            if (!(Test-Path $target)) { throw 'New GPT.exe missing after upgrade' }
+            if ([System.IO.File]::ReadAllText($account) -ne $keep) {
+              throw 'Upgrade modified or deleted saved credentials'
+            }
+            Write-Host 'Upgrade completed; GPT and GPT Chrome closed; ordinary Chrome untouched; saved credentials intact.'
+          } finally {
+            foreach ($proc in @($old,$gptChrome,$ordinaryChrome)) {
+              if ($null -ne $proc) {
+                $proc.Refresh()
+                if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+              }
+            }
+          }
+
       - name: Validate silent installation and standard uninstall on Windows
         shell: pwsh
         run: |
@@ -159,12 +216,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = 'gpt-windows-v1.1.2'
+          $tag = 'gpt-windows-v1.1.3'
           $setup = 'ops/gpt_windows_client/dist/GPT-Setup.exe'
           if (!(Test-Path $setup)) { throw 'No verified installer to release' }
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
           "$hash  GPT-Setup.exe" | Set-Content -Encoding ascii ops/gpt_windows_client/dist/SHA256SUMS.txt
-          gh release create $tag $setup ops/gpt_windows_client/dist/SHA256SUMS.txt --title 'GPT Windows Setup v1.1.2' --notes 'Standard per-user Windows installer with custom GPT shortcut. Removed self-copy and hidden PowerShell. Scanned with Microsoft Defender and verified on Windows. Unsigned; Windows may show a publisher warning.'
+          gh release create $tag $setup ops/gpt_windows_client/dist/SHA256SUMS.txt --title 'GPT Windows Setup v1.1.3' --notes 'Standard per-user Windows installer with custom GPT shortcut. Removed self-copy and hidden PowerShell. Scanned with Microsoft Defender and verified on Windows. Unsigned; Windows may show a publisher warning.'
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }
 
       - name: Save verified installer build artifact
