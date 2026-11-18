@@ -344,9 +344,14 @@ async def handle_gpt_callback(callback, *, is_admin: bool = False) -> bool:
                     raise ValueError("Unexpected password rotation response")
                 await callback.message.answer(
                     f"Новый пароль GPT для {login}:\n{password}\n\n"
-                    "Старый пароль больше не действует. "
-                    "На компьютере запусти GPT.exe с параметром --reset, "
-                    "чтобы ввести новые данные. Не пересылай пароль посторонним."
+                    "Старый пароль больше не действует.\n\n"
+                    "Если GPT ещё не установлен, просто запусти скачанный GPT.exe "
+                    "и введи новый пароль.\n\n"
+                    "Если GPT уже работал на компьютере: перезагрузи Windows "
+                    "(чтобы закрыть старый прокси), затем открой PowerShell "
+                    "и выполни команду:\n"
+                    "& \"$env:LOCALAPPDATA\GPT\GPT.exe\" --reset\n\n"
+                    "Введи логин и новый пароль. Не пересылай их посторонним."
                 )
         except Exception:
             LOG.warning("GPT password recovery failed; no credentials logged")
