@@ -52,7 +52,7 @@ def _active_keyboard() -> InlineKeyboardMarkup:
     url = _installer_url()
     if url:
         rows.append([InlineKeyboardButton(text="Скачать GPT.exe", url=url)])
-    rows.append([InlineKeyboardButton(text="Восстановить пароль GPT", callback_data="gpt:reset")])
+    rows.append([InlineKeyboardButton(text="Получить новый пароль GPT", callback_data="gpt:reset")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -84,9 +84,19 @@ def parse_intent(text: str) -> str | None:
         return "redeem"
     if re.fullmatch(r"/gpt(?:@\w+)?", value, re.I):
         return "register"
+    if re.fullmatch(r"/gpt_password(?:@\w+)?", value, re.I):
+        return "password_help"
     if re.fullmatch(r"/gpt_(?:status|code|approve|paid_confirm|npd|disable|enable)(?:\s+\d+)?", value, re.I):
         return "admin"
     lower = re.sub(r"^(веся|вися|веська|vesya)\s*[,.:;!\-]?\s*", "", value.casefold()).strip()
+    if re.fullmatch(
+        r"(?:покажи|дай|пришли|отправь|напомни|скажи)\s+(?:мне\s+)?(?:мой\s+)?пароль\s+(?:от\s+|для\s+)?(?:gpt|гпт|chatgpt|чатгпт)"
+        r"|(?:забыл|потерял|не помню)\s+пароль\s+(?:от\s+|для\s+)?(?:gpt|гпт|chatgpt|чатгпт)"
+        r"|(?:где\s+)?(?:мой\s+)?пароль\s+(?:от\s+|для\s+)?(?:gpt|гпт|chatgpt|чатгпт)"
+        r"|(?:как\s+)?(?:восстановить|получить|узнать)\s+пароль\s+(?:от\s+|для\s+)?(?:gpt|гпт|chatgpt|чатгпт)",
+        lower.rstrip(" .!?"),
+    ):
+        return "password_help"
     if re.fullmatch(
         r"(?:подключи|подключить|хочу подключить|оформи|помоги подключить|нужно подключить)"
         r"\s+(?:мне\s+)?(?:к\s+)?(?:chatgpt|чатгпт|гпт|gpt)[.!?]?"
@@ -195,9 +205,11 @@ async def _register(message):
             f"Твой логин: {login}\n\n"
             + (f"Скачать установщик GPT.exe:\n{url}\n\n" if url
                else "Установщик пока не опубликован.\n\n")
-            + "После установки запускай отдельный ярлык GPT. "
-            "Если пароль из предыдущего сообщения потерян, нажми "
-            "«Восстановить пароль GPT» — старый пароль перестанет работать."
+            + "Если GPT уже настроен на этом компьютере — просто запускай ярлык GPT: "
+            "пароль повторно вводить не нужно.\n\n"
+            "Если устанавливаешь GPT на другом компьютере или потерял первоначальный "
+            "пароль, нажми «Получить новый пароль GPT». Старый пароль при этом "
+            "перестанет действовать и на уже подключённых компьютерах."
         )
         await message.answer(instructions, reply_markup=_active_keyboard())
     elif app["stage"] == "provisioning":
@@ -270,6 +282,35 @@ async def handle_gpt_message(message, raw_text: str, *, is_admin: bool = False) 
     uid = int(message.from_user.id)
     if intent == "register":
         await _register(message)
+    elif intent == "password_help":
+        app = registry().get(uid)
+        if not app:
+            await message.answer(
+                "GPT ещё не оформлен. Напиши «Веся, подключи мне GPT», "
+                "чтобы начать подключение."
+            )
+        elif app.get("stage") != "active":
+            await message.answer(
+                "Подключение GPT ещё не завершено. "
+                "Напиши /gpt, чтобы узнать состояние заявки. "
+                "Повторно оплачивать ничего не нужно."
+            )
+        else:
+            login = str(app.get("proxy_username") or "")
+            if not login.startswith("gpt_"):
+                await message.answer("Данные доступа не найдены. Свяжись с владельцем.")
+            else:
+                await message.answer(
+                    f"Твой логин GPT: {login}\n\n"
+                    "Первоначальный пароль хранится только у тебя в сообщении "
+                    "о подключении и в защищённых настройках установленной программы. "
+                    "Я не могу повторно показать тот же пароль.\n\n"
+                    "Если ярлык GPT уже работает — ничего менять не нужно. "
+                    "Если устанавливаешь GPT на другой компьютер или потерял пароль, "
+                    "нажми «Получить новый пароль GPT». "
+                    "Старый пароль перестанет действовать.",
+                    reply_markup=_active_keyboard(),
+                )
     elif intent == "admin":
         await _admin(message, raw_text, is_admin)
     elif intent == "redeem":
