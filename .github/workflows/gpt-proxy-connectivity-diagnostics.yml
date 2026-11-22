@@ -1,0 +1,40 @@
+name: GPT proxy external connectivity diagnostics
+
+on:
+  push:
+    branches:
+      - diagnostics/gpt-proxy-cross-platform-20261122
+    paths:
+      - 'ops/gpt_connectivity_probe.py'
+      - '.github/workflows/gpt-proxy-connectivity-diagnostics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  external-network-probe:
+    name: Read-only probe (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check GPT TLS handshake and no-auth HTTP 407
+        run: python ops/gpt_connectivity_probe.py
+
+      - name: Native Windows Schannel CONNECT diagnostic (no credentials)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host 'Windows native Schannel test: HTTPS proxy endpoint; HTTP 407 is expected.'
+          $lines = & curl.exe -v --proxy https://ru.paruslegal.ru:4454 --connect-timeout 10 --max-time 20 --head https://chatgpt.com/ 2>&1
+          $lines | Select-String -Pattern 'schannel|SSL|HTTP/|Proxy CONNECT|Connection|TLS|error|407|aborted|certificate|Trying' | Select-Object -Last 40
+          Write-Host "curl exit code: $LASTEXITCODE (407 proxy authentication expected)"
