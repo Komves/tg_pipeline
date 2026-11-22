@@ -8,6 +8,7 @@ user data, attachments, or ChatGPT requests are transmitted.
 """
 from __future__ import annotations
 
+import base64
 import socket
 import ssl
 import time
@@ -21,10 +22,12 @@ CONNECT_REQUEST = (
 ).encode("ascii")
 
 
-def probe(port: int, tls_version: ssl.TLSVersion | None = None) -> None:
+def probe(port: int, tls_version: ssl.TLSVersion | None = None, *, dummy_auth: bool = False) -> None:
     label = f"{HOST}:{port}"
     if tls_version is not None:
         label += f" TLS-{tls_version.name}"
+    if dummy_auth:
+        label += " INVALID-CREDENTIALS"
     t0 = time.monotonic()
     try:
         context = ssl.create_default_context()
@@ -36,7 +39,11 @@ def probe(port: int, tls_version: ssl.TLSVersion | None = None) -> None:
                 conn.settimeout(10)
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
                 print(f"{label}: TLS OK {conn.version()} ({elapsed_ms}ms), awaiting no-auth CONNECT")
-                conn.sendall(CONNECT_REQUEST)
+                request = CONNECT_REQUEST
+                if dummy_auth:
+                    invalid = base64.b64encode(b"gpt_0000000000000000:invalid-diagnostic-only")
+                    request = request.replace(b"\r\n\r\n", b"\r\nProxy-Authorization: Basic " + invalid + b"\r\n\r\n")
+                conn.sendall(request)
                 data = conn.recv(4096)
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
                 if not data:
@@ -59,3 +66,4 @@ if __name__ == "__main__":
         (4455, None),
     ):
         probe(port, version)
+    probe(4454, dummy_auth=True)
